@@ -4,6 +4,7 @@ class CoinCoinPlayProcessor extends AudioWorkletProcessor {
     this.samples = new Float32Array(0);
     this.sourcePosition = 0;
     this.started = false;
+    this.bufferWaitSamples = 0;
     this.playedSamples = 0;
     this.reportSamples = 0;
     this.generation = 0;
@@ -22,8 +23,10 @@ class CoinCoinPlayProcessor extends AudioWorkletProcessor {
         this.samples = new Float32Array(0);
         this.sourcePosition = 0;
         this.started = false;
+        this.bufferWaitSamples = 0;
         this.playedSamples = 0;
         this.reportSamples = 0;
+        this.hasPrevious = false;
         this.generation = data.generation;
         this.port.postMessage({ type: "flushed", generation: this.generation });
       }
@@ -34,35 +37,48 @@ class CoinCoinPlayProcessor extends AudioWorkletProcessor {
     const output = outputs[0]?.[0];
     if (!output) return true;
     output.fill(0);
-    if (!this.started && this.samples.length >= 1440) this.started = true;
+    if (!this.started && this.samples.length > 0) {
+      this.bufferWaitSamples += output.length;
+      if (this.samples.length >= 1440 || this.bufferWaitSamples >= sampleRate * 0.06) {
+        this.started = true;
+      }
+    }
 
     let rendered = 0;
     if (this.started) {
       const ratio = 24000 / sampleRate;
       for (let i = 0; i < output.length; i++) {
-        if (this.sourcePosition + 1 >= this.samples.length) break;
+        if (this.sourcePosition >= this.samples.length) break;
         const index = Math.floor(this.sourcePosition);
         const fraction = this.sourcePosition - index;
-        output[i] =
-          this.samples[index] +
-          (this.samples[index + 1] - this.samples[index]) * fraction;
+        const crossingChunk =
+          index === 0 && this.sourcePosition > 0 && this.sourcePosition < 1 && this.hasPrevious;
+        const left = crossingChunk ? this.previousSample : this.samples[index];
+        const right = crossingChunk
+          ? this.samples[index]
+          : this.samples[Math.min(index + 1, this.samples.length - 1)];
+        output[i] = left + (right - left) * (crossingChunk ? this.sourcePosition : fraction);
         this.sourcePosition += ratio;
         rendered++;
       }
-      const consumed = Math.floor(this.sourcePosition);
+      const consumed = Math.min(Math.floor(this.sourcePosition), this.samples.length);
+      if (consumed > 0) {
+        this.previousSample = this.samples[Math.min(consumed - 1, this.samples.length - 1)];
+        this.hasPrevious = true;
+      }
       this.playedSamples += consumed;
       this.samples = this.samples.slice(consumed);
       this.sourcePosition -= consumed;
     }
     this.reportSamples += output.length;
-    if (this.reportSamples >= 2400) {
+    if (this.reportSamples >= sampleRate / 10) {
       this.port.postMessage({
         type: "played",
         ms: Math.floor((this.playedSamples * 1000) / 24000),
         playing: rendered > 0,
         generation: this.generation,
       });
-      this.reportSamples = 0;
+      this.reportSamples %= sampleRate / 10;
     }
     return true;
   }

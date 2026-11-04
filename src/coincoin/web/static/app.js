@@ -1,3 +1,5 @@
+import { AudioSequenceGate } from "/static/audio-protocol.js";
+
 const startButton = document.querySelector("#start");
 const stopButton = document.querySelector("#stop");
 const statusLabel = document.querySelector("#status");
@@ -10,6 +12,7 @@ let audioSocket;
 let uiSocket;
 let playbackNode;
 let finishFlush;
+const sequenceGate = new AudioSequenceGate();
 
 function waitForOpen(socket) {
   return new Promise((resolve, reject) => {
@@ -29,6 +32,7 @@ function addEntry(id, text) {
 async function start() {
   startButton.disabled = true;
   messageLabel.textContent = "Autorisation du micro…";
+  sequenceGate.discardThroughSequence("0");
   try {
     microphone = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -42,6 +46,7 @@ async function start() {
     audioSocket = new WebSocket(`${protocol}//${location.host}/ws/audio`);
     audioSocket.binaryType = "arraybuffer";
     await waitForOpen(audioSocket);
+    const connectedAudioSocket = audioSocket;
     uiSocket = new WebSocket(`${protocol}//${location.host}/ws/ui`);
     await waitForOpen(uiSocket);
 
@@ -56,14 +61,18 @@ async function start() {
       }
     };
     audioSocket.addEventListener("message", ({ data }) => {
-      if (data instanceof ArrayBuffer) {
-        playbackNode.port.postMessage({ type: "frame", buffer: data }, [data]);
+      if (audioSocket === connectedAudioSocket && data instanceof ArrayBuffer) {
+        const decoded = sequenceGate.decode(data);
+        if (decoded !== null) {
+          playbackNode.port.postMessage({ type: "frame", buffer: decoded.pcm }, [decoded.pcm]);
+        }
       }
     });
 
     uiSocket.addEventListener("message", ({ data }) => {
       const event = JSON.parse(data);
       if (event.type === "flush") {
+        sequenceGate.discardThroughSequence(event.through_sequence);
         playbackNode.port.postMessage(event);
       } else if (event.type === "replaced") {
         messageLabel.textContent = "Une autre page a remplacé cette connexion.";

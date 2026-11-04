@@ -13,12 +13,13 @@ Le service n'ouvre toujours aucun accès au robot, à OpenAI ou à OpenClaw.
 - Le service écrit ses logs dans `.cache/logs/`, monté dans le conteneur et
   ignoré par Git. Aucun secret n'est requis pour les essais audio S2.
 
-## Lancer l'audio depuis WSL
+## Lancer l'audio depuis le dépôt principal
 
-Depuis ce worktree, avec les valeurs de `.env` attribuées à S2
-(`COINCOIN_PORT=8772`, `COMPOSE_PROJECT_NAME=coincoin-s2`) :
+Cette procédure est utilisable après la fusion de S2, depuis le clone principal
+`~/projects/microduck/coin-coin` (le worktree S2 est alors supprimé). Dans WSL :
 
 ```sh
+cd ~/projects/microduck/coin-coin
 test -e .env || cp .env.example .env
 mkdir -p .cache/logs
 COINCOIN_PORT=8772 COMPOSE_PROJECT_NAME=coincoin-s2 \
@@ -71,9 +72,13 @@ mode écho selon la section précédente, retirer le casque et vérifier que
 3. Si le bip reste nettement visible au vumètre ou qu'un larsen apparaît,
    consigner l'échec dans ADR-002 ; l'alternative aiortc y est décrite mais
    n'est pas implémentée en S2.
-4. Après le test, arrêter le conteneur avec Ctrl+C et exécuter
-   `COINCOIN_PORT=8772 COMPOSE_PROJECT_NAME=coincoin-s2 docker compose down`
-   depuis le worktree S2.
+4. Après le test, arrêter le conteneur avec Ctrl+C puis exécuter depuis le
+   dépôt principal `~/projects/microduck/coin-coin` :
+
+   ```sh
+   cd ~/projects/microduck/coin-coin
+   COINCOIN_PORT=8772 COMPOSE_PROJECT_NAME=coincoin-s2 docker compose down
+   ```
 
 Noter le résultat (latence et efficacité AEC) dans ADR-002 après le test live.
 
@@ -88,9 +93,17 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run 
 
 Résultat S0 : commande complète verte, 39 tests réussis, couverture des
 implémentations livrées de 100 %, aucun diagnostic pyright. Les résultats
-courants de S2 : 55 tests réussis, couverture totale de 93,82 %, aucun
-diagnostic ruff ou pyright. La mesure live de l'AEC reste en attente dans
-l'ADR-002.
+courants de S2 et les preuves du harness AudioWorklet sont consignés dans
+l'ADR-002. La mesure live de l'AEC reste en attente dans l'ADR-002.
+
+Le harness du vrai AudioWorklet est un test séparé, à lancer dans un
+environnement où Node.js est disponible :
+
+```sh
+node --test tests/js/play_worklet.test.mjs
+```
+
+Node.js n'est pas requis pour exécuter le service.
 
 Pyright installe son runtime Node localement si Node manque dans WSL.
 Les tests ne lisent pas les vrais secrets de `.env` et ne contactent aucun

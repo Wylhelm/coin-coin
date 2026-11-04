@@ -88,12 +88,32 @@ la lecture avec 60 ms de précharge, rapportent la progression toutes les
 100 ms et vident la lecture sur commande. Le mode écho vérifie le trajet audio ;
 `--tone` émet un bip de 1 kHz et mesure sa présence par corrélation.
 
+Chaque paquet audio descendant préfixe son PCM d'un numéro de séquence uint64
+little-endian. Le contrôle de flush annonce le dernier numéro antérieur ; le
+client élimine ces séquences même si elles arrivent après le message UI de flush.
+Le serveur suspend aussi les nouveaux appels `play()` jusqu'à l'acquittement du
+worklet. Les paquets transportent leur longueur PCM exacte : les fragments
+incomplets ne sont ni complétés par du silence ni retenus, et le worklet les
+concatène avant lecture.
+
 **Preuve automatisée.** `uv run pytest tests/integration/test_ws_audio.py`
 envoie 1 s de PCM au faux client et vérifie l'écho octet par octet, la limite
 de 300 ms d'avance, le remplacement d'une page et le flush acquitté en moins
 de 100 ms. Les tests unitaires vérifient la conversion/rééchantillonnage SoXR
 24→16 kHz, la longueur exacte sur trames, la conservation de la fréquence et
-de l'énergie (±1 %), le mixage sans délai et la corrélation du bip.
+de l'énergie (±1 %), le mixage sans délai et la corrélation du bip. `node
+--test tests/js/play_worklet.test.mjs` exécute le vrai worklet et la vraie
+barrière de séquence : trames livrées en retard après deux flushs, trames
+fraîches après flush, fragments de 400+400+3 échantillons sans trou, et premier
+rapport de lecture autour de 100 ms à 16, 24 et 48 kHz.
+
+**Validation de la correction rouverte.** La commande complète
+`uv run ruff check . && uv run ruff format --check . && uv run pyright &&
+uv run pytest` est verte : 57 tests Python réussis, couverture totale de
+94,29 %, aucun diagnostic pyright. Le harness AudioWorklet séparé réussit ses
+3 tests sous Node.js. Le README donne la procédure d'essai et de nettoyage
+Compose depuis le clone principal `~/projects/microduck/coin-coin`, après la
+suppression du worktree S2.
 
 **Mesure humaine AEC (à faire par user).** Pas encore exécutée : aucun
 résultat de latence ou d'atténuation n'est revendiqué. Suivre la procédure

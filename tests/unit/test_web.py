@@ -19,6 +19,7 @@ async def test_hello_and_healthz() -> None:
         assert page.content_type == "text/html"
         assert "Coin-Coin" in await page.text()
         assert (await client.get("/static/app.js")).status == 200
+        assert (await client.get("/static/audio-protocol.js")).status == 200
         missing = await client.get("/missing")
         assert missing.status == 404
 
