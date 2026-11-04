@@ -3,12 +3,27 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Coin-Coin — hello</title>
+    <title>Coin-Coin — audio</title>
+    <link rel="stylesheet" href="/static/style.css">
   </head>
   <body>
     <main>
-      <h1>Coin-Coin — hello</h1>
-      <p>Le socle est prêt. La voix et le robot arrivent dans les prochaines sessions.</p>
+      <h1>Coin-Coin</h1>
+      <p id="status" role="status">ENDORMI</p>
+      <label for="meter">Micro</label>
+      <meter id="meter" min="0" max="1" value="0">0</meter>
+      <p id="message" aria-live="polite">Cliquez sur Démarrer pour activer le micro.</p>
+      <div class="controls">
+        <button id="start" type="button">Démarrer</button>
+        <button id="stop" type="button" disabled>STOP</button>
+      </div>
+      <section>
+        <h2>Transcriptions</h2>
+        <ol id="transcripts"></ol>
+        <h2>Actions et refus</h2>
+        <ol id="actions"></ol>
+      </section>
     </main>
+    <script type="module" src="/static/app.js"></script>
   </body>
 </html>

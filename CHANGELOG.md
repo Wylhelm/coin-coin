@@ -1,5 +1,18 @@
 # Changelog
 
+## S2 — 2026-11-04
+
+- Ajout de `BrowserAudio` : micro et lecture PCM16 sur `/ws/audio`, contrôles
+  et acquittements sur `/ws/ui`, tampon de lecture limité à 300 ms, flush et
+  remplacement de page.
+- Ajout de la page navigateur, des AudioWorklets (trames 20 ms, précharge 60 ms,
+  compte rendu de lecture et rééchantillonnage selon le taux réel du contexte),
+  ainsi que des modes `coincoin --echo` et `coincoin --tone`.
+- Ajout du rééchantillonnage SoXR, du mixeur sans délai et du mesureur de latence
+  par corrélation ; documentation ADR-002 et procédure AEC manuelle.
+- Validation : 55 tests réussis, couverture 93,82 %, ruff et pyright verts.
+  Le test humain d'écho/AEC reste à faire par user.
+
 ## 0.1.0 — 2026-11-04
 
 - S0 : repo Git indépendant sur `session/S0`, Python 3.12, `uv.lock`,

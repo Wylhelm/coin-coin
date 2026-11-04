@@ -70,3 +70,42 @@ uniquement au `.env` de la session concernée, jamais au repo ou aux logs.
 S0 n'en crée aucun : son jeton sert seulement au test d'écho.
 `Settings` et `.env.example` conservent les défauts de la spec maître ;
 la configuration effective des sessions robot remplace ces liens selon B.
+
+## ADR-002 — audio navigateur sur WebSocket et AudioWorklet
+
+Date : 2026-11-04. Statut : retenu pour S2 ; validation humaine AEC en attente.
+
+**Contexte.** L'audio de simulation doit rester dans la page navigateur pour que
+l'annulation d'écho du navigateur puisse utiliser la sortie comme référence.
+Le transport doit aussi éviter ICE et les candidats injoignables depuis Docker
+Desktop sur localhost.
+
+**Décision.** Utiliser un WebSocket binaire `/ws/audio` pour les trames PCM16
+mono little-endian 24 kHz de 20 ms, et `/ws/ui` pour les contrôles. Le micro
+utilise les contraintes navigateur echo cancellation, noise suppression et auto
+gain ; les AudioWorklets rééchantillonnent l'entrée si nécessaire, tamponnent
+la lecture avec 60 ms de précharge, rapportent la progression toutes les
+100 ms et vident la lecture sur commande. Le mode écho vérifie le trajet audio ;
+`--tone` émet un bip de 1 kHz et mesure sa présence par corrélation.
+
+**Preuve automatisée.** `uv run pytest tests/integration/test_ws_audio.py`
+envoie 1 s de PCM au faux client et vérifie l'écho octet par octet, la limite
+de 300 ms d'avance, le remplacement d'une page et le flush acquitté en moins
+de 100 ms. Les tests unitaires vérifient la conversion/rééchantillonnage SoXR
+24→16 kHz, la longueur exacte sur trames, la conservation de la fréquence et
+de l'énergie (±1 %), le mixage sans délai et la corrélation du bip.
+
+**Mesure humaine AEC (à faire par user).** Pas encore exécutée : aucun
+résultat de latence ou d'atténuation n'est revendiqué. Suivre la procédure
+« Vérifier l'audio » du README : haut-parleurs sans casque, écouter le mode
+`--echo` (retard ressenti faible, pas de larsen), puis lancer `--tone`, parler
+par-dessus et noter le retard affiché ainsi que la présence du bip au vumètre.
+Si le bip est nettement visible ou le système larsène, noter Q9 en échec.
+
+**Alternative si l'AEC échoue.** Ouvrir une décision séparée sur aiortc et
+`RTCPeerConnection` côté page, en configurant ICE vers `127.0.0.1` et un port
+UDP publié. Elle n'est pas implémentée dans S2.
+
+**Conséquences.** Les sons de Coin-Coin doivent être mixés et joués par
+`BrowserAudio`, jamais via `robot.sound` en simulation, afin de rester dans
+la référence AEC. Le choix reste à confirmer par le test live avant S4.

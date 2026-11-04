@@ -4,8 +4,10 @@ services:
     ports:
       - "127.0.0.1:${COINCOIN_PORT:-8765}:8765"
     volumes:
-      - ./logs:/app/logs
+      - ./.cache/logs:/app/logs
     env_file:
       - .env
+    environment:
+      ECHO: "${ECHO:-0}"
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -1,45 +1,40 @@
-# Coin-Coin — socle S0
+# Coin-Coin — audio navigateur (S2)
 
 Service vocal du MicroDuck Coin-Coin, développé séparément du code Pollen.
-**S0 livre uniquement le socle** : configuration, journal JSONL, horloges,
-interfaces communes et une page HTTP « hello ». Aucun accès au robot, au micro,
-à OpenAI ou à OpenClaw n'est ouvert.
+S0 fournit le socle asynchrone ; S2 ajoute le micro et le haut-parleur du
+navigateur, deux WebSockets PCM16, le mode écho et le test de latence par tonalité.
+Le service n'ouvre toujours aucun accès au robot, à OpenAI ou à OpenClaw.
 
 ## Prérequis
 
 - WSL2 Ubuntu, Python 3.12 et `uv`.
 - Docker Desktop avec son intégration WSL2 et `docker compose` disponible depuis WSL.
 - Chrome ou Edge sous Windows pour la future interface vocale.
-- Pour les logs montés : un dossier `logs/` accessible à l'utilisateur du conteneur
-  (UID/GID 1000). S0 n'utilise aucun secret.
+- Le service écrit ses logs dans `.cache/logs/`, monté dans le conteneur et
+  ignoré par Git. Aucun secret n'est requis pour les essais audio S2.
 
-## Lancer S0 depuis WSL
+## Lancer l'audio depuis WSL
 
-Depuis `~/projects/microduck/coin-coin/` :
+Depuis ce worktree, avec les valeurs de `.env` attribuées à S2
+(`COINCOIN_PORT=8772`, `COMPOSE_PROJECT_NAME=coincoin-s2`) :
 
 ```sh
 test -e .env || cp .env.example .env
-mkdir -p logs
-export COINCOIN_PORT=8770 COMPOSE_PROJECT_NAME=coincoin-s0
-docker compose up --build --detach --wait --wait-timeout 60
-curl --fail http://localhost:8770/healthz
+mkdir -p .cache/logs
+COINCOIN_PORT=8772 COMPOSE_PROJECT_NAME=coincoin-s2 \
+  docker compose run --build --rm --service-ports coin-coin coincoin --echo
 ```
 
-Ouvrir `http://localhost:8770/` sous Windows. Le JSON attendu sur `/healthz` est
-`{"status": "ok"}`. Le conteneur écoute en interne sur `0.0.0.0:8765`, mais
-Compose publie seulement sur le loopback du PC. Ne pas utiliser le port live
-8765 de user pour les essais d'agent.
-
-Depuis PowerShell Windows :
-
-```powershell
-(Invoke-WebRequest http://localhost:8770/healthz -UseBasicParsing).Content
-```
-
-Arrêter uniquement le projet S0 :
+Ouvrir `http://localhost:8772/` sous Windows, cliquer sur **Démarrer** et
+autoriser le micro. `--echo` (ou `ECHO=1`) renvoie le PCM reçu sans traitement.
+Remplacer `--echo` par `--tone` pour le bip de 1 kHz et la mesure de latence
+aller-retour.
+Le conteneur écoute en interne sur `0.0.0.0:8765` ; Compose publie uniquement
+sur le loopback du PC. Arrêter le processus avec Ctrl+C, puis nettoyer uniquement
+le projet S2 :
 
 ```sh
-COINCOIN_PORT=8770 COMPOSE_PROJECT_NAME=coincoin-s0 docker compose down
+COINCOIN_PORT=8772 COMPOSE_PROJECT_NAME=coincoin-s2 docker compose down
 ```
 
 **Mesures S0 du 2026-11-04** : `/healthz` retourne HTTP 200 et le JSON attendu
@@ -61,6 +56,27 @@ docker pull ghcr.io/astral-sh/uv:0.13.7
 Cela a suffi en S0 avec le même moteur Docker Desktop, sans changer la
 configuration Docker/WSL ni utiliser un `DOCKER_CONFIG` alternatif.
 
+## Vérifier l'audio
+
+Le test ci-dessous demande environ cinq minutes et doit être effectué dans
+Chrome ou Edge sous Windows avec les haut-parleurs du PC. Lancer d'abord le
+mode écho selon la section précédente, retirer le casque et vérifier que
+`http://localhost:8772/` est bien ouvert :
+
+1. Parler en mode écho : on doit s'entendre avec un retard ressenti faible et
+   sans larsen croissant.
+2. Arrêter avec Ctrl+C, relancer la même commande en remplaçant `--echo` par
+   `--tone`, puis noter la latence affichée et parler par-dessus le bip. Le
+   vumètre doit réagir à la voix et très peu au bip si l'AEC est active.
+3. Si le bip reste nettement visible au vumètre ou qu'un larsen apparaît,
+   consigner l'échec dans ADR-002 ; l'alternative aiortc y est décrite mais
+   n'est pas implémentée en S2.
+4. Après le test, arrêter le conteneur avec Ctrl+C et exécuter
+   `COINCOIN_PORT=8772 COMPOSE_PROJECT_NAME=coincoin-s2 docker compose down`
+   depuis le worktree S2.
+
+Noter le résultat (latence et efficacité AEC) dans ADR-002 après le test live.
+
 ## Développement et qualité
 
 ```sh
@@ -71,7 +87,10 @@ uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run 
 ```
 
 Résultat S0 : commande complète verte, 39 tests réussis, couverture des
-implémentations livrées de 100 %, aucun diagnostic pyright.
+implémentations livrées de 100 %, aucun diagnostic pyright. Les résultats
+courants de S2 : 55 tests réussis, couverture totale de 93,82 %, aucun
+diagnostic ruff ou pyright. La mesure live de l'AEC reste en attente dans
+l'ADR-002.
 
 Pyright installe son runtime Node localement si Node manque dans WSL.
 Les tests ne lisent pas les vrais secrets de `.env` et ne contactent aucun
@@ -110,12 +129,17 @@ qui utilise effectivement le robot. S0 n'ouvre aucun lien robot.
 src/coincoin/
   app.py, config.py, journal.py, clock.py
   audio/io.py        AudioIO : PCM16 mono 24 kHz, trames 20 ms
+  audio/browser.py   BrowserAudio, WebSockets audio et contrôle
+  audio/resample.py  conversions PCM16/float32 et SoXR 24→16 kHz
+  audio/mixer.py     mixage voix/cancanements et écrêtage doux
+  audio/tone.py      génération et corrélation du bip de test
   robot/link.py      RobotLink, Frame, RobotRefused, LinkDown
   robot/quack.py     QuackSink
   brain/base.py      Brain, NullBrain sans mémoire ni réseau
-  web/server.py      / et /healthz
-  web/static/        page hello
-tests/unit/          configuration, horloges, journal, contrats, HTTP, spike avec faux
+  web/server.py      /, /healthz, /ws/audio et /ws/ui
+  web/static/        page navigateur et AudioWorklets micro/lecture
+tests/unit/          configuration, audio PCM, mixage, horloges, journal, contrats
+tests/integration/   WebSockets audio, écho, flux, flush et remplacement de page
 scripts/net_spike.sh
 docs/                décisions et preuves réseau
 ```
