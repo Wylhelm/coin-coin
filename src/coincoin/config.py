@@ -1,0 +1,44 @@
+"""Environment settings shared by every Coin-Coin implementation."""
+
+from typing import Literal
+
+from pydantic import Field, SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Load the master specification's settings from the environment and .env.
+
+    Unselected Realtime model/voice and wake threshold remain unset until S4/S3.
+    Empty credentials are valid for the offline foundation and its fake services.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        allow_inf_nan=False,
+    )
+
+    openai_api_key: SecretStr = SecretStr("")
+    openai_realtime_model: str = ""
+    openai_realtime_voice: str = ""
+    openclaw_url: str = "http://127.0.0.1:18789"
+    openclaw_token: SecretStr = SecretStr("")
+    openclaw_agent: str = "coin-coin"
+    robot_link: str = "tcp://host.docker.internal:7810"
+    frame_link: str = "tcp://host.docker.internal:7811"
+    quack_sink: Literal["stream", "robot"] = "stream"
+    wake_engine: Literal["vosk", "oww"] = "vosk"
+    wake_threshold: float | None = Field(default=None, ge=0, le=1)
+    followup_s: float = Field(default=420, gt=0)
+    langs: str = "fr,en"
+    max_vx: float = Field(default=0.25, gt=0)
+    max_vy: float = Field(default=0.2, gt=0)
+    max_vyaw: float = Field(default=1.0, gt=0)
+    max_move_s: float = Field(default=5, gt=0)
+    move_hz: float = Field(default=20, gt=0)
+    log_audio: bool = False
+    log_retention_days: int = Field(default=30, gt=0)
+    relay_token: SecretStr = SecretStr("")

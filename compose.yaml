@@ -1,0 +1,11 @@
+services:
+  coin-coin:
+    build: .
+    ports:
+      - "127.0.0.1:${COINCOIN_PORT:-8765}:8765"
+    volumes:
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
