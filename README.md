@@ -1,5 +1,9 @@
 # Coin-Coin
 
+<p align="center">
+  <img src="assets/images/coin-coin.png" alt="Illustration d'un canard robot et d'une pince autour d'un microphone" width="640">
+</p>
+
 **Un compagnon vocal pour donner vie à un petit robot.**
 
 Coin-Coin réunit conversation en temps réel, vision et commandes robotiques
