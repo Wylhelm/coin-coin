@@ -1,4 +1,4 @@
-# Coin-Coin — voix Realtime et outils robot (S1–S7)
+# Coin-Coin — voix Realtime et outils robot (S1–S9)
 
 Service vocal du MicroDuck Coin-Coin, développé séparément du code Pollen.
 S0 fournit le socle asynchrone ; S2 ajoute le micro et le haut-parleur du
@@ -342,6 +342,35 @@ docker ps -a --filter label=com.docker.compose.project=coincoin-s5
 À la livraison, aucun listener sur ces cinq ports, aucun pidfile de la sim
 S5, ni conteneur/réseau Compose S5 ne subsiste. Les modèles et journaux locaux
 sont conservés ; les ressources live de user et celles de S9 sont intactes.
+
+## Transport WebRTC S9
+
+`ROBOT_LINK=webrtc://host:8443` sélectionne `WebRtcLink`, qui suit la
+signalisation LAN de `mediad`, réutilise `JsonRpcConnection` sur la datachannel
+`control` et reçoit les images de la piste vidéo. Le lien TCP authentifié reste
+le défaut des sessions S1. Procédure, mesures et décision Q10 :
+[docs/webrtc.md](docs/webrtc.md).
+
+Pour les tests contre la caméra de la simulation S9, garder le verrou partagé
+`~/.cache/coin-coin-locks/sim-camera`, vérifier que les ports mediad 8443/8080
+sont libres et utiliser exclusivement les ressources indiquées dans le
+document. Avec le `.env` de la session configuré et la simulation active :
+
+```sh
+export GST_PLUGIN_FEATURE_RANK=nvh264enc:NONE
+COINCOIN_TEST_SIM=1 uv run pytest --no-cov -m sim -s -rs
+```
+
+Sur cet hôte WSL, `nvh264enc` est détecté mais son preset matériel échoue ;
+le rang `NONE` laisse `x264enc` logiciel traiter la vidéo.
+Le fixture sim lit explicitement le `.env` du worktree après que le fixture
+global a isolé les variables d'environnement ; `ROBOT_LINK` choisit donc bien
+le transport vérifié, y compris pour les scénarios S1 existants.
+
+Le test choisit le transport depuis `ROBOT_LINK`; avec le schéma `webrtc://`,
+les scénarios `move`, `turn`, `look` et les mesures de RTT/gigue passent par
+WebRTC. La signalisation LAN n'a pas d'authentification : ne pas exposer
+`mediad` au-delà du LAN.
 
 ## Piloter la simulation S1 depuis le conteneur
 

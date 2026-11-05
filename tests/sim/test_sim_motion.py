@@ -1,4 +1,4 @@
-"""Opt-in physical checks against the session's explicitly configured relay."""
+"""Opt-in physical checks through the transport configured by this session."""
 
 import asyncio
 import math
@@ -12,15 +12,15 @@ from pydantic_settings import DotEnvSettingsSource
 from coincoin.clock import SystemClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
+from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import Governor
-from coincoin.robot.link import LinkDown
-from coincoin.robot.tcp_link import TcpLink
+from coincoin.robot.link import LinkDown, RobotLink
 
 pytestmark = pytest.mark.sim
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
-async def _wait_for_settled_odom(link: TcpLink, clock: SystemClock) -> dict[str, Any]:
+async def _wait_for_settled_odom(link: RobotLink, clock: SystemClock) -> dict[str, Any]:
     previous_state: dict[str, Any] | None = None
     previous_position: list[float] | None = None
     stable_updates = 0
@@ -47,14 +47,20 @@ async def _wait_for_settled_odom(link: TcpLink, clock: SystemClock) -> dict[str,
     return state
 
 
+def sim_state(link: RobotLink) -> dict[str, Any]:
+    state = link.state()
+    assert state is not None, "simulator state unavailable"
+    return state
+
+
 @pytest.fixture
 async def sim(tmp_path: Path):
     if os.environ.get("COINCOIN_TEST_SIM") != "1":
-        pytest.skip("Set COINCOIN_TEST_SIM=1 with your assigned relay configured in .env")
+        pytest.skip("Set COINCOIN_TEST_SIM=1 with the assigned simulator configured in .env")
     source = DotEnvSettingsSource(Settings, env_file=ENV_FILE)
     settings = Settings.model_validate(source())
     clock = SystemClock()
-    link = TcpLink(
+    link = create_robot_link(
         settings.robot_link,
         frame_url=settings.frame_link,
         token=settings.relay_token.get_secret_value(),
@@ -65,6 +71,8 @@ async def sim(tmp_path: Path):
         try:
             await link.connect()
         except LinkDown:
+            if settings.robot_link.startswith("webrtc://"):
+                raise
             pytest.skip("The explicitly assigned simulator relay is unavailable")
         async with asyncio.timeout(5):
             while link.state() is None:
@@ -100,12 +108,12 @@ async def test_move_advances_more_than_fifteen_cm(sim):
 
 async def test_turn_ninety_degrees_within_fifteen(sim):
     governor, link, clock = sim
-    before = link.state()["odom"]["yaw"]
+    before = sim_state(link)["odom"]["yaw"]
     assert (await governor.turn(90)).ok
     completed = await governor.wait_motion()
     assert completed is not None and completed.ok, completed
     await clock.sleep(0.3)
-    after = link.state()["odom"]["yaw"]
+    after = sim_state(link)["odom"]["yaw"]
     delta = math.degrees(math.atan2(math.sin(after - before), math.cos(after - before)))
     print(f"turn: delta_degrees={delta:.3f}")
     assert abs(delta - 90) < 15
@@ -113,9 +121,11 @@ async def test_turn_ninety_degrees_within_fifteen(sim):
 
 async def test_look_left_has_positive_yaw(sim):
     governor, link, clock = sim
-    assert (await governor.look("gauche", hold_s=1)).ok
-    await clock.sleep(0.6)
-    yaw = link.state()["head"][2]
+    assert (await governor.look("gauche", hold_s=2)).ok
+    async with asyncio.timeout(1.5):
+        while sim_state(link)["head"][2] <= 0.2:
+            await clock.sleep(0.05)
+    yaw = sim_state(link)["head"][2]
     print(f"look gauche: head_yaw={yaw:.3f}")
     assert yaw > 0.2
     assert (await governor.wait_look()).ok

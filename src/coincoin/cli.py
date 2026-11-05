@@ -9,15 +9,15 @@ from typing import Any
 from coincoin.clock import SystemClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
+from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import Governor, ToolResult
 from coincoin.robot.jsonrpc import JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
-from coincoin.robot.tcp_link import TcpLink
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="coincoin-cli")
-    result.add_argument("--link", help="Robot relay URL (otherwise ROBOT_LINK)")
+    result.add_argument("--link", help="Robot URL (otherwise ROBOT_LINK)")
     commands = result.add_subparsers(dest="command", required=True)
     for name, fields in (
         ("move", ("vx", "vy", "vyaw", "duration_s")),
@@ -42,8 +42,9 @@ async def execute(
 ) -> tuple[dict[str, Any], int]:
     clock = SystemClock()
     if link is None:
-        link = TcpLink(
-            args.link or settings.robot_link,
+        link_url = args.link or settings.robot_link
+        link = create_robot_link(
+            link_url,
             frame_url=settings.frame_link,
             token=settings.relay_token.get_secret_value(),
             clock=clock,

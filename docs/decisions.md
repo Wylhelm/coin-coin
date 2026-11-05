@@ -685,3 +685,33 @@ verrou, chacune avec remplacement de réponse et témoin inchangé :
 3 échecs/3 succès avant correction, puis 6 succès.
 Le journal ne reçoit jamais les octets ni l'URL de données de l'image :
 `LOG_IMAGES=false` est la politique de cette version, sans stockage opt-in.
+
+## ADR-006 — WebRTC LAN pour le robot, TCP relay inchangé
+
+Date : 2026-11-04. Statut : accepté, mesures sim et Q10 vérifiées.
+
+**Contexte.** S9 doit piloter le `mediad` réel avant la réception du robot,
+réutiliser les contrats JSON-RPC de S1 et vérifier l'accessibilité ICE depuis
+WSL et un conteneur Docker Desktop. La signalisation LAN de `mediad` n'a pas
+d'authentification ; le relais TCP S1, lui, exige son jeton.
+
+**Décision.** Choisir le transport à partir du schéma de `ROBOT_LINK` :
+`webrtc://host:8443` utilise `WebRtcLink`; `tcp://host:port` conserve
+`TcpLink`, le relais et le jeton. L'adaptation WebRTC alimente le
+`JsonRpcConnection` de S1, conserve `robot.stop` comme requête à ID et n'ajoute
+pas de file d'attente historique pour les `robot.move` : un seul envoi récent
+est conservé pendant que `bufferedAmount` dépasse 16 KiB. La réponse SDP
+aiortc est `passive`; l'`active` par défaut a atteint ICE mais a échoué au
+handshake DTLS contre le `webrtcsink` de la simulation.
+
+**Mesures.** Les 7 tests sim (S1 et S9) réussissent sans saut via WebRTC :
+avance 0,216–0,217 m, tour 90,735–92,854°, regard gauche 0,246–0,294 rad.
+RTT `robot.health` p50/p95 0,57/0,76 ms ; `robot.move` à 20 Hz, intervalle
+p50 42,36 ms et gigue absolue p95 33,03 ms, aucun `deadman` pendant l'action.
+WSL et le bridge Docker par défaut ont réussi `status`; Docker a aussi réussi
+un `move`, HTTP /healthz répond 200 sur 8779. `network_mode: host` n'a pas été
+nécessaire. Le mapping `127.0.0.1:8779->8765/tcp` n'ouvre pas le port hôte
+8765.
+
+Le détail de signalisation, l'échec NVENC et le rangage logiciel requis sur
+cet hôte, les commandes et le nettoyage sont dans [docs/webrtc.md](webrtc.md).

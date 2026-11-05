@@ -188,6 +188,20 @@
   générations périmées, remplacement de page et rejet d'audio ancien. Qualité
   complète et harness AudioWorklet validés sur la branche S2 avant intégration.
 
+## S9 — 2026-11-04
+
+- Ajout de `WebRtcLink` avec aiortc, signalisation LAN `mediad`, canal JSON-RPC
+  `control`, piste vidéo, reconnexion et sélection par URL `webrtc://`.
+- Les tests de mouvement sim sélectionnent le transport configuré ; tests du
+  pair WebRTC local et scénarios opt-in de mouvement, RTT et gigue.
+- Contre la sim caméra : 7 scénarios via WebRTC réussis sans saut ; avance
+  0,216–0,217 m, tours 90,735–92,854°, et regards positifs. RTT `robot.health`
+  p50/p95 0,57/0,76 ms ; gigue absolue p95 `robot.move` 33,03 ms, aucun deadman.
+- Q10 validée depuis WSL et le bridge Docker par défaut : health HTTP 200 sur
+  8779, CLI robot healthy et commande move Docker réussie ; aucune ouverture
+  du port hôte 8765 ni besoin de `network_mode: host`.
+- Mesures détaillées et décision : `docs/webrtc.md` et ADR-006.
+
 ## Correctif S3 H-POSITIFS — 2026-11-04
 
 - Sessions humaines isolées sous `assets/wake/recorded/`, capture temporaire et
