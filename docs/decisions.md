@@ -435,3 +435,54 @@ explicitement 25 échantillons joués pour seulement 1 ms entière rapportée.
 La trace réelle initiale reste inchangée ; aucune sim, connexion robot ou
 nouvelle requête OpenAI. Cela ne lève pas les validations humaines ni la
 limite du silence physique d'un navigateur injoignable.
+
+## ADR-007 — Mémoire OpenClaw : client testable, hooks non bloquants, phrase d'attente
+
+Date : 2026-11-05. Statut : retenu (S8, sur `main=051eb33`).
+
+**Contexte.** Le contrat OpenAI-compatible d'OpenClaw est documenté
+publiquement, mais la gateway privée de user n'est pas configurée. Les
+tests ne doivent ni dépendre du réseau externe ni prétendre à une observation
+réelle. S4 fournit `Feature`, les hooks `brain_session_start` (attendu avant
+l'ouverture Realtime) et `brain_session_end`, le registre d'outils et
+`instructions_context`. `app.py` appartient à S2/S4 : S8 ne le modifie pas.
+
+**Décision.**
+
+1. Client HTTPX asynchrone sur `POST /v1/chat/completions`, modèle
+   `openclaw/<id>`, `user` stable `coin-coin-voice`, testé seulement contre un
+   faux aiohttp loopback. `NullBrain` sans jeton. Échéances 3/8/15 s ; réseau,
+   429 et 5xx : deux reprises, backoff exponentiel borné avec gigue ; 401/403 et
+   409 sont typés et deviennent des phrases explicites ; le dernier échec est
+   exposé (`last_failure`) pour bâtir le contexte sans mémoire.
+2. `BrainFeature` n'utilise que l'API publique S4. Au réveil il borne
+   `session_start` et capture toute exception : la mémoire ne peut jamais
+   empêcher l'ouverture Realtime. Au coucher, le hook ne fait que planifier une
+   tâche conservée par la feature (`drain`/`aclose` pour l'attendre).
+3. Le résumé de fin est construit localement depuis le journal : un marqueur
+   `type=brain conversation=<id>` est écrit au réveil, puis la tâche relit les
+   transcriptions finales et `tool_result` postérieurs du même processus. Cela
+   évite de lire l'historique privé de l'App, qui couvre aussi les sessions
+   précédentes, et d'éditer `app.py`. Le `summary` de l'effet S4 (vide
+   aujourd'hui) est préfixé s'il est fourni.
+4. Phrase d'attente : Realtime ne permet pas de remplacer un
+   `function_call_output` déjà envoyé, et S4 n'envoie qu'une reprise par lot
+   après `response.done`. Un résultat intermédiaire « je réfléchis » serait donc
+   la réponse définitive de l'outil, et une réponse parallèle déclenchée à 1,5 s
+   entrerait en concurrence avec le lot d'outils, le barge-in et STOP. La
+   description de `ask_openclaw` demande au modèle de dire une courte phrase
+   d'attente dans la même réponse, avant l'appel ; elle est prononcée pendant
+   l'attente, mais pas conditionnée à 1,5 s. Les appels > 1,5 s sont
+   journalisés (`status=slow`).
+
+**Sécurité.** Le bearer token est un credential opérateur complet : agent à
+outils minimaux, gateway privée ou tunnel SSH. Aucun jeton ni corps d'erreur
+distant n'est journalisé (tests). Les notes mémoire sont injectées comme faits
+d'arrière-plan, pas comme instructions.
+
+**Conséquences.** Les transcriptions des sessions terminées sont relues depuis
+`logs/` ; si le journal est illisible, le résumé ne contient que le `summary`
+fourni, et un résumé vide n'est pas envoyé. Un arrêt du service pendant la
+tâche de fond peut perdre ce résumé. L'API réelle reste non observée : la forme
+réelle de `/v1/models` et d'une complétion doit être consignée dans
+[`docs/openclaw.md`](openclaw.md) après la procédure de user.

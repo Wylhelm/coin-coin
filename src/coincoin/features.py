@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
 
+from coincoin.brain.feature import BrainFeature
+
 if TYPE_CHECKING:
     from coincoin.app import App
 
@@ -14,4 +16,6 @@ class Feature(Protocol):
     async def install(self, app: App) -> None: ...
 
 
-FEATURES: list[Feature] = []
+FEATURES: list[Feature] = [
+    BrainFeature(),
+]

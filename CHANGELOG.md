@@ -1,5 +1,23 @@
 # Changelog
 
+## S8 — Mémoire OpenClaw — 2026-11-05
+
+- Client HTTPX OpenAI-compatible `OpenClawBrain` (`openclaw/<agent>`, `user`
+  stable `coin-coin-voice`, non streamé), gabarits session-start / remember /
+  session-end, échéances 3/8/15 s, deux reprises avec backoff/gigue pour réseau,
+  429 et 5xx, erreurs typées 401/403 et 409 sans jeton ni corps distant.
+- `BrainFeature` inscrit dans `FEATURES` : mémoire chargée au réveil dans
+  `{memory_context}` (mode sans mémoire explicite en cas d'échec), outils
+  `remember` et `ask_openclaw` (arguments bornés), résumé local du journal de la
+  conversation envoyé en tâche de fond au coucher, échecs journalisés.
+- Phrase d'attente : consigne dans la description de `ask_openclaw`, sans
+  seconde réponse Realtime ; appels > 1,5 s journalisés (ADR-007).
+- Faux OpenClaw loopback scriptable (statuts, délais par gabarit, mémoire des
+  faits) et tests unitaires/intégration App. Aucune API réelle OpenClaw
+  observée, aucun nouvel appel OpenAI ; critères user ouverts.
+- Validation : ruff, format et Pyright verts ; 415 tests réussis, 5 ignorés
+  (3 sim, 2 assets VAD absents du worktree), couverture 91 % ; AudioWorklet 6/6.
+
 ## S4 — Conversation Realtime — 2026-11-05
 
 - Ajout du client WebSocket GA `/v1/realtime`, des évènements normalisés, du

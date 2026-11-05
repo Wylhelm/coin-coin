@@ -495,6 +495,10 @@ src/coincoin/
   robot/governor.py  sécurité et API d'actions pour S5
   robot/quack.py     QuackSink
   brain/base.py      Brain, NullBrain sans mémoire ni réseau
+  brain/openclaw.py  OpenClawBrain, client HTTPX de la gateway OpenClaw
+  brain/feature.py   BrainFeature : réveil, coucher, {memory_context}
+  brain/summary.py   résumé local borné depuis le journal
+  realtime/tools/brain.py  outils ask_openclaw et remember
   web/server.py      /, /healthz, /ws/audio et /ws/ui
   web/static/        page navigateur et AudioWorklets micro/lecture
   cli.py            coincoin-cli
@@ -519,3 +523,30 @@ provisoire sélectionné en S3 vaut `0.9`. Les identifiants secrets sont des
 `SecretStr`. Le journal masque récursivement les clés sensibles, les motifs
 de clé API et les en-têtes Authorization ; il refuse les données non JSON
 et laisse remonter les erreurs d'écriture.
+
+## Mémoire OpenClaw (S8)
+
+`BrainFeature` (inscrit dans `FEATURES`) relie l'agent OpenClaw `coin-coin` à
+la conversation : au réveil, `session_start` (3 s maximum) alimente
+`{memory_context}` avant l'ouverture Realtime ; le modèle dispose des outils
+`remember` et `ask_openclaw` ; au coucher, un résumé local (transcriptions
+finales et résultats d'outils de la conversation, ≤ 1 500 caractères) est envoyé
+par `session_end` en tâche de fond, sans retarder le sommeil. Sans
+`OPENCLAW_TOKEN`, `NullBrain` reste actif et Coin-Coin dit qu'il n'a pas de
+mémoire. Gateway lente, refusée (401/403), archivée (409) ou en erreur : phrase
+explicite, journal sans jeton, conversation poursuivie sans mémoire.
+
+Livré et vérifié uniquement contre le faux HTTP loopback et des doubles
+Realtime : **aucune API OpenClaw réelle n'a été appelée ni observée**, aucune
+requête OpenAI nouvelle. Configuration de la gateway, risques, procédure
+`/v1/models` et validations humaines (port `8778`, projet `coincoin-s8`) :
+[`docs/openclaw.md`](docs/openclaw.md).
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S8
+export PATH="$HOME/.local/bin:$PATH"
+export UV_CACHE_DIR="$PWD/.cache/uv"
+export PYRIGHT_PYTHON_CACHE_DIR="$PWD/.cache/pyright"
+uv run pytest tests/unit/test_openclaw_brain.py tests/unit/test_brain_tools.py \
+  tests/integration/test_memory_flow.py --no-cov
+```
