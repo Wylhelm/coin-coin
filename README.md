@@ -333,6 +333,18 @@ Ne cocher les critères humains de S5 qu'après observation et écoute réelles.
    `call_id`, `name` et `latency_ms`. Les actions/refus sont aussi sur la page
    (20 dernières entrées). `move_to_first_command_ms` mesure seulement l'envoi
    de la première consigne, **pas** le début du déplacement physique.
+   `move_to_first_applied_ms` mesure l'appel `move` (préparation comprise)
+   jusqu'à la réception du premier état admissible observé avec
+   `move.applied` non nul. `move_id` relie ces deux métriques à l'appel.
+   L'observation utilise un départ au repos, un état frais (<= 200 ms)
+   reçu après l'envoi, et une consigne `requested` correspondant aux valeurs
+   bornées ; elle expire après au plus 1 s ou à la fin du mouvement.
+   `applied_status=unavailable` et `reason` signalent notamment un mouvement
+   déjà actif, un remplacement, l'absence d'état admissible ou une annulation :
+   aucun nombre n'est fabriqué. Ce cache est échantillonné aux ticks de
+   commande et n'est pas un historique exhaustif des états ; sans ID robot,
+   la corrélation reste conservatrice, pas une preuve causale ou physique
+   (voir ADR-PRE-LATENCY-001 dans `docs/decisions.md`).
    Pour le critère humain `< 1 s`, mesurer séparément l'intervalle entre l'appel
    et le mouvement observé ; ne pas substituer cette métrique de transport
    à cette observation. Les journaux sont des données personnelles locales.

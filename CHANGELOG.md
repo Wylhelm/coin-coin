@@ -14,6 +14,24 @@
 - Aucun changement fonctionnel, service, Docker/Compose, nouvel essai sim
   ou appel externe. Les commandes documentées ne sont pas des essais exécutés.
 
+## PRE-LATENCY — Observation move vers applied reçu — 2026-11-05
+
+- Conserve `move_to_first_command_ms` ; ajoute `move_to_first_applied_ms`,
+  horodatée à la réception locale de l'état admissible, préparation comprise.
+  `move_id` corrèle appel et métriques. Aucun constat de mouvement physique.
+- Départ au repos frais, état post-envoi, consigne bornée correspondante et
+  `applied` fini non nul compatible ; indisponibilité explicite sinon.
+  Observation bornée à 1 s/durée, invalidée sur STOP, remplacement (même
+  consigne comprise), perte ou fermeture, sans tâche supplémentaire.
+- Tests déterministes contre un cache à états poussés explicitement :
+  retard/péremption, préparation, résidus, axes/valeurs invalides, absence
+  d'état, échéance, remplacements et annulations. Transport, scénarios sim,
+  seuils d'acceptation et dépendances inchangés ; aucune exécution réelle.
+- Vérification ciblée : **99 passed** (`test_move_latency.py` et
+  `test_governor.py`, sans couverture globale), Ruff/format et Pyright des
+  trois fichiers Python concernés verts. Qualité complète à sérialiser
+  avec le coordonnateur, pas encore exécutée pour cette livraison.
+
 ## S9 — Intégration pré-réception autorisée sous réserves — 2026-11-05
 
 - Décision de user : « finissons d'intégrer s9 et tout le reste, tout

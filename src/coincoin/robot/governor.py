@@ -12,6 +12,7 @@ from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.robot.jsonrpc import JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
+from coincoin.robot.move_latency import MoveLatency
 
 ROBOT_ERRORS = (RobotRefused, LinkDown, JsonRpcError, TimeoutError)
 LOOK_POINTS = {
@@ -59,6 +60,8 @@ class Governor:
         self._action_lock = asyncio.Lock()
         self._action_calls: set[asyncio.Task[Any]] = set()
         self._stop_generation = 0
+        self._move_id = 0
+        self._last_motion_command_at = -math.inf
         self._closed = False
 
     async def start(self) -> None:
@@ -286,13 +289,14 @@ class Governor:
         return result
 
     async def _replace_motion(
-        self, generation: int, run: Callable[[], Coroutine[Any, Any, ToolResult]]
+        self, generation: int, run: Callable[[bool], Coroutine[Any, Any, ToolResult]]
     ) -> None:
         async with self._action_lock:
             self._check_safety(generation)
+            replacing = self.moving
             await self._cancel(self._motion)
             self._check_safety(generation)
-            self._motion = asyncio.create_task(run())
+            self._motion = asyncio.create_task(run(replacing))
 
     async def move(self, vx: float, vy: float, vyaw: float, duration_s: float) -> ToolResult:
         requested_at = self.clock.now()
@@ -311,13 +315,19 @@ class Governor:
             }
             clamped = {key: value for key, value in actual.items() if requested[key] != value}
             params = {key: actual[key] for key in ("vx", "vy", "vyaw")}
+            self._move_id += 1
+            move_id = self._move_id
             await self._replace_motion(
                 generation,
-                lambda: self._run_move(params, actual["duration_s"], generation, requested_at),
+                lambda replacing: self._run_move(
+                    params, actual["duration_s"], generation, requested_at, move_id, replacing
+                ),
             )
         except ROBOT_ERRORS as error:
             return self._failure("move", error)
-        self.journal.write("tool_call", method="move", requested=requested, actual=actual)
+        self.journal.write(
+            "tool_call", method="move", move_id=move_id, requested=requested, actual=actual
+        )
         return ToolResult(True, detail="movement started", clamped=clamped or None)
 
     async def _tick(self, next_tick: float, deadline: float) -> float:
@@ -326,31 +336,65 @@ class Governor:
         return next_tick + 1 / self.settings.move_hz
 
     async def _run_move(
-        self, params: dict[str, float], duration: float, generation: int, requested_at: float
+        self,
+        params: dict[str, float],
+        duration: float,
+        generation: int,
+        requested_at: float,
+        move_id: int,
+        replacing: bool,
     ) -> ToolResult:
         start = self.clock.now()
         deadline = start + duration
         next_tick = start + 1 / self.settings.move_hz
+        observation: MoveLatency | None = None
+        end_reason = "cancelled"
         try:
             while self.clock.now() < deadline:
                 self._check_safety(generation)
+                if observation is None:
+                    observation = MoveLatency(
+                        self.link,
+                        self.clock,
+                        self.journal,
+                        move_id=move_id,
+                        requested_at=requested_at,
+                        params=params,
+                        duration=duration,
+                        replacing=replacing,
+                        baseline_after=self._last_motion_command_at,
+                    )
+                else:
+                    observation.observe()
+                self._last_motion_command_at = self.clock.now()
                 await self.link.notify("robot.move", params)
+                self._check_safety(generation)
                 if next_tick == start + 1 / self.settings.move_hz:
                     self.journal.write(
                         "latency",
                         method="move",
+                        move_id=move_id,
                         move_to_first_command_ms=round((self.clock.now() - requested_at) * 1000, 3),
                     )
+                observation.observe()
                 next_tick = await self._tick(next_tick, deadline)
+            self._check_safety(generation)
+            if observation is not None:
+                observation.observe()
+            end_reason = "motion_ended"
             await self.link.call("robot.stop", timeout=0.1)
             await self.mouth(0)
             result = ToolResult(True, detail="movement completed")
             self.journal.write("tool_result", method="move", duration_s=self.clock.now() - start)
             return result
         except ROBOT_ERRORS as error:
+            end_reason = "robot_error"
             result = self._failure("move", error)
             await self.stop(result.reason)
             return result
+        finally:
+            if observation is not None:
+                observation.finish(end_reason)
 
     def _yaw(self) -> float:
         state = self.link.state()
@@ -370,7 +414,7 @@ class Governor:
             yaw = self._yaw()
             max_rate = self._limits()[2]
             await self._replace_motion(
-                generation, lambda: self._run_turn(angle, yaw, max_rate, generation)
+                generation, lambda replacing: self._run_turn(angle, yaw, max_rate, generation)
             )
         except ROBOT_ERRORS as error:
             return self._failure("turn", error)
@@ -398,6 +442,7 @@ class Governor:
                 if self.clock.now() >= deadline:
                     raise RobotRefused("turn timed out")
                 rate = (0.3 if abs(remaining) < math.radians(15) else 0.8) * max_rate
+                self._last_motion_command_at = self.clock.now()
                 await self.link.notify(
                     "robot.move", {"vx": 0.0, "vy": 0.0, "vyaw": math.copysign(rate, remaining)}
                 )

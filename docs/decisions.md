@@ -828,3 +828,41 @@ sans écrasement, avec comparaison exhaustive des chemins/SHA-256.
 **Limites.** TCP reste le défaut ; les deux échecs sim S9 et tous les critères
 humains restent ouverts. S10 attend le matériel et la solution audio.
 Cette préparation n'exécute aucun service, Docker, simulation ou appel externe.
+
+## ADR-PRE-LATENCY-001 — Latence de réception applied distincte de l'envoi
+
+Date : 2026-11-05. Statut : accepté, vérification locale uniquement.
+
+**Contexte.** La spec maître §i demande `move` vers le premier `applied`
+non nul reçu. `move_to_first_command_ms` ne mesure que l'envoi. Le contrat
+`RobotLink` expose le dernier état et son âge monotone, sans historique,
+identifiant de commande robot ou horodatage de production distant.
+
+**Décision.** Conserver la métrique d'envoi et ajouter
+`move_to_first_applied_ms`, avec `move_id` commun à l'appel et aux métriques.
+La référence est l'entrée dans `Governor.move`, préparation comprise ;
+l'arrivée locale est reconstruite par `Clock.now() - state_age()`, pas
+l'instant de lecture du cache. Observer dans la tâche de mouvement aux ticks
+de commande, sans nouvelle tâche, attente ou commande réseau. La fenêtre
+est bornée à `min(1 s, durée)` depuis le premier envoi, sans modifier la
+durée de mouvement ni les seuils d'acceptation existants.
+
+Le départ doit avoir `requested` et `applied` exactement nuls, un âge fini
+entre 0 et 200 ms et une réception postérieure à la dernière consigne de
+mouvement précédente. Un mouvement qui en remplace un autre est inéligible,
+même si le cache paraît encore au repos. L'état observé doit être reçu
+strictement après l'envoi, avant l'échéance, frais de <= 200 ms, avec
+`requested` égal à la consigne bornée et `applied` fini non nul, sans axe
+résiduel ou signe opposé. Un résidu non nul au départ rend la mesure
+indisponible plutôt que de lui appliquer un seuil arbitraire.
+
+**Résultats et limites.** Un seul résultat par observation :
+`applied_status=observed` avec le nombre, ou `unavailable` avec `reason`,
+sans valeur numérique. STOP, remplacement, perte de lien/état, fermeture,
+fin de mouvement et expiration ne peuvent produire de succès tardif.
+Le cache peut écraser des états entre deux ticks ; il s'agit du premier
+état admissible **observé**, pas d'une capture exhaustive de chaque arrivée.
+Un état distant retardé mais reçu récemment n'a pas d'âge de production
+vérifiable ; aucun ID robot ne permet de prouver sa causalité. Ces limites
+ne sont pas une preuve de mouvement physique ni une validation du critère
+humain `< 1 s`. Transports et scénarios sim restent inchangés.
