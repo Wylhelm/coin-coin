@@ -1,10 +1,12 @@
 # WebRTC LAN : S9
 
-**Blocage d'acceptation, actualisé le 2026-11-05 :** la marche stricte
-`move(0.2, 0, 0, 2)` n'atteint pas fiablement > 0,15 m. La dernière commande
-complète fait **4 réussites et 3 échecs sans saut** : les deux marches et
-le regard S9. Le filtrage S1 WebRTC est corrigé séparément ; aucune cause
-logicielle corrigeable dans S9 n'est démontrée pour la simulation.
+**Blocage d'acceptation, actualisé le 2026-11-05 :** rebase sur
+`main=8de5e3e` et intégration SIMWALK/S5-S8 validés **hors sim uniquement**.
+La dernière commande réelle, **antérieure à SIMWALK**, fait
+**4 réussites et 3 échecs sans saut** : les deux marches et le regard S9.
+Elle n'est pas une mesure de la nouvelle base ; aucune passe réelle S9
+sur cette base n'est revendiquée. Le coordonnateur doit revoir la livraison
+hors sim avant toute revalidation réelle.
 Toutes les campagnes antérieures restent ci-dessous. Les preuves à 3 s
 ne valent pas acceptation ; durées et seuils ne sont pas assouplis.
 
@@ -111,6 +113,81 @@ La configuration `.env` de cette session choisit `ROBOT_LINK=webrtc://<eth0>:844
 n'est ni requis ni utilisé par le transport WebRTC.
 
 ## Mesures et Q10
+
+### Intégration hors sim sur `main=8de5e3e`
+
+Le rebase autorisé conserve les six commits S9 et toutes les preuves
+historiques ci-dessous, ainsi que les ajouts S4-S8 et SIMWALK aux documents.
+Les conflits mécaniques concernaient README/CHANGELOG/ADR, le lock, le test
+de marche et le fixture global. La politique de mesure SIMWALK de
+`cc30372` est conservée intégralement : même helper
+`tests.sim.test_sim_motion._wait_for_settled_odom`, désormais typé
+`RobotLink`, importé par la marche S9 au lieu d'une copie. Il attend au
+plus 1 s, un état reçu depuis <= 200 ms, `abs(applied) < 0,01` par axe et
+deux écarts XY consécutifs <= 5 mm entre mises à jour distinctes, avant et
+après `move(0.2,0,0,2)`. Le seuil strict > 0,15 m ne change pas. Il s'agit
+du déplacement odométrique stabilisé incluant la décélération post-STOP,
+pas d'une pose interpolée à t=2 s. Tour et regard restent inchangés.
+
+Le test caméra S7 utilise le même chargement `.env` puis override explicite
+`ROBOT_LINK`, et la fabrique. Avec WebRTC il se connecte avant de demander
+`frame()` ; TCP conserve la capture indépendante par `FRAME_LINK`.
+Les assertions S7 (fraîcheur, dimensions, poids JPEG, préparation et
+suppression du fichier temporaire) sont conservées. En opt-in, une
+indisponibilité provoque une erreur explicite plutôt qu'un saut.
+Le fixture global conserve simultanément l'isolation
+`app_module.FEATURES=[]` de main et la préservation ciblée de `ROBOT_LINK`
+pour les seuls tests sim opt-in. Les autres paramètres et secrets restent
+isolés.
+
+`RobotFeature` utilise désormais `create_robot_link` pour ses connexions
+non injectées. La fabrique transmet `Clock`, `on_up` et `on_down` aux deux
+transports, ainsi que `frame_url`/token à TCP ; un lien fourni explicitement
+reste prioritaire, même s'il est faux en contexte booléen. La gestion S5
+des tâches, la reconnexion, les outils S7 et le runtime vocal S6 restent
+inchangés. Le lock combine `httpx` de main et les dépendances WebRTC ;
+`aioice` reste à **0.12.1**, comme avant rebase, sans mise à jour transport.
+
+Les nouveaux tests hors sim utilisent exclusivement des données synthétiques
+et des pairs locaux : vrais `RobotFeature`/TcpLink/relais authentifié ou
+`RobotFeature`/WebRtcLink/pair mediad, callbacks initiaux puis perte/reprise,
+annonce unique de perte, cleanup des tâches et de la liaison, et priorité
+d'un lien injecté. Les tests de mesure vérifient les mises à jour distinctes,
+le rejet des états périmés/en décélération, la remise à zéro après un saut
+XY, le timeout, le partage du helper et l'appel exact de 2 s. Les tests de
+caméra couvrent cible divergente `.env`/override, choix TCP/WebRTC, connexion
+conditionnelle, erreurs de connexion/capture et fermeture, sans caméra réelle.
+
+Aucun code de `webrtc_link.py`, `tcp_link.py`, `jsonrpc.py` ou Pollen n'a
+été modifié par cette intégration. Aucune sim, snapshot réel, commande de
+robot, service, relais attribué, verrou, Docker, appel OpenAI/OpenClaw ou
+configuration GStreamer n'a été lancé/changé. Les faux pairs des tests
+restent locaux, sans accès externe. Les preuves Docker/Q10 ci-dessous sont
+historiques, **pas** une revalidation Docker sur la nouvelle base.
+
+Qualité complète exécutée **en série**, hors opt-in :
+
+```sh
+uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest
+"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node" --test tests/js/play_worklet.test.mjs
+```
+
+Résultat : Ruff vert, **114 fichiers** au format attendu, Pyright sans
+diagnostic, **551 passed, 8 skipped**, couverture **91,20 %** ; Node
+**6/6**, aucun saut. Les huit sauts sont exclusivement les tests sim hors
+opt-in ; les deux tests Silero réels et les régressions S5/S6/S7,
+STOP/filtrage/cible/secrets passent. Les **21 cas WebRTC locaux** incluent
+les trois nouvelles régressions de `RobotFeature` (TCP, WebRTC, injection).
+Le log complet est archivé dans les artefacts de session sous
+`s9-integrated-offline-quality.log`. La comparaison des locks ne montre
+aucun changement de version des paquets existant sur main ou l'ancien S9.
+Une comparaison AST confirme le helper SIMWALK identique à main, à la seule
+annotation `RobotLink` près.
+
+La suite réelle attend désormais **8 tests sim** : trois scénarios partagés
+S1, une capture S7 et quatre tests S9. Elle n'a pas été exécutée à cette
+étape ; le critère reste ouvert jusqu'à autorisation puis observation d'une
+unique commande complète sans saut.
 
 ### Reprise autorisée du 2026-11-05
 

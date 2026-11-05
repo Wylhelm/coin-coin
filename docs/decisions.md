@@ -686,10 +686,14 @@ verrou, chacune avec remplacement de réponse et témoin inchangé :
 Le journal ne reçoit jamais les octets ni l'URL de données de l'image :
 `LOG_IMAGES=false` est la politique de cette version, sans stockage opt-in.
 
-## ADR-006 — WebRTC LAN pour le robot, TCP relay inchangé
+## ADR-S9-001 — WebRTC LAN pour le robot, TCP relay inchangé
 
 Date : 2026-11-04, actualisée le 2026-11-05. Statut : Q10 acceptée ;
 acceptation S9 bloquée sur les scénarios sim stricts.
+
+L'ancienne référence S9 « ADR-006 » est renommée ADR-S9-001 après intégration
+pour ne pas confondre cette décision avec l'ADR-006 Realtime de S4 ; son
+contenu et ses preuves historiques sont conservés.
 
 **Contexte.** S9 doit piloter le `mediad` réel avant la réception du robot,
 réutiliser les contrats JSON-RPC de S1 et vérifier l'accessibilité ICE depuis
@@ -734,6 +738,22 @@ correction S9 démontrée ; seuils, durées et Pollen inchangés. Le critère
 sim reste ouvert, sans effacer les preuves précédentes. Q10 revalidée par
 un RPC permis depuis WSL et le bridge Docker ; aucun appel interdit sur
 sim/robot. Toutes les mesures et le nettoyage sont dans `webrtc.md`.
+
+**Intégration hors sim sur `main=8de5e3e`.** La marche S9 importe le même
+helper SIMWALK que S1, typé `RobotLink` ; critères de fraîcheur/stabilité,
+échéance 1 s, commande de 2 s et seuil > 0,15 m inchangés. Le test caméra
+S7 suit la fabrique et l'override explicite, sans sauter une indisponibilité
+opt-in, avec ses assertions conservées. `RobotFeature` suit la fabrique,
+conserve injection, horloge, paramètres TCP et callbacks ; la reconnexion et
+le cleanup sont vérifiés sur les vrais transports et pairs locaux. Isolation
+des features main et des paramètres/secrets S9 conservée conjointement.
+Aucune modification de transport ou de Pollen, aucune revalidation réelle
+ni Docker à cette étape ; le blocage reste en vigueur. Les résultats
+précédents sont antérieurs à SIMWALK, pas une mesure de la nouvelle base.
+Qualité complète exécutée en série : Ruff/format/Pyright verts,
+**551 passed, 8 skips sim hors opt-in**, couverture **91,20 %**,
+AudioWorklet Node **6/6**. Tests Silero réels et régressions S5/S6/S7
+verts ; toutes les preuves S9 antérieures sont conservées.
 
 **Mesures rectifiées après revue.** Base `main` `0597380`. La marche est
 revenue à 2 s pour les deux scénarios, sans modifier le seuil > 0,15 m ;

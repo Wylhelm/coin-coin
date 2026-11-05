@@ -1,5 +1,6 @@
 import pytest
 
+from coincoin.clock import FakeClock
 from coincoin.robot.factory import create_robot_link
 from coincoin.robot.tcp_link import TcpLink
 from coincoin.robot.webrtc_link import WebRtcLink
@@ -28,3 +29,20 @@ def test_factory_selects_webrtc_without_relay_credentials() -> None:
 def test_factory_rejects_unknown_schemes() -> None:
     with pytest.raises(ValueError, match="Expected tcp"):
         create_robot_link("udp://127.0.0.1:8443")
+
+
+@pytest.mark.parametrize("scheme", ["tcp", "webrtc"])
+def test_factory_preserves_clock_and_callbacks(scheme: str) -> None:
+    clock = FakeClock()
+
+    def up() -> None:
+        pass
+
+    async def down() -> None:
+        pass
+
+    link = create_robot_link(f"{scheme}://127.0.0.1:8443", clock=clock, on_up=up, on_down=down)
+    assert isinstance(link, (TcpLink, WebRtcLink))
+    assert link._clock is clock
+    assert link.on_up is up
+    assert link.on_down is down

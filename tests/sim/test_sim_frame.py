@@ -8,12 +8,10 @@ from pathlib import Path
 
 import pytest
 from PIL import Image
-from pydantic_settings import DotEnvSettingsSource
 
-from coincoin.config import Settings
 from coincoin.realtime.tools.vision import prepare_image
-from coincoin.robot.frames import FrameError
-from coincoin.robot.tcp_link import TcpLink
+from coincoin.robot.factory import create_robot_link
+from tests.conftest import load_sim_settings
 
 pytestmark = pytest.mark.sim
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -22,17 +20,16 @@ ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 async def test_real_camera_frame_saved_and_removed():
     if os.environ.get("COINCOIN_TEST_SIM") != "1":
         pytest.skip("Set COINCOIN_TEST_SIM=1 with your assigned camera relay")
-    settings = Settings.model_validate(DotEnvSettingsSource(Settings, env_file=ENV_FILE)())
-    link = TcpLink(
+    settings = load_sim_settings(ENV_FILE)
+    link = create_robot_link(
         settings.robot_link,
         frame_url=settings.frame_link,
         token=settings.relay_token.get_secret_value(),
     )
     try:
-        try:
-            frame = await link.frame()
-        except FrameError:
-            pytest.skip("The explicitly assigned camera is unavailable")
+        if settings.robot_link.startswith("webrtc://"):
+            await link.connect()
+        frame = await link.frame()
         assert 0 <= time.time() - frame.captured_at <= 2
         jpeg = prepare_image(frame.jpeg)
         image = Image.open(BytesIO(jpeg))

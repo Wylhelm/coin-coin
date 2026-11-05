@@ -348,7 +348,10 @@ sont conservés ; les ressources live de user et celles de S9 sont intactes.
 `ROBOT_LINK=webrtc://host:8443` sélectionne `WebRtcLink`, qui suit la
 signalisation LAN de `mediad`, réutilise `JsonRpcConnection` sur la datachannel
 `control` et reçoit les images de la piste vidéo. Le lien TCP authentifié reste
-le défaut des sessions S1. Procédure, mesures et décision Q10 :
+le défaut des sessions S1. Le service vocal (`RobotFeature`), comme la CLI,
+utilise la fabrique de transport ; un lien injecté explicitement reste
+prioritaire. Horloge, paramètres TCP et callbacks de connexion/déconnexion
+sont conservés. Procédure, mesures et décision Q10 :
 [docs/webrtc.md](docs/webrtc.md).
 
 Pour les tests contre la caméra de la simulation S9, garder le verrou partagé
@@ -366,7 +369,17 @@ le rang `NONE` laisse `x264enc` logiciel traiter la vidéo.
 Les fixtures sim lisent le `.env` du worktree et donnent priorité au
 `ROBOT_LINK` explicite de la commande. Seule cette variable non secrète est
 préservée pour les tests marqués `sim` avec opt-in ; les autres tests restent
-isolés de l'environnement.
+isolés de l'environnement et des features installées par défaut.
+Le test caméra S7 suit aussi cette cible : WebRTC se connecte avant de lire
+la vidéo, TCP garde sa capture indépendante sur `FRAME_LINK`. Une caméra
+indisponible en opt-in fait échouer le test, sans saut silencieux.
+
+Après rebase sur `main=8de5e3e`, les marches S1 et S9 partagent le helper
+SIMWALK typé `RobotLink` : état frais (200 ms), vitesse appliquée < 0,01,
+deux écarts XY consécutifs <= 5 mm, attente bornée à 1 s avant et après
+la commande inchangée de 2 s. La mesure inclut la décélération post-STOP ;
+elle n'est pas interpolée à l'instant exact t=2 s. Les seuils de distance,
+tour et regard sont conservés.
 
 Le test choisit le transport depuis `ROBOT_LINK`; avec le schéma `webrtc://`,
 les scénarios `move`, `turn`, `look` et les mesures de RTT/gigue passent par
@@ -380,9 +393,9 @@ JSON-RPC `-32601`, sans transmettre l'appel ou ses paramètres. Les méthodes
 permises gardent leurs contrats ; ce filtre ne remplace ni le gouverneur
 ni l'isolation réseau, et une CLI `raw` n'est pas une API sûre pour un modèle.
 
-**Acceptation S9 encore bloquée :** les scénarios de référence sont rétablis
-sans adaptation (marche 0,2 m/s pendant 2 s, seuil > 0,15 m ; regard maintenu
-1 s et contrôlé après 0,6 s). La dernière commande complète (2026-11-05)
+**Acceptation S9 encore bloquée :** l'intégration sur `8de5e3e` est validée
+hors sim uniquement ; l'unique revalidation réelle reste soumise à la revue
+du coordonnateur. La dernière commande complète réelle, **avant SIMWALK**,
 a produit **4 réussites et 3 échecs sans saut** : marches S1/S9
 0,128577/0,125208 m et regard S9 0,145847 rad. Les campagnes comparatives
 et lectures physiques/odométriques restent consignées, sans cause S9

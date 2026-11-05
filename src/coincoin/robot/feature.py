@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING, Any
 
 from coincoin.realtime.tools.robot import install_tools, invalid_arguments
 from coincoin.realtime.tools.vision import install_tools as install_vision_tools
+from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import ROBOT_ERRORS, Governor, ToolResult
 from coincoin.robot.link import RobotLink
 from coincoin.robot.quack import QuackSink, QuackUnavailable
-from coincoin.robot.tcp_link import TcpLink
 
 if TYPE_CHECKING:
     from coincoin.app import App
@@ -59,13 +59,17 @@ class _RobotRuntime:
     async def install(self, app: App) -> None:
         self.app = app
         self._closing = False
-        self.link = self._provided_link or TcpLink(
-            app.settings.robot_link,
-            frame_url=app.settings.frame_link,
-            token=app.settings.relay_token.get_secret_value(),
-            clock=app.clock,
-            on_up=self._up,
-            on_down=self._down,
+        self.link = (
+            self._provided_link
+            if self._provided_link is not None
+            else create_robot_link(
+                app.settings.robot_link,
+                frame_url=app.settings.frame_link,
+                token=app.settings.relay_token.get_secret_value(),
+                clock=app.clock,
+                on_up=self._up,
+                on_down=self._down,
+            )
         )
         self.governor = Governor(self.link, app.settings, app.clock, app.journal)
         self.quack = self._provided_quack or NullQuack(app)

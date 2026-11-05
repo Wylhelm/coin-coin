@@ -14,22 +14,29 @@ from aiohttp.test_utils import TestServer
 from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
 from av import VideoFrame
 from PIL import Image
+from pydantic import SecretStr
 
+from coincoin.app import App
 from coincoin.cli import execute, parser
 from coincoin.clock import SystemClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.robot import webrtc_link as webrtc_module
+from coincoin.robot.feature import LINK_LOST, RobotFeature
 from coincoin.robot.governor import Governor
 from coincoin.robot.jsonrpc import API_VERSION, JsonRpcConnection, JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.methods import ROBOT_METHODS
+from coincoin.robot.tcp_link import TcpLink
 from coincoin.robot.webrtc_link import (
     MAX_MOVE_BUFFERED_BYTES,
     WebRtcLink,
     _DataChannelStream,
     signalling_url,
 )
+from relay.duck_relay import DuckRelay
+from tests.fakes.fake_robotd import FakeRobotd, FakeRobotLink
+from tests.integration.test_s4_regressions import _Audio
 
 
 async def until(predicate) -> None:
@@ -338,6 +345,110 @@ async def test_cli_raw_webrtc_refusal_and_all_permitted_methods(
         assert {record["method"] for record in mediad.records} == ROBOT_METHODS
     finally:
         await link.close()
+
+
+@pytest.mark.parametrize("transport", ["tcp", "webrtc"])
+async def test_robot_feature_selects_real_transport_and_preserves_lifecycle_callbacks(
+    mediad: LocalMediad, tmp_path: Path, transport: str
+) -> None:
+    robot = FakeRobotd()
+    token = "offline-feature-relay-token"
+    relay = DuckRelay(tmp_path, robot_port=0, frame_port=0, token=token)
+    robot_url = mediad.url
+    frame_port = 7931
+    if transport == "tcp":
+        await robot.start(unix=tmp_path / "duck-a.sock")
+        await relay.start()
+        robot_url = f"tcp://127.0.0.1:{relay.servers[0].sockets[0].getsockname()[1]}"
+        frame_port = relay.servers[1].sockets[0].getsockname()[1]
+    settings = Settings(
+        robot_link=robot_url,
+        frame_link=f"tcp://127.0.0.1:{frame_port}",
+        relay_token=SecretStr(token),
+    )
+    clock = SystemClock()
+    app = App(settings, _Audio(), Journal(tmp_path), clock=clock, features=())
+    feature = RobotFeature()
+
+    def entries() -> list[dict[str, Any]]:
+        return [
+            json.loads(line)
+            for path in app.journal.log_dir.glob("*.jsonl")
+            for line in path.read_text().splitlines()
+        ]
+
+    def connected_events() -> int:
+        return sum(entry.get("robot") == "connected" for entry in entries())
+
+    try:
+        await feature.install(app)
+        runtime = feature.runtime
+        assert runtime is not None
+        link = runtime.link
+        assert isinstance(link, TcpLink if transport == "tcp" else WebRtcLink)
+        assert isinstance(link, (TcpLink, WebRtcLink))
+        assert link._clock is clock
+        assert link.on_up == runtime._up and link.on_down == runtime._down
+        if isinstance(link, TcpLink):
+            assert link._frame_address == ("127.0.0.1", frame_port)
+            assert link._token == token
+        await until(lambda: connected_events() == 1 and link.state() is not None)
+        assert await link.call("robot.health") == {"healthy": True}
+        if transport == "tcp":
+            await robot.disconnect_clients()
+        else:
+            mediad.disconnect_once = True
+            assert await link.call("robot.health") == {"healthy": True}
+        await until(lambda: connected_events() == 2 and link.connected)
+        assert sum(entry.get("reason") == LINK_LOST for entry in entries()) == 1
+        assert not runtime._lost
+        assert "see" in {definition["name"] for definition in app.tools.definitions()}
+    finally:
+        await app.stop()
+        await relay.close()
+        await robot.close_server()
+    assert feature.runtime is not None
+    runtime = feature.runtime
+    assert not runtime.link.connected
+    assert isinstance(runtime.link, (TcpLink, WebRtcLink))
+    assert runtime.link._runner is None
+    assert runtime.governor._monitor is None
+    assert not runtime._tasks
+    assert sum(entry.get("reason") == LINK_LOST for entry in entries()) == 1
+
+
+async def test_robot_feature_preserves_explicitly_injected_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class InjectedLink(FakeRobotLink):
+        connects = 0
+        closes = 0
+
+        def __bool__(self) -> bool:
+            return False
+
+        async def connect(self) -> None:
+            self.connects += 1
+            await super().connect()
+
+        async def close(self) -> None:
+            self.closes += 1
+            await super().close()
+
+    def unexpected_factory(*args, **kwargs):
+        raise AssertionError("An injected link must bypass the factory")
+
+    monkeypatch.setattr("coincoin.robot.feature.create_robot_link", unexpected_factory)
+    link = InjectedLink()
+    app = App(Settings(), _Audio(), Journal(tmp_path), features=())
+    feature = RobotFeature(link=link)
+    try:
+        await feature.install(app)
+        await until(lambda: link.connects == 1)
+        assert feature.runtime is not None and feature.runtime.link is link
+    finally:
+        await app.stop()
+    assert link.closes == 1 and not link.connected
 
 
 async def test_backpressure_sends_only_the_latest_move() -> None:

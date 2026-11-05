@@ -13,6 +13,7 @@ from coincoin.journal import Journal
 from coincoin.robot.governor import Governor
 from coincoin.robot.webrtc_link import WebRtcLink
 from tests.conftest import load_sim_settings
+from tests.sim.test_sim_motion import _wait_for_settled_odom
 
 pytestmark = pytest.mark.sim
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -42,20 +43,19 @@ async def sim(tmp_path: Path):
 
 async def test_webrtc_move_advances_more_than_fifteen_cm(sim):
     governor, link, clock = sim
-    before = link.state()["odom"]
+    before_state = await _wait_for_settled_odom(link, clock)
+    before = before_state["odom"]
     assert (await governor.move(0.2, 0, 0, 2)).ok
     completed = await governor.wait_motion()
     assert completed is not None and completed.ok, completed
-    await clock.sleep(0.3)
-    after = link.state()["odom"]
+    after_state = await _wait_for_settled_odom(link, clock)
+    after = after_state["odom"]
     delta = [after["position"][i] - before["position"][i] for i in range(2)]
     forward = delta[0] * math.cos(before["yaw"]) + delta[1] * math.sin(before["yaw"])
-    print(f"WebRTC move: forward_m={forward:.3f}")
+    print(f"WebRTC move: forward_m={forward:.3f} applied={after_state['move']['applied']}")
     assert forward > 0.15
-    assert link.state()["move"]["requested"] == [0, 0, 0]
-    async with asyncio.timeout(1):
-        while any(abs(value) >= 0.01 for value in link.state()["move"]["applied"]):
-            await clock.sleep(0.02)
+    assert after_state["move"]["requested"] == [0, 0, 0]
+    assert all(abs(value) < 0.01 for value in after_state["move"]["applied"])
 
 
 async def test_webrtc_turn_ninety_degrees_within_fifteen(sim):

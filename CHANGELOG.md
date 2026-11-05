@@ -1,5 +1,25 @@
 # Changelog
 
+## Intégration S9 sur S5-S8/SIMWALK — 2026-11-05
+
+- Rebase sur `main=8de5e3e` en conservant toutes les preuves S9 et les ajouts
+  S4-S8/SIMWALK. Les deux marches partagent le helper SIMWALK typé
+  `RobotLink`, sans changer `move(0.2,0,0,2)`, le seuil > 0,15 m, tour ou regard.
+- Test caméra S7 via fabrique et ciblage explicite communs : connexion vidéo
+  WebRTC, capture TCP indépendante, assertions préservées, indisponibilité
+  opt-in en échec explicite. Isolation des features main et des secrets
+  préservée avec l'override sim de `ROBOT_LINK`.
+- Service vocal `RobotFeature` raccordé à la fabrique TCP/WebRTC en conservant
+  lien injecté, horloge, paramètres TCP et callbacks. Régressions sur vrais
+  transports/pairs locaux : perte/reprise, annonce unique et arrêt propre.
+- Aucun changement de transport/Pollen, aucune simulation ou service réel,
+  aucun Docker/OpenAI/OpenClaw ni verrou à cette étape. Acceptation S9
+  toujours bloquée jusqu'à revue puis revalidation réelle autorisée.
+- Qualité complète sérialisée verte : **551 passed, 8 skipped** (uniquement
+  les tests sim hors opt-in), couverture **91,20 %**, Ruff/format/Pyright
+  verts ; AudioWorklet Node **6/6**. Silero réel et régressions S5/S6/S7,
+  STOP/filtrage/cible/secrets conservés et verts.
+
 ## S6 — Bec et cancanements — 2026-11-05
 
 - Ajout de `MouthAnimator` avec enveloppe RMS à 25 Hz calée sur l'horloge
@@ -240,7 +260,8 @@
 - Q10 validée depuis WSL et le bridge Docker par défaut : health HTTP 200 sur
   8779, CLI robot healthy et mouvement Docker de 2 s sur 0,128 m ; aucune
   ouverture du port hôte 8765 ni besoin de `network_mode: host`.
-- Mesures détaillées et décision : `docs/webrtc.md` et ADR-006.
+- Mesures détaillées et décision : `docs/webrtc.md` et ADR-S9-001
+  (ancienne référence S9 ADR-006).
 
 ## Correctif S3 H-POSITIFS — 2026-11-04
 
