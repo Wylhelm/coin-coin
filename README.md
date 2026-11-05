@@ -393,15 +393,15 @@ JSON-RPC `-32601`, sans transmettre l'appel ou ses paramètres. Les méthodes
 permises gardent leurs contrats ; ce filtre ne remplace ni le gouverneur
 ni l'isolation réseau, et une CLI `raw` n'est pas une API sûre pour un modèle.
 
-**Acceptation S9 encore bloquée :** l'intégration sur `8de5e3e` est validée
-hors sim uniquement ; l'unique revalidation réelle reste soumise à la revue
-du coordonnateur. La dernière commande complète réelle, **avant SIMWALK**,
-a produit **4 réussites et 3 échecs sans saut** : marches S1/S9
-0,128577/0,125208 m et regard S9 0,145847 rad. Les campagnes comparatives
-et lectures physiques/odométriques restent consignées, sans cause S9
-corrigeable démontrée ni sélection de réussite. Ne pas considérer les
-anciennes mesures à 3 s comme preuve d'acceptation. Détails et toutes les
-mesures dans `docs/webrtc.md`.
+**Acceptation S9 encore bloquée :** après revue de `2fc23f9` sur `8de5e3e`,
+l'unique suite réelle autorisée avec SIMWALK donne **6 réussites, 2 échecs,
+zéro saut** (8 tests, code retour 1). Marches S1/S9 : **0,137311/0,145489 m**,
+en dessous du seuil strict > 0,15 m, commande de 2 s inchangée. Tours, regards,
+caméra et métriques passent. Aucun rerun ni correctif spéculatif ; ressources
+S9 arrêtées, ports libres et verrou retiré. Les preuves antérieures sont
+conservées, sans sélection de réussite ni acceptation des anciennes marches
+à 3 s. [Sortie complète et nettoyage](docs/evidence/s9-final-sim-20261105/README.md),
+mesures et limites dans `docs/webrtc.md`. Attente de contre-vérification.
 
 ## Piloter la simulation S1 depuis le conteneur
 

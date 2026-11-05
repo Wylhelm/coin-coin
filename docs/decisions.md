@@ -755,6 +755,21 @@ Qualité complète exécutée en série : Ruff/format/Pyright verts,
 AudioWorklet Node **6/6**. Tests Silero réels et régressions S5/S6/S7
 verts ; toutes les preuves S9 antérieures sont conservées.
 
+**Suite réelle unique après revue de `2fc23f9`, base `8de5e3e`.**
+Le 2026-11-05, la commande complète autorisée sélectionne les huit tests :
+**6 passed, 2 failed, zéro saut, exit 1**, 58,74 s. Les marches S1/S9
+via WebRTC et le helper SIMWALK commun échouent à
+**0,13731089587383769/0,14548907224457483 m** ; seuil > 0,15 m et
+`move(0.2,0,0,2)` inchangés. Tours 92,977/94,815°, regards
+0,337/0,298 rad et caméra 640x360 passent. RTT p95 0,81 ms,
+cadence observée 19,44 Hz (50 updates/2,520 s), gigue absolue p95
+28,99 ms, aucun deadman observé. Ces observations ne démontrent pas
+de cause racine ; aucun rerun ni correctif transport. Aucun danger détecté,
+PID S9 arrêtés après inspection, pidfiles/ports libérés et verrou S9 retiré.
+Pollen inchangé ; Q10 historique non rejouée, Docker non lancé.
+Le critère sim reste ouvert en attente de contre-vérification.
+[Preuves complètes](evidence/s9-final-sim-20261105/README.md).
+
 **Mesures rectifiées après revue.** Base `main` `0597380`. La marche est
 revenue à 2 s pour les deux scénarios, sans modifier le seuil > 0,15 m ;
 regard maintenu 1 s et contrôlé après 0,6 s. Commande complète sim :

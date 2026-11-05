@@ -1,0 +1,66 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/S9
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.4.1.post1, cov-7.1.0, anyio-4.16.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 559 items / 551 deselected / 8 selected
+
+tests/sim/test_sim_frame.py camera: 640x360, 13220 bytes, JPEG verified
+.
+tests/sim/test_sim_motion.py move: before=[0.07658884698881727, 0.011767227396422997, 0.1170660166299468] after=[0.21305765522031256, -0.011081407587951224, 0.11758530485005682] forward_m=0.137 applied=[0.0003868562621978774, 0.0, 0.0]
+Fturn: delta_degrees=92.977
+.look gauche: head_yaw=0.337
+.
+tests/sim/test_sim_webrtc.py WebRTC move: forward_m=0.145 applied=[0.0007555786371052293, 0.0, 1.5054920526561546e-73]
+FWebRTC turn: delta_degrees=94.815
+.WebRTC look gauche: head_yaw=0.298
+.WebRTC metrics: robot.health_rtt_ms_p50=0.56 p95=0.81; robot.move_nominal_hz=20 robot.move_observed_hz=19.44 observed_updates=50 observed_duration_s=2.520 interval_ms_p50=42.59 jitter_abs_ms_p95=28.99; deadman_during_move=False
+.
+
+=================================== FAILURES ===================================
+___________________ test_move_advances_more_than_fifteen_cm ____________________
+
+sim = (<coincoin.robot.governor.Governor object at 0x7dff1df495e0>, <coincoin.robot.webrtc_link.WebRtcLink object at 0x7dff1b4bd2e0>, <coincoin.clock.SystemClock object at 0x7dff1b49eab0>)
+
+    async def test_move_advances_more_than_fifteen_cm(sim):
+        governor, link, clock = sim
+        before_state = await _wait_for_settled_odom(link, clock)
+        before = before_state["odom"]
+        assert (await governor.move(0.2, 0, 0, 2)).ok
+        completed = await governor.wait_motion()
+        assert completed is not None and completed.ok, completed
+        after_state = await _wait_for_settled_odom(link, clock)
+        after = after_state["odom"]
+        delta = [after["position"][i] - before["position"][i] for i in range(2)]
+        forward = delta[0] * math.cos(before["yaw"]) + delta[1] * math.sin(before["yaw"])
+        print(
+            f"move: before={before['position']} after={after['position']} "
+            f"forward_m={forward:.3f} applied={after_state['move']['applied']}"
+        )
+>       assert forward > 0.15
+E       assert 0.13731089587383769 > 0.15
+
+tests/sim/test_sim_motion.py:102: AssertionError
+________________ test_webrtc_move_advances_more_than_fifteen_cm ________________
+
+sim = (<coincoin.robot.governor.Governor object at 0x7dff1b508bc0>, <coincoin.robot.webrtc_link.WebRtcLink object at 0x7dff1b50b8f0>, <coincoin.clock.SystemClock object at 0x7dff1b5081d0>)
+
+    async def test_webrtc_move_advances_more_than_fifteen_cm(sim):
+        governor, link, clock = sim
+        before_state = await _wait_for_settled_odom(link, clock)
+        before = before_state["odom"]
+        assert (await governor.move(0.2, 0, 0, 2)).ok
+        completed = await governor.wait_motion()
+        assert completed is not None and completed.ok, completed
+        after_state = await _wait_for_settled_odom(link, clock)
+        after = after_state["odom"]
+        delta = [after["position"][i] - before["position"][i] for i in range(2)]
+        forward = delta[0] * math.cos(before["yaw"]) + delta[1] * math.sin(before["yaw"])
+        print(f"WebRTC move: forward_m={forward:.3f} applied={after_state['move']['applied']}")
+>       assert forward > 0.15
+E       assert 0.14548907224457483 > 0.15
+
+tests/sim/test_sim_webrtc.py:56: AssertionError
+================= 2 failed, 6 passed, 551 deselected in 58.74s =================

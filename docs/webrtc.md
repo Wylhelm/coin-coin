@@ -1,14 +1,73 @@
 # WebRTC LAN : S9
 
-**Blocage d'acceptation, actualisé le 2026-11-05 :** rebase sur
-`main=8de5e3e` et intégration SIMWALK/S5-S8 validés **hors sim uniquement**.
-La dernière commande réelle, **antérieure à SIMWALK**, fait
-**4 réussites et 3 échecs sans saut** : les deux marches et le regard S9.
-Elle n'est pas une mesure de la nouvelle base ; aucune passe réelle S9
-sur cette base n'est revendiquée. Le coordonnateur doit revoir la livraison
-hors sim avant toute revalidation réelle.
+**Blocage d'acceptation, actualisé le 2026-11-05 :** après revue de
+`2fc23f9` sur `main=8de5e3e`, l'unique suite réelle autorisée avec SIMWALK
+fait **6 réussites, 2 échecs, zéro saut** (8 tests, code retour 1).
+Les marches S1/S9 échouent à **0,13731089587383769 m** et
+**0,14548907224457483 m**, commande de 2 s et seuil strict > 0,15 m inchangés.
+Tours, regards, caméra et métriques passent. Aucun nouvel essai ni correctif
+de transport ; ressources S9 nettoyées. Le critère sim reste ouvert.
+Preuves complètes : [suite réelle unique](evidence/s9-final-sim-20261105/README.md).
 Toutes les campagnes antérieures restent ci-dessous. Les preuves à 3 s
 ne valent pas acceptation ; durées et seuils ne sont pas assouplis.
+
+## Revalidation unique après SIMWALK — 2026-11-05
+
+Commande exécutée une seule fois à 20:49:07 UTC, sur `2fc23f9` :
+
+```sh
+ROBOT_LINK=webrtc://192.0.2.1:8443 COINCOIN_TEST_SIM=1 \
+  uv run pytest --no-cov -m sim -s -rs
+```
+
+**6 passed, 2 failed, 551 deselected in 58.74s**, aucun saut, code retour
+réel **1**. Les fixtures S1 et S9 utilisent toutes deux WebRTC ; il ne s'agit
+pas d'une comparaison TCP/WebRTC. Le helper SIMWALK partagé lit l'odométrie
+fraîche/stabilisée avant et après `move(0.2,0,0,2)` ; les deux déplacements
+restent sous le seuil. Aucune cause racine n'est démontrée par cette suite.
+
+| Observation | Scénario S1 partagé | Scénario S9 |
+|---|---|---|
+| Marche | 0,13731089587383769 m, échec | 0,14548907224457483 m, échec |
+| Tour | 92,977° | 94,815° |
+| Regard gauche après 0,6 s, maintien 1 s | 0,337 rad | 0,298 rad |
+
+Caméra : **640x360**, JPEG préparé **13 220 octets**, vérification du fichier
+puis suppression réussies ; assertions S7 préservées.
+RTT de 25 appels `robot.health` : médiane **0,56 ms**, p95 **0,81 ms**.
+Cadence nominale d'émission 20 Hz ; cadence réellement observée **19,44 Hz**,
+**50 updates sur 2,520 s**, intervalle médian **42,59 ms**, gigue absolue
+par rapport à 50 ms p95 **28,99 ms**, `deadman_during_move=False`.
+Ces transitions sont vues dans les états publiés par robotd, pas des
+horodatages d'arrivée internes à robotd. La durée physique individuelle des
+marches n'est pas instrumentée ici ; aucun nominal n'est présenté comme
+une mesure. Les positions complètes de la marche S1 sont dans la sortie anonymisée.
+
+Le surveillant indépendant a seulement lu `{"op":"read"}` sur le corps S9 :
+237 échantillons, hauteur du tronc **0,113279–0,121467 m**, gravité z
+au plus **-0,997557**, aucun déclenchement de danger (seuils d'arrêt :
+hauteur <= 0,085 m ou gravité z >= -0,8). Fenêtre réelle **59,189407 s**,
+simulée **59,220000 s** ; ce n'est pas une mesure synchronisée des marches.
+
+Verrou acquis atomiquement avec propriétaire S9/date ; ports recontrôlés
+libres, scène libre `backlash`, caméra `a`, viewer 0, état `ds-s9`,
+ports corps/images 7911/8001. Les variables GStreamer n'ont été définies que
+dans l'environnement de ce lancement. Aucun relais TCP, Compose/Docker,
+OpenAI/OpenClaw ou serveur web Coin-Coin ; seuls les ports mediad 8443/8080
+nécessaires à la caméra ont été ouverts.
+Après inspection des PID/argv individuels, arrêt sans TTY et sans privilèges :
+
+```sh
+DUCK_SIM_STATE=/home/user/.cache/ds-s9 \
+DUCK_SIM_PORT=7911 DUCK_SIM_FRAME_PORT=8001 \
+  setsid --wait timeout 90 setpriv --no-new-privs \
+  /home/user/projects/microduck/microduck/scripts/duck-sim down </dev/null
+```
+
+Retour 0, aucun PID démarré survivant, aucun pidfile, ports
+7911/8001/7930/7931/8443/8080/8779 libres et seul le verrou S9 retiré.
+SHA-256 du script Pollen identique avant/après ; aucune source Pollen modifiée.
+Q10 conserve ses preuves historiques ; aucun nouveau contrôle Docker autorisé.
 
 ## Signalisation et transport
 

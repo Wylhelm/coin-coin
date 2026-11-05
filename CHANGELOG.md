@@ -1,5 +1,20 @@
 # Changelog
 
+## S9 — Revalidation réelle unique après SIMWALK — 2026-11-05
+
+- Suite complète sur `2fc23f9`, base `8de5e3e` : **6 passed, 2 failed,
+  551 deselected, zéro skip**, code retour **1**, 58,74 s.
+- Marches S1/S9 strictes via WebRTC : **0,137311/0,145489 m**, échec au
+  seuil > 0,15 m malgré le helper SIMWALK partagé ; aucune modification de
+  scénario, seuil ou transport, aucun rerun. Le critère sim reste ouvert.
+- Tours **92,977/94,815°**, regards **0,337/0,298 rad**, caméra **640x360**
+  et métriques passent : RTT p95 **0,81 ms**, cadence observée **19,44 Hz**
+  (50 updates/2,520 s), gigue absolue p95 **28,99 ms**, aucun deadman observé.
+- Sorties et télémétrie de sécurité archivées ; aucun danger détecté.
+  Nettoyage S9 vérifié (PID/argv, ports, pidfiles, verrou), Pollen préservé.
+  Aucun relais TCP, Docker/Compose ou appel OpenAI/OpenClaw ; attente de
+  contre-vérification, Q10 conserve uniquement ses preuves historiques.
+
 ## Intégration S9 sur S5-S8/SIMWALK — 2026-11-05
 
 - Rebase sur `main=8de5e3e` en conservant toutes les preuves S9 et les ajouts

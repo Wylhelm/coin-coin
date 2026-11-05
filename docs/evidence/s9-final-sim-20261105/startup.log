@@ -1,0 +1,23 @@
+[36m==[0m down
+[36m==[0m building the daemons from main
+[36m==[0m starting the body from /home/user/projects/microduck/microduck_rl — a MuJoCo window should open
+[36m==[0m starting tofd
+[36m==[0m starting configd
+[36m==[0m starting updaterd
+[36m==[0m starting robotd
+[36m==[0m duck-a can see — console at http://127.0.0.1:8080
+[36m==[0m standing up
+robot     healthy
+  loop      50.0 of 50.0 Hz · 307 ticks · 1 missed · last 2 ms ago
+  bus       ok
+[36m==[0m duck-a: standing (trunk 0.115 m, gravity z -1.000)
+
+  Your duck is up. From here:
+
+    scripts/duck-sim drive        walk it forward, then stop
+    scripts/duck-sim ctl health   or anything else robotctl does
+    scripts/duck-sim ctl robot do roulade
+    scripts/duck-sim log          what the daemon is saying
+    scripts/duck-sim ctl account login    reach it from anywhere, like a real duck
+    scripts/duck-sim down
+

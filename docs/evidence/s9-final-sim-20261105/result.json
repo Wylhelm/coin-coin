@@ -1,0 +1,107 @@
+{
+  "owner": "S9 2026-11-05T20:48:56.755680+00:00",
+  "suite_runs": 1,
+  "head": "2fc23f94e8d5dea97f8d5d6be4dabbc88eacff30",
+  "pollen_script_sha256_before": "7f5f6236a95fc4dd33107fadf1bda4af03b4d47e5dfb9b1d0c1b7879aeb373d2",
+  "ports_before": [],
+  "pidfiles_before": [],
+  "robot_link": "webrtc://192.0.2.1:8443",
+  "up_exit_code": 0,
+  "started_identities": [
+    {
+      "pidfile": "body.pid",
+      "pid": 25076,
+      "argv": "/home/user/projects/microduck/microduck_rl/.venv/bin/python -m mjlab_microduck.sim.body_server --port 7911 --ducks 1 --keyframe SIT --headless --scene /home/user/projects/microduck/microduck_rl/src/mjlab_microduck/robot/microduck/scene_backlash.xml --cameras a --frame-port 8001 --camera-fps 30 "
+    },
+    {
+      "pidfile": "duck-a-config.pid",
+      "pid": 25155,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/configd --socket /home/user/.cache/ds-s9/duck-a-config.sock --state-dir /home/user/.cache/ds-s9/duck-a --simulated sim-duck-a --fake-net --fake-pads "
+    },
+    {
+      "pidfile": "duck-a-media.pid",
+      "pid": 25325,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/mediad --sim-camera 127.0.0.1:8001 --config /home/user/.cache/ds-s9/mediad-duck-a.toml --robot-socket /home/user/.cache/ds-s9/duck-a.sock --tof-socket /home/user/.cache/ds-s9/duck-a-tof.sock --config-socket /home/user/.cache/ds-s9/duck-a-config.sock --updater-socket /home/user/.cache/ds-s9/duck-a-updater.sock --token /home/user/.cache/ds-s9/duck-a/hf-token --frame-socket /home/user/.cache/ds-s9/duck-a-frame.sock --port 8443 --web-port 8080 "
+    },
+    {
+      "pidfile": "duck-a-tof.pid",
+      "pid": 25148,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/tofd --sim 127.0.0.1:7911 --socket /home/user/.cache/ds-s9/duck-a-tof.sock "
+    },
+    {
+      "pidfile": "duck-a-updater.pid",
+      "pid": 25162,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/updaterd --config /home/user/.cache/ds-s9/updater-duck-a.toml --socket /home/user/.cache/ds-s9/duck-a-updater.sock --token /home/user/.cache/ds-s9/duck-a/hf-token "
+    },
+    {
+      "pidfile": "duck-a.pid",
+      "pid": 25167,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/robotd --sim 127.0.0.1:7911 --params /home/user/.cache/ds-s9/robotd-duck-a.toml --socket /home/user/.cache/ds-s9/duck-a.sock "
+    }
+  ],
+  "initial_body": {
+    "at_monotonic": 3954.723495287,
+    "sim_time": 5.5199999999999045,
+    "trunk": [
+      0.03989816570002608,
+      0.010594209329808216,
+      0.11547429213775322
+    ],
+    "gravity": [
+      0.020174553922520995,
+      -0.001705167529651835,
+      -0.9997950188802317
+    ]
+  },
+  "command": [
+    "uv",
+    "run",
+    "pytest",
+    "--no-cov",
+    "-m",
+    "sim",
+    "-s",
+    "-rs"
+  ],
+  "suite_started_utc": "2026-11-05T20:49:07.886949+00:00",
+  "pytest_exit_code": 1,
+  "suite_elapsed_s": 59.44178360399974,
+  "before_cleanup_identities": [
+    {
+      "pidfile": "body.pid",
+      "pid": 25076,
+      "argv": "/home/user/projects/microduck/microduck_rl/.venv/bin/python -m mjlab_microduck.sim.body_server --port 7911 --ducks 1 --keyframe SIT --headless --scene /home/user/projects/microduck/microduck_rl/src/mjlab_microduck/robot/microduck/scene_backlash.xml --cameras a --frame-port 8001 --camera-fps 30 "
+    },
+    {
+      "pidfile": "duck-a-config.pid",
+      "pid": 25155,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/configd --socket /home/user/.cache/ds-s9/duck-a-config.sock --state-dir /home/user/.cache/ds-s9/duck-a --simulated sim-duck-a --fake-net --fake-pads "
+    },
+    {
+      "pidfile": "duck-a-media.pid",
+      "pid": 25325,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/mediad --sim-camera 127.0.0.1:8001 --config /home/user/.cache/ds-s9/mediad-duck-a.toml --robot-socket /home/user/.cache/ds-s9/duck-a.sock --tof-socket /home/user/.cache/ds-s9/duck-a-tof.sock --config-socket /home/user/.cache/ds-s9/duck-a-config.sock --updater-socket /home/user/.cache/ds-s9/duck-a-updater.sock --token /home/user/.cache/ds-s9/duck-a/hf-token --frame-socket /home/user/.cache/ds-s9/duck-a-frame.sock --port 8443 --web-port 8080 "
+    },
+    {
+      "pidfile": "duck-a-tof.pid",
+      "pid": 25148,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/tofd --sim 127.0.0.1:7911 --socket /home/user/.cache/ds-s9/duck-a-tof.sock "
+    },
+    {
+      "pidfile": "duck-a-updater.pid",
+      "pid": 25162,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/updaterd --config /home/user/.cache/ds-s9/updater-duck-a.toml --socket /home/user/.cache/ds-s9/duck-a-updater.sock --token /home/user/.cache/ds-s9/duck-a/hf-token "
+    },
+    {
+      "pidfile": "duck-a.pid",
+      "pid": 25167,
+      "argv": "/home/user/projects/microduck/microduck/target/debug/robotd --sim 127.0.0.1:7911 --params /home/user/.cache/ds-s9/robotd-duck-a.toml --socket /home/user/.cache/ds-s9/duck-a.sock "
+    }
+  ],
+  "down_exit_code": 0,
+  "pidfiles_after": [],
+  "ports_after": [],
+  "surviving_started_pids": [],
+  "own_lock_released": true,
+  "pollen_script_sha256_after": "7f5f6236a95fc4dd33107fadf1bda4af03b4d47e5dfb9b1d0c1b7879aeb373d2"
+}
