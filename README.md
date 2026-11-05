@@ -66,7 +66,8 @@ Compose sur le port S6 :
 
 ```sh
 cd ~/projects/microduck/coin-coin-wt/S6
-docker compose up --build --detach --wait --wait-timeout 60
+COINCOIN_PORT=8776 COMPOSE_PROJECT_NAME=coincoin-s6 \
+  docker compose up --build --detach --wait --wait-timeout 60
 curl --fail http://localhost:8776/healthz
 ```
 
@@ -80,8 +81,8 @@ ressources S6 : Ctrl+C dans le terminal du relais, puis :
 
 ```sh
 cd ~/projects/microduck/coin-coin-wt/S6
-docker compose down
-DUCK_SIM_STATE="$HOME/.cache/ds-s6" \
+COINCOIN_PORT=8776 COMPOSE_PROJECT_NAME=coincoin-s6 docker compose down
+DUCK_SIM_STATE="$HOME/.cache/ds-s6" DUCK_SIM_PORT=7861 DUCK_SIM_FRAME_PORT=7961 \
   setsid --wait timeout 45s setpriv --no-new-privs \
   "$HOME/projects/microduck/microduck/scripts/duck-sim" down
 ```
