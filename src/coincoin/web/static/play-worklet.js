@@ -26,7 +26,6 @@ class CoinCoinPlayProcessor extends AudioWorkletProcessor {
         this.bufferWaitSamples = 0;
         this.playedSamples = 0;
         this.reportSamples = 0;
-        this.hasPrevious = false;
         this.generation = data.generation;
         this.port.postMessage({ type: "flushed", generation: this.generation });
       }
@@ -51,21 +50,13 @@ class CoinCoinPlayProcessor extends AudioWorkletProcessor {
         if (this.sourcePosition >= this.samples.length) break;
         const index = Math.floor(this.sourcePosition);
         const fraction = this.sourcePosition - index;
-        const crossingChunk =
-          index === 0 && this.sourcePosition > 0 && this.sourcePosition < 1 && this.hasPrevious;
-        const left = crossingChunk ? this.previousSample : this.samples[index];
-        const right = crossingChunk
-          ? this.samples[index]
-          : this.samples[Math.min(index + 1, this.samples.length - 1)];
-        output[i] = left + (right - left) * (crossingChunk ? this.sourcePosition : fraction);
+        const left = this.samples[index];
+        const right = this.samples[Math.min(index + 1, this.samples.length - 1)];
+        output[i] = left + (right - left) * fraction;
         this.sourcePosition += ratio;
         rendered++;
       }
       const consumed = Math.min(Math.floor(this.sourcePosition), this.samples.length);
-      if (consumed > 0) {
-        this.previousSample = this.samples[Math.min(consumed - 1, this.samples.length - 1)];
-        this.hasPrevious = true;
-      }
       this.playedSamples += consumed;
       this.samples = this.samples.slice(consumed);
       this.sourcePosition -= consumed;

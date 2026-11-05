@@ -116,8 +116,96 @@ test("successive non-frame-aligned fragments and a short tail stay contiguous", 
   assert.equal(processor.playedSamples, expected.length);
 });
 
+test("linear interpolation stays sample-accurate across render blocks", () => {
+  for (const rate of [16_000, 24_000, 44_100, 48_000]) {
+    const processor = makeProcessor(rate);
+    const samples = Int16Array.from({ length: 3000 }, (_, i) => 10 * i - 15_000);
+    processor.port.onmessage({ data: { type: "frame", buffer: frame(1, samples).slice(8) } });
+
+    const heard = [];
+    for (let i = 0; i < 4; i++) heard.push(...render(processor));
+    const ratio = 24_000 / rate;
+    for (let i = 0; i < heard.length; i++) {
+      const position = i * ratio;
+      const index = Math.floor(position);
+      const fraction = position - index;
+      const left = samples[index] / 32768;
+      const right = samples[Math.min(index + 1, samples.length - 1)] / 32768;
+      const expected = left + (right - left) * fraction;
+      assert.ok(
+        Math.abs(heard[i] - expected) < 1e-7,
+        `${rate} Hz output ${i}: got ${heard[i]}, expected ${expected}`,
+      );
+    }
+  }
+
+  const processor = makeProcessor(48_000);
+  const source = new Int16Array(3000);
+  source[63] = -30_000;
+  source[64] = 0;
+  source[65] = 30_000;
+  processor.port.onmessage({ data: { type: "frame", buffer: frame(1, source).slice(8) } });
+  render(processor);
+  const secondBlock = render(processor);
+  assert.ok(Math.abs(secondBlock[1] - 15_000 / 32768) < 1e-7);
+});
+
+test("fragment boundaries and recovery from underflow preserve resampling phase", () => {
+  for (const rate of [16_000, 24_000, 44_100, 48_000]) {
+    const processor = makeProcessor(rate);
+    const ratio = 24_000 / rate;
+    const initial = Int16Array.from({ length: 1490 }, (_, i) => 1000 + i * 3);
+    const tail = Int16Array.from({ length: 1000 }, (_, i) => 6000 + i * 2);
+    const joined = Int16Array.from([...initial, ...tail]);
+    processor.port.onmessage({ data: { type: "frame", buffer: frame(1, initial).slice(8) } });
+
+    const heard = [...render(processor)];
+    processor.port.onmessage({ data: { type: "frame", buffer: frame(2, tail).slice(8) } });
+    const outputCount = Math.ceil((initial.length + 100) / ratio);
+    while (heard.length < outputCount) heard.push(...render(processor));
+    for (let i = 0; i < outputCount; i++) {
+      const position = i * ratio;
+      const index = Math.floor(position);
+      const fraction = position - index;
+      const left = joined[index] / 32768;
+      const right = joined[Math.min(index + 1, joined.length - 1)] / 32768;
+      const expected = left + (right - left) * fraction;
+      assert.ok(
+        Math.abs(heard[i] - expected) < 1e-7,
+        `${rate} Hz fragmented output ${i}: got ${heard[i]}, expected ${expected}`,
+      );
+    }
+
+    const starved = makeProcessor(rate);
+    starved.started = true;
+    const shortFragment = Int16Array.from([1000, 2000]);
+    starved.port.onmessage({
+      data: { type: "frame", buffer: frame(1, shortFragment).slice(8) },
+    });
+    const underflowBlock = render(starved);
+    const phaseAfterUnderflow = starved.sourcePosition;
+    assert.ok(underflowBlock.slice(4).every((sample) => sample === 0));
+
+    const resumed = Int16Array.from({ length: 1000 }, (_, i) => 5000 + i * 4);
+    starved.port.onmessage({ data: { type: "frame", buffer: frame(2, resumed).slice(8) } });
+    const resumedBlock = render(starved);
+    for (let i = 0; i < 128; i++) {
+      const position = phaseAfterUnderflow + i * ratio;
+      const index = Math.floor(position);
+      const fraction = position - index;
+      const left = resumed[index] / 32768;
+      const right = resumed[Math.min(index + 1, resumed.length - 1)] / 32768;
+      const expected = left + (right - left) * fraction;
+      assert.ok(
+        Math.abs(resumedBlock[i] - expected) < 1e-7,
+        `${rate} Hz resumed output ${i}: got ${resumedBlock[i]}, expected ${expected}`,
+      );
+    }
+  }
+});
+
 test("played progress reports every 100 ms at the actual AudioContext rate", () => {
-  for (const rate of [16_000, 24_000, 48_000]) {
+  for (const rate of [16_000, 24_000, 44_100, 48_000]) {
     const processor = makeProcessor(rate);
     processor.port.onmessage({
       data: { type: "frame", buffer: frame(1, new Int16Array(24_000)).slice(8) },

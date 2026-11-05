@@ -107,13 +107,23 @@ barrière de séquence : trames livrées en retard après deux flushs, trames
 fraîches après flush, fragments de 400+400+3 échantillons sans trou, et premier
 rapport de lecture autour de 100 ms à 16, 24 et 48 kHz.
 
+L'interpolation linéaire conserve sa phase fractionnaire relativement au premier
+échantillon restant après chaque quantum : elle interpole ce point avec le
+suivant, sans réutiliser l'échantillon consommé du quantum précédent. Le
+harness compare la rampe complète du vrai worklet à la référence calculée à
+16, 24, 44,1 et 48 kHz, y compris au-delà de plusieurs blocs, entre deux
+fragments et après une sous-alimentation suivie d'une reprise. Un contre-exemple
+à 48 kHz vérifie aussi qu'avec les échantillons −30000, 0, 30000 aux indices
+63–65, le rendu n°129 interpole bien à +15000/32768.
+
 **Validation de la correction rouverte.** La commande complète
 `uv run ruff check . && uv run ruff format --check . && uv run pyright &&
-uv run pytest` est verte : 57 tests Python réussis, couverture totale de
-94,29 %, aucun diagnostic pyright. Le harness AudioWorklet séparé réussit ses
-3 tests sous Node.js. Le README donne la procédure d'essai et de nettoyage
-Compose depuis le clone principal `~/projects/microduck/coin-coin`, après la
-suppression du worktree S2.
+uv run pytest` est verte sur le `main` courant : 294 tests réussis, 5 ignorés,
+couverture totale de 92,95 %, aucun diagnostic pyright. Le harness AudioWorklet
+séparé réussit ses 5 tests sous Node.js, dont les nouvelles vérifications
+d'interpolation à 16/24/44,1/48 kHz. Le README donne la procédure d'essai et de
+nettoyage Compose depuis le clone principal `~/projects/microduck/coin-coin`,
+après la suppression du worktree S2.
 
 **Mesure humaine AEC (à faire par user).** Pas encore exécutée : aucun
 résultat de latence ou d'atténuation n'est revendiqué. Suivre la procédure
