@@ -30,6 +30,31 @@
   logs et dépendances des deux sessions préservés ; reprise depuis le repo
   principal et conservation des corpus ignorés documentées.
 
+## S1 — 2026-11-04
+
+- Relais TCP/Unix stdlib autonome, refus par défaut par port, lignes bornées,
+  authentification avant connexion Unix et arrêt propre SIGINT/SIGTERM.
+- Couche `JsonRpcConnection` réutilisable en S9 : corrélation par identifiant,
+  flux d'état sur la même connexion, délais et notifications bornées à 50 ms.
+  `TcpLink` authentifié, reconnexion exponentielle avec gigue et callbacks.
+- Client images déjà branché dans `TcpLink.frame()` : validation du header,
+  lecture binaire exacte, conversion UYVY, rotation et JPEG qualité 80.
+- Gouverneur : limites walk/roller et pose, commande à 20 Hz, mouvement
+  remplaçable, surveillance 10 Hz, arrêt prioritaire, activation explicite et
+  homing, tour en boucle fermée, regard maintenu, posture et skills dynamiques.
+- `coincoin-cli` utilisable depuis le conteneur, avec avant/après odométriques,
+  erreurs explicites et diagnostic `raw` filtré par le relais.
+- Correction vérifiée contre `robotd` : `robot.stop` doit porter un `id` ;
+  une notification ne déclenche pas l'arrêt. L'EMA de vitesse de `robotd`
+  est prise en compte dans les observations, sans modifier Pollen.
+- Qualité : 225 tests hors sim, couverture totale 93,99 %, gouverneur 95 %,
+  relais 84 %, ruff/format/pyright verts ; faux robotd TCP/Unix et tests
+  de reconnexion, backpressure, erreurs, binaire et signaux.
+- Tests sim réels : avance 0,162 m en 2 s, tour 88,813°, regard 0,797 rad.
+  Depuis Docker : avance 0,261 m pour une commande de 3 s ; `robot.relax`
+  refusé −32601 sans chute ; deadman observé 0,496 s après arrêt du relais.
+  Uniquement état/ports/projet Compose S1 ; tous les services arrêtés.
+
 ## 0.1.0 — 2026-11-04
 
 - S0 : repo Git indépendant sur `session/S0`, Python 3.12, `uv.lock`,

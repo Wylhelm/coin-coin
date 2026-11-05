@@ -1,6 +1,78 @@
-# Réseau S0 — relevé du 2026-11-04
+# Réseau Coin-Coin — relevés S0 / S1 du 2026-11-04
 
-## Résultat : plan B validé, sans blocage restant
+## S1 : conteneur → relais authentifié → vraie simulation
+
+IP `eth0` redécouverte : **192.0.2.1**. `.env` ignoré configuré avec
+`ROBOT_LINK=tcp://192.0.2.1:7830`,
+`FRAME_LINK=tcp://192.0.2.1:7831`, `COINCOIN_PORT=8771` et
+`COMPOSE_PROJECT_NAME=coincoin-s1`. Le jeton préexistant est resté uniquement
+dans `.env` ; il n'est pas reproduit dans ce relevé.
+
+La simulation a été lancée depuis WSL via le script Pollen inchangé, avec
+`PATH` comprenant `~/.cargo/bin`, `DUCK_SIM_STATE=~/.cache/ds-s1`,
+`DUCK_SIM_PORT=7821`, `DUCK_SIM_FRAME_PORT=7921`, `DUCK_SIM_VIEWER=0`,
+`DUCK_SIM_RL=~/projects/microduck/microduck_rl`, scène `backlash`, sans caméra.
+Le relais est lié exclusivement à cette IP sur `7830`/`7831`. Le port
+`7921` est réservé mais sans listener tant que la caméra est désactivée.
+
+| Essai réel S1 | Résultat |
+|---|---|
+| Démarrage `duck-sim` | `robot healthy`, boucle 50 Hz, debout, gravité z −1 |
+| `docker compose up --build --detach --wait --wait-timeout 60` | Projet `coincoin-s1`, conteneur healthy |
+| `curl --fail http://localhost:8771/healthz` | `{"status":"ok"}` |
+| `docker compose exec -T coin-coin coincoin-cli move 0.2 0 0 3` | Code 0 ; déplacement projeté avant **0,261 m** ; durée totale CLI **3,955 s**, démarrage et amortissement inclus |
+| Odométrie de cette commande | `[0.470568, -0.006700, 0.117554]` → `[0.252392, 0.136667, 0.117339]` m ; déplacement dans le repère du cap initial |
+| Vitesse appliquée après amortissement | vx **0,004504**, vy 0, vyaw ≈ 0 ; aucune nouvelle commande de marche |
+| `docker compose exec -T coin-coin coincoin-cli raw robot.relax` | Code 1, JSON-RPC **−32601** ; `fallen=false`, `enabled=true`, `homed=true`, `sitting=false` |
+| Arrêt du relais pendant `coincoin-cli move 0.2 0 0 5` dans Docker | **`limited_by=["deadman"]` après 0,496 s** ; CLI finit en refus explicite `motion interrupted` |
+| Dernier `pytest -m sim --cov-append -s` avec opt-in | **3 passed** : avance **0,162 m**, tour **88,813°**, regard gauche **0,797 rad** |
+
+Pour le deadman, un abonnement **direct** au socket Unix S1, à 50 Hz,
+est resté ouvert indépendamment du relais. Le PID du relais (36061 lors
+de la mesure) a été certifié par son argv **et son cwd S1**, puis seul
+ce PID a reçu SIGTERM après observation d'un `applied.vx > 0,05`.
+Au premier état portant `deadman`, la consigne demandée vaut encore
+`[0.2,0,0]` et l'EMA appliquée vaut environ `[0.127516,0,0]` : le critère
+est bien le **flag deadman en < 1 s**, pas une fausse affirmation de vitesse
+physique instantanément nulle. Voir ADR-004.
+
+### Résultats qualité S1
+
+```sh
+uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest
+COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s
+```
+
+Ruff et format verts, aucun diagnostic pyright ; **225 passed, 3 skipped**
+hors opt-in ; couverture totale **93,99 %**, `governor.py` **95 %** et
+`relay/duck_relay.py` **84 %**. Puis **3 passed** contre la simulation
+réelle, sans tests sautés. L'option `--cov-append` conserve la mesure
+unitaire au lieu de demander à trois tests physiques de couvrir le socle.
+
+Le montage historique `logs/` créé initialement par Docker appartenait à root :
+la première tentative web échouait donc avec `PermissionError`.
+Réparation limitée à **ce montage S1** via
+`docker compose run --rm --no-deps --user root coin-coin chown 1000:1000 /app/logs`,
+puis démarrage healthy. Après rebase sur S2/S3, le montage hôte est
+`.cache/logs/` ; la cible `/app/logs` est inchangée. Aucune permission ni
+configuration globale modifiée.
+
+Les services sont arrêtés à la livraison : Compose S1 supprimé, relais S1
+terminé, `DUCK_SIM_STATE=~/.cache/ds-s1 DUCK_SIM_PORT=7821 scripts/duck-sim down`,
+aucun listener sur 7821/7921/7830/7831/8771. Les autres sessions et la sim live
+n'ont pas été arrêtées.
+
+Le premier `down` attendait dans `sudo systemctl is-active --quiet duck-a`
+(fonction Pollen `down_containers`, exécutée même en sim simple). Seuls
+ce processus et son script parent, certifiés par PPID/argv/cwd S1, ont été
+terminés. Le même script inchangé a ensuite été relancé sans terminal de
+saisie : `setsid --wait timeout 45s env DUCK_SIM_STATE=... DUCK_SIM_PORT=7821
+DUCK_SIM_FRAME_PORT=7921 .../scripts/duck-sim down </dev/null`. Résultat :
+`== down`, code 0 ; `ss` affiche uniquement son en-tête et
+`docker ps -a --filter label=com.docker.compose.project=coincoin-s1` est vide.
+Aucun mot de passe, privilège ou changement de configuration n'a été requis.
+
+## S0 : plan B validé, sans blocage restant
 
 Le moteur Docker Desktop répond depuis WSL : **29.8.2**, Compose **v5.6.0**.
 Le premier téléchargement depuis WSL échouait avec :
@@ -52,7 +124,7 @@ Depuis WSL, dans `~/projects/microduck/coin-coin/` :
 
 ```sh
 test -e .env || cp .env.example .env
-mkdir -p logs
+mkdir -p .cache/logs
 export COINCOIN_PORT=8770 COMPOSE_PROJECT_NAME=coincoin-s0
 docker compose up --build --detach --wait --wait-timeout 60
 curl --fail --silent --show-error http://localhost:8770/healthz

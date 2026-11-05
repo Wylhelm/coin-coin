@@ -6,7 +6,10 @@ Le relais n'active pas le robot et ne remplace pas le gouverneur.
 
 ## Démarrage S1
 
-Depuis le worktree S1, dont `.env` contient le jeton partagé sans l'afficher :
+Depuis le dépôt principal `~/projects/microduck/coin-coin` après fusion,
+ou le worktree S1 pendant son développement. Configurer d'abord le `.env`
+local selon la procédure du [README principal](../README.md), sans afficher
+le jeton (les fichiers `.env` ne sont pas transportés par une fusion) :
 
 ```sh
 set -a

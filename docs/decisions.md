@@ -189,3 +189,60 @@ cancanement ne termine pas une réponse, et inversement. `speaking` reste actif,
 la bouche n'est pas fermée par la fin du seul premier cycle, le barge-in annule
 les deux lectures et le réveil ne reprend que 500 ms après la dernière fin.
 La fin du cancanement ne réarme pas le délai de suivi démarré par la réponse.
+
+## ADR-004 — requête `robot.stop`, pas notification ; observer l'EMA
+
+Date : 2026-11-04. Statut : accepté, vérifié contre la simulation réelle.
+
+**Contexte.** Les commandes continues `move`, `head`, `pose`, `mouth`
+acceptent des notifications. Cela n'est pas vrai de tous les intents :
+`robotd/src/main.rs` route une notification uniquement vers `apply_intent`.
+`RobotStop` n'y figure pas ; seul `dispatch` appelle `intents.stop()` et
+renvoie `IntentResult`. Un faux serveur trop permissif masquerait ce défaut.
+
+**Décision.** Tous les arrêts du gouverneur sont des requêtes avec `id`,
+bornées à 100 ms pour l'accusé de réception. Un refus est remonté tel quel ;
+un timeout est explicite. Le bec est fermé sur arrêt et à la connexion.
+Une annulation de remplacement ne produit pas d'arrêt tardif de l'ancienne
+tâche. STOP invalide aussi les actions encore en attente du homing.
+Le faux reproduit l'absence d'effet d'une notification `robot.stop` et les
+tests vérifient que l'arrêt effectif est une requête.
+
+**Observation importante.** `robot.stop` met immédiatement la **consigne**
+à zéro, mais `state.move.applied` contient l'EMA interne de `robotd`, pas
+la consigne brute. De même, le deadman porte la cible à zéro après 500 ms ;
+`limited_by=["deadman"]` apparaît avant disparition complète de l'EMA.
+La CLI attend au plus 1 s que chaque axe appliqué soit < 0,01 après la fin
+de la tâche, sans réémettre `move`. Le test de marche conserve son seuil
+> 0,15 m sur la commande de 2 s et vérifie séparément la consigne nulle puis
+l'amortissement. La preuve deadman emploie le critère prévu par la spec :
+présence de `deadman` en moins d'une seconde (mesuré : 0,496 s).
+
+**Conséquences.** Ni firmware ni code Pollen ne sont modifiés. On ne prétend
+pas que l'EMA ou le corps physique passe instantanément à zéro. Un nouvel
+essai doit conserver les vrais seuils de distance/angle, pas les remplacer
+par la seule réussite d'un RPC.
+
+## ADR-005 — transport partageable et tâches de sécurité indépendantes
+
+Date : 2026-11-04. Statut : accepté.
+
+**Décision.** `JsonRpcConnection` dépend seulement d'un lecteur de lignes et
+d'un écrivain asynchrone ; `TcpLink` possède connexion, authentification,
+handshake, callbacks et reconnexion. La caméra utilise une connexion
+distincte avec la même authentification, car son en-tête est suivi de
+binaire. Sa validation reprend `MediaFrameHeader::valid_uyvy` (16 Mio,
+géométrie, rotation) avant allocation/décodage ; numpy et Pillow produisent
+le JPEG demandé par S7.
+
+Le gouverneur possède un surveillant à 10 Hz, une tâche de mouvement et une
+tâche de maintien du regard. La lecture du mode, potentiellement lente,
+est une tâche séparée et ne bloque pas la surveillance. Le mode est relu
+toutes les 30 s et après reconnexion ; un changement observé interrompt le
+mouvement pour ne jamais continuer avec les anciennes bornes.
+
+**Conséquences.** Les interfaces S0 sont inchangées ; S9 peut adapter les
+flux WebRTC sans recopier corrélation/état. S5 utilise le gouverneur, jamais
+la CLI `raw`. Les tests contre la simulation sont en opt-in explicite
+(`COINCOIN_TEST_SIM=1`) et lisent alors uniquement le `.env` du dépôt exécuté.
+La suite hors sim reste indépendante de tous les vrais secrets.
