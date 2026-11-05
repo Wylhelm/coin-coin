@@ -1,0 +1,15 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/S5
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.4.1.post1, cov-7.1.0, anyio-4.16.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 450 items / 447 deselected / 3 selected
+
+tests/sim/test_sim_motion.py move: before=[0.05339529642001246, 0.012213127569438806, 0.11751788367113818] after=[0.21340207200867353, -0.012326239385973575, 0.11747163834432499] forward_m=0.162 applied=[0.0003868562621978774, 0.0, 0.0]
+.turn: delta_degrees=89.222
+.look gauche: head_yaw=0.795
+.
+
+====================== 3 passed, 447 deselected in 8.17s =======================

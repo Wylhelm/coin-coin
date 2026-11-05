@@ -11,18 +11,22 @@ S5 installe `RobotFeature` : le serveur vocal maintient désormais une liaison
 robot et expose les actions via le gouverneur, sans contourner ses sécurités.
 Les modes `--echo` et `--tone` restent sans liaison robot.
 
-## S5 — livraison bloquée par la dernière mesure de marche
+## S5 — outils robot, critères agent vérifiés après SIMWALK
 
-**L'acceptation agent reste ouverte.** La dernière suite réelle S5 donne
-**1 échec, 2 succès** : avance **0,120359637 m** au lieu de **> 0,15 m**,
-tour **89,390°**, regard gauche **0,797 rad**. Un premier passage avait donné
-3 succès (avance 0,156 m, tour 89,491°, regard 0,796 rad). Les scénarios et
-seuils n'ont pas changé ; aucune cause propre au transport n'est établie.
-Voir [les preuves S5](docs/network.md#s5--outils-robot-et-blocage-de-marche).
-Cette branche ne doit pas être présentée comme agent-done avant résolution.
+Après rebase sur `main=cc30372` (S8 et correctif test-only SIMWALK), la suite
+sim complète exécutée **une seule fois** passe : **3 réussis, 447 désélectionnés,
+aucun saut**, avance stabilisée **0,162 m**, tour **89,222°**, regard **0,795 rad**.
+Le test commun attend une odométrie fraîche et stabilisée après STOP ;
+consigne **0,2 m/s pendant 2 s** et seuil strict **> 0,15 m** inchangés.
+Aucun test sim supplémentaire S5 ne reproduisait l'ancien délai fixe.
+Le blocage est levé côté critères agent ; l'intégration reste au coordonnateur.
+Les anciens résultats (3/3 puis marche à 0,120359637 m) sont conservés dans
+[les preuves S5](docs/network.md#s5--revalidation-apres-simwalk) et expliqués
+par le protocole de mesure dans [SIMWALK](docs/simwalk-motion.md), sans
+prétendre mesurer une vérité terrain physique indépendante.
 
-La qualité hors sim passe : **419 réussis, 3 sim ignorés**, couverture
-**91,33 %**, ruff/format/Pyright verts et vrai AudioWorklet **6/6**.
+La qualité hors sim passe : **447 réussis, 3 sim ignorés**, couverture
+**91,72 %**, ruff/format/Pyright verts et vrai AudioWorklet **6/6**.
 Les deux tests Silero utilisent les assets locaux, sans saut. Les **30 cas S5**
 de `tests/integration/test_tools_e2e_fakes.py` couvrent les vrais transports
 WebSocket/TCP vers les faux, les refus intacts, les schémas/arguments, la
@@ -125,11 +129,11 @@ sont pas implémentées par S5. Le réveil reste provisoire selon ADR-003.
 ```sh
 uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest
 "$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node" --test tests/js/play_worklet.test.mjs
-COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s -rs
+COINCOIN_TEST_SIM=1 uv run pytest --no-cov -m sim -s -rs
 ```
 
 Exiger **3 essais exécutés**, pas trois sauts : sans relais attribué, les tests
-sim sont ignorés et ne prouvent rien. La dernière mesure reste en échec.
+sim sont ignorés et ne prouvent rien. La revalidation SIMWALK passe 3/3.
 Arrêter uniquement le projet S5 et le relais S5 (Ctrl-C dans son terminal) :
 
 ```sh

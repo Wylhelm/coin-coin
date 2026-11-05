@@ -1,0 +1,26 @@
+2: eth0    inet 192.0.2.1/20 brd 192.0.2.255 scope global eth0\       valid_lft forever preferred_lft forever
+State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+600 .env
+b95192ba23fa78c91ef3c0db8cc250c4a00fd774
+== down
+== building the daemons from main
+== starting the body from /home/user/projects/microduck/microduck_rl — a MuJoCo window should open
+== starting tofd
+== starting configd
+== starting updaterd
+== starting robotd
+== standing up
+robot     healthy
+  loop      50.0 of 50.0 Hz · 312 ticks · 0 missed · last 9 ms ago
+  bus       ok
+== duck-a: standing (trunk 0.115 m, gravity z -1.000)
+
+  Your duck is up. From here:
+
+    scripts/duck-sim drive        walk it forward, then stop
+    scripts/duck-sim ctl health   or anything else robotctl does
+    scripts/duck-sim ctl robot do roulade
+    scripts/duck-sim log          what the daemon is saying
+    scripts/duck-sim ctl account login    reach it from anywhere, like a real duck
+    scripts/duck-sim down
+<shellId: 1096 completed with exit code 0>

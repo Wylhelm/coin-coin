@@ -1,6 +1,45 @@
 # Réseau Coin-Coin — relevés S0 / S1 du 2026-11-04
 
+## S5 — revalidation après SIMWALK
+
+Rebase autorisé de `session/S5` sur `main=cc30372` : S8 et le helper stabilisé
+SIMWALK sont conservés. Aucun changement supplémentaire du test de marche ou
+du gouverneur ; aucune autre mesure par délai fixe dans les tests S5.
+La consigne reste 0,2 m/s pendant 2 s et le seuil reste strictement > 0,15 m.
+
+| Vérification du 2026-11-05 après rebase | Résultat |
+|---|---|
+| Qualité complète `uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest` | Verts, 96 fichiers formatés, 0 diagnostic ; **447 passed, 3 skipped**, couverture **91,72 %** |
+| Sauts hors opt-in | Les trois sim uniquement ; deux tests Silero réels exécutés |
+| Vrai AudioWorklet | **6 passed** |
+| Unique passage `COINCOIN_TEST_SIM=1 uv run pytest --no-cov -m sim -s -rs` | **3 passed, 447 deselected**, aucun saut, 8,17 s |
+| Marche stabilisée | **0,162 m**, `applied=[0.0003868562621978774, 0.0, 0.0]` |
+| Odométrie de marche | `[0.05339529642001246, 0.012213127569438806, 0.11751788367113818]` → `[0.21340207200867353, -0.012326239385973575, 0.11747163834432499]` |
+| Tour et regard | **89,222°**, **0,795 rad** |
+| Ressources S5 | IP eth0 redécouverte `192.0.2.1`, sim `ds-s5` sans caméra, 7841/7941, relais authentifié 7850/7851 ; aucun Compose lancé pour ce passage |
+| Nettoyage | Compose down, relais **PID 71133** vérifié cwd/argv puis SIGTERM (code 0), sim down sans TTY (code 0) |
+| Vérification finale | Aucun listener 7841/7941/7850/7851/8775, conteneur/réseau Compose S5 ou pidfile sim ; blob Pollen inchangé `b95192ba23fa78c91ef3c0db8cc250c4a00fd774` |
+
+Captures anonymisées suivies par Git :
+[qualité](evidence/s5/rebased-quality.txt),
+[démarrage](evidence/s5/rebased-sim-start.txt),
+[passage sim unique](evidence/s5/rebased-sim-single-run.txt),
+[nettoyage](evidence/s5/rebased-cleanup.txt).
+[Manifeste](evidence/s5/rebased-captures.json) : commandes exactes, UTC,
+identifiants d'appels, méthode de capture, codes et SHA-256. Les deux sorties
+sim/nettoyage sont capturées directement par `tee`, sans réécriture.
+Les nouveaux logs simulateur sont conservés dans `.cache/logs/s5-simulator-rebased/`,
+séparément de la copie initiale `.cache/logs/s5-simulator/`.
+
+Le blocage initial ci-dessous est levé par ce passage du protocole SIMWALK,
+sur décision de user. Aucune sélection/reprise d'essai, aucun nouvel appel
+OpenAI et aucun travail S9. La mesure inclut la décélération post-STOP ;
+elle reste odométrique, pas une preuve indépendante de déplacement physique.
+Les critères humains demeurent ouverts ; l'intégration reste au coordonnateur.
+
 ## S5 — outils robot et blocage de marche
+
+Section historique de la livraison initiale, avant revalidation SIMWALK.
 
 Branche `session/S5`, base `051eb33`, ressources exclusivement S5, sans caméra :
 `~/.cache/ds-s5`, corps 7841, frame réservée 7941, relais 7850/7851,

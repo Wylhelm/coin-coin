@@ -515,7 +515,7 @@ corps physique.
 
 ## ADR-S5-001 — Outils gouvernés et annonces dans la reprise unique
 
-Date : 2026-11-05. Statut : implémenté contre les faux ; acceptation sim bloquée.
+Date : 2026-11-05. Statut : implémenté ; critères agent vérifiés après rebase SIMWALK.
 
 **Décision.** `RobotFeature` installe un runtime propre à chaque application,
 avec `TcpLink`, le gouverneur existant et ses tâches. Les onze outils S5
@@ -568,3 +568,17 @@ le dernier donne 1 échec/2 succès : 0,120359637 m au lieu de > 0,15 m,
 89,390° et 0,797 rad. Aucun diagnostic causal n'est établi. On conserve
 le blocage et les seuils, sans campagne S9 ni correction Pollen.
 Tous les services S5 sont arrêtés. Les essais humains restent ouverts.
+
+**Revalidation après rebase sur `cc30372` (S8 et ADR-008 SIMWALK).** Le blocage
+historique ci-dessus est levé par un passage complet unique, sans sélection
+ni rejeu : **3 passed, 447 deselected**, avance **0,162 m**, tour **89,222°**,
+regard **0,795 rad**. Le helper test-only de main attend une odométrie fraîche
+et stabilisée après STOP, consigne 0,2 m/s pendant 2 s et seuil > 0,15 m
+inchangés. Aucun autre test sim S5 ne nécessitait une adaptation.
+Qualité complète : **447 passed, 3 skipped**, couverture **91,72 %** ;
+ruff/format/Pyright verts, worklet 6/6, deux tests Silero réels exécutés.
+Les deux features S8/S5 sont conservées et les ADR-007/008 restent intacts.
+Les preuves initiales et la revalidation sont dans `docs/evidence/s5/`.
+Ressources S5 arrêtées, aucun nouvel appel OpenAI, Pollen inchangé.
+Cette mesure reste odométrique et inclut la décélération ; intégration et
+validation vocale humaine ne sont pas revendiquées.

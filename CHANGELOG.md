@@ -1,5 +1,20 @@
 # Changelog
 
+## S5 — Revalidation après S8 et SIMWALK — 2026-11-05
+
+- Rebase sur `main=cc30372`, conservation de `BrainFeature` et `RobotFeature`
+  dans `FEATURES`, des deux blocs de documentation et des ADR-007/008 ;
+  ADR-S5-001 reste distinct. Aucun changement de production supplémentaire.
+- Qualité complète : **447 passed, 3 skipped** (uniquement sim sans opt-in),
+  couverture **91,72 %**, ruff/format/Pyright verts et AudioWorklet **6/6**.
+- Un unique passage complet `COINCOIN_TEST_SIM=1 uv run pytest --no-cov -m sim -s -rs`
+  donne **3 passed, 447 deselected**, aucun saut : avance stabilisée **0,162 m**,
+  tour **89,222°**, regard **0,795 rad**. Consigne et seuil inchangés ;
+  helper commun SIMWALK hérité de main, aucun test additionnel S5 à adapter.
+- Blocage S5 levé pour les critères agent ; historique et captures brutes
+  précédentes conservés. Services S5 arrêtés, aucun nouvel appel OpenAI,
+  Pollen inchangé. Intégration par le coordonnateur et essais humains ouverts.
+
 ## S8 — Mémoire OpenClaw — 2026-11-05
 
 - Client HTTPX OpenAI-compatible `OpenClawBrain` (`openclaw/<agent>`, `user`
@@ -28,7 +43,7 @@
 - Validation finale : commande qualité complète verte, 387 tests réussis,
   5 ignorés, couverture 90,91 % ; campagne sim 10/10 réussites.
 
-## S5 — Outils robot — 2026-11-05 — acceptation sim bloquée
+## S5 — Outils robot — 2026-11-05 — livraison initiale (historique)
 
 - Branchement des onze outils robot au gouverneur, contrats JSON bornés,
   validation locale des types/arguments, liste dynamique des figures sans

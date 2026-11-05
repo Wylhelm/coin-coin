@@ -1,0 +1,38 @@
+[
+  {
+    "file": "rebased-quality.txt",
+    "tool_call_id": "call_c3cThzvrVNdAiQrwefIO5Rt2",
+    "timestamp_utc": "2026-11-05T17:50:20.745Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && git add CHANGELOG.md docs/decisions.md src/coincoin/features.py && GIT_EDITOR=true git rebase --continue && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest && \"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node\" --test tests/js/play_worklet.test.mjs'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "9cfe16d9617de7e5c9fece0fb6af7a92ec1d33938a047c9ba68579f86b593ad9"
+  },
+  {
+    "file": "rebased-sim-start.txt",
+    "tool_call_id": "call_yiNiODP2nmtZYvziUpIyBspl",
+    "timestamp_utc": "2026-11-05T17:50:38.835Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && ip -4 -o addr show dev eth0 && ss -ltn \"( sport = :7841 or sport = :7941 or sport = :7850 or sport = :7851 or sport = :8775 )\" && stat -c \"%a %n\" .env && git -C \"$HOME/projects/microduck/microduck\" hash-object scripts/duck-sim && export PATH=\"$HOME/.cargo/bin:$HOME/.local/bin:$PATH\" DUCK_SIM_STATE=\"$HOME/.cache/ds-s5\" DUCK_SIM_PORT=7841 DUCK_SIM_FRAME_PORT=7941 DUCK_SIM_VIEWER=0 DUCK_SIM_CAMERAS= DUCK_SIM_RL=\"$HOME/projects/microduck/microduck_rl\" && \"$HOME/projects/microduck/microduck/scripts/duck-sim\"'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "5ee5d0b527bfdc4edfa3e47574f0b618688fafcdf5ffd9506e3611ff6edd24b5"
+  },
+  {
+    "file": "rebased-sim-single-run.txt",
+    "tool_call_id": "call_WU7cDbqbzxVPq2AjbC6x9HNB",
+    "timestamp_utc": "2026-11-05T17:51:01.438Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && ss -ltnp \"( sport = :7850 or sport = :7851 )\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && COINCOIN_TEST_SIM=1 uv run pytest --no-cov -m sim -s -rs 2>&1 | tee docs/evidence/s5/rebased-sim-single-run.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "b563dcde1c485c118c11fefe87553bb430be6516c8d27e3f2f8f091fba68aa1b"
+  },
+  {
+    "file": "rebased-cleanup.txt",
+    "tool_call_id": "call_ZGpAbBJDPAO9Kxp8RuEkwHq9",
+    "timestamp_utc": "2026-11-05T17:51:15.818Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && set -o pipefail && { docker compose down && test \"$(readlink /proc/71133/cwd)\" = \"$PWD\" && ps -p 71133 -o pid=,args= && kill -TERM 71133 && setsid --wait timeout 45s env DUCK_SIM_STATE=\"$HOME/.cache/ds-s5\" DUCK_SIM_PORT=7841 DUCK_SIM_FRAME_PORT=7941 \"$HOME/projects/microduck/microduck/scripts/duck-sim\" down </dev/null && ss -ltn \"( sport = :7841 or sport = :7941 or sport = :7850 or sport = :7851 or sport = :8775 )\" && docker ps -a --filter label=com.docker.compose.project=coincoin-s5 --format \"{{.ID}} {{.Names}}\" && docker network ls --filter label=com.docker.compose.project=coincoin-s5 --format \"{{.Name}}\" && find \"$HOME/.cache/ds-s5\" -maxdepth 1 -name \"*.pid\" -print && git -C \"$HOME/projects/microduck/microduck\" hash-object scripts/duck-sim; } 2>&1 | tee docs/evidence/s5/rebased-cleanup.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "047e399d3fbbe9d126aa6a32b6c3443cdca1c8b08361fd5a73561d5a15e01bc1"
+  }
+]
