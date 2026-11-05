@@ -1,0 +1,142 @@
+State  Recv-Q Send-Q  Local Address:Port Peer Address:PortProcess
+LISTEN 0      5           127.0.0.1:7841      0.0.0.0:*          
+LISTEN 0      100    192.0.2.1:7850      0.0.0.0:*          
+LISTEN 0      100    192.0.2.1:7851      0.0.0.0:*          
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/S5
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 416 items / 413 deselected / 3 selected
+
+tests/sim/test_sim_motion.py sss
+
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.3-final-0 ________________
+
+Name                                      Stmts   Miss  Cover   Missing
+-----------------------------------------------------------------------
+relay/duck_relay.py                         189     30    84%   153-154, 217, 230-232, 267-285, 289-303
+src/coincoin/__init__.py                      0      0   100%
+src/coincoin/app.py                         773     95    88%   174, 180, 186, 188, 190, 192, 218-219, 240, 248-250, 294-295, 303, 306-309, 314, 322-324, 326-329, 333, 337, 344, 357, 366-367, 383, 417-418, 420-423, 432, 464-465, 497, 508-509, 516, 525, 531, 537, 547, 554-555, 577-578, 584, 588, 618, 630, 632-634, 637, 639-640, 646, 656-657, 690, 727, 730, 758, 777, 782, 792-794, 809, 834, 839, 879, 881, 896, 910-912, 919, 922, 955-956, 985, 999, 1013-1016, 1044
+src/coincoin/audio/__init__.py                0      0   100%
+src/coincoin/audio/browser.py               250     20    92%   72-73, 97, 125, 152, 154, 158, 160, 162, 170, 173-174, 188, 218, 224, 269, 283-284, 288-289
+src/coincoin/audio/gate.py                   55      3    95%   40, 72-73
+src/coincoin/audio/io.py                     12      0   100%
+src/coincoin/audio/mixer.py                  16      0   100%
+src/coincoin/audio/resample.py               57      6    89%   31, 34, 37, 39, 75, 77
+src/coincoin/audio/tone.py                   25      0   100%
+src/coincoin/brain/__init__.py                0      0   100%
+src/coincoin/brain/base.py                    8      0   100%
+src/coincoin/cli.py                         105     11    90%   45, 56, 68, 89-90, 95, 102, 105, 108, 118, 120
+src/coincoin/clock.py                        48      0   100%
+src/coincoin/config.py                       26      0   100%
+src/coincoin/features.py                      4      0   100%
+src/coincoin/journal.py                      61      0   100%
+src/coincoin/realtime/__init__.py             0      0   100%
+src/coincoin/realtime/events.py              72      4    94%   138-146
+src/coincoin/realtime/instructions.py         6      0   100%
+src/coincoin/realtime/session.py            177     47    73%   29-33, 63, 66, 69, 72, 87, 135-137, 145, 150, 153-154, 158, 161-162, 164, 166-167, 173, 179-183, 187-194, 197-201, 204-205, 214, 216, 222, 226-227, 234, 248, 260, 293
+src/coincoin/realtime/tools/__init__.py      71      7    90%   34, 38, 50, 62, 64, 99, 104
+src/coincoin/realtime/tools/robot.py         48      1    98%   109
+src/coincoin/realtime/tools/session.py        6      0   100%
+src/coincoin/robot/__init__.py                0      0   100%
+src/coincoin/robot/feature.py               111      7    94%   96-97, 117, 135-136, 146-147
+src/coincoin/robot/frames.py                 83      3    96%   89, 115-116
+src/coincoin/robot/governor.py              481     23    95%   92-95, 103-106, 165-169, 181-182, 200, 222, 281-282, 555, 591, 593, 603
+src/coincoin/robot/jsonrpc.py               158      4    97%   131, 143, 159, 204
+src/coincoin/robot/link.py                   14      0   100%
+src/coincoin/robot/quack.py                   1      0   100%
+src/coincoin/robot/tcp_link.py              141     10    93%   78-79, 88, 117, 139, 148-150, 184-185
+src/coincoin/statemachine.py                 97      3    97%   120, 189, 254
+src/coincoin/wake/__init__.py                 0      0   100%
+src/coincoin/wake/engine.py                  16      7    56%   32-43
+src/coincoin/wake/oww_engine.py               9      9     0%   3-19
+src/coincoin/wake/vad.py                    104      3    97%   67-68, 83
+src/coincoin/wake/vosk_engine.py             74     10    86%   25, 29, 62-65, 86, 88, 110, 112
+src/coincoin/web/__init__.py                  0      0   100%
+src/coincoin/web/server.py                  205     10    95%   53, 127-128, 152, 159-160, 202-203, 218, 265
+-----------------------------------------------------------------------
+TOTAL                                      3503    313    91%
+Required test coverage of 80% reached. Total coverage: 91.06%
+====================== 3 skipped, 413 deselected in 6.48s ======================
+ Image coincoin-s5-coin-coin Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 572B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile
+#2 transferring dockerfile: 866B done
+#2 DONE 0.1s
+
+#3 [internal] load metadata for docker.io/library/python:3.12-slim
+#3 DONE 0.0s
+
+#4 [internal] load metadata for ghcr.io/astral-sh/uv:0.13.7
+#4 DONE 0.0s
+
+#5 [internal] load .dockerignore
+#5 transferring context:
+#5 transferring context: 233B done
+#5 DONE 0.1s
+
+#6 FROM ghcr.io/astral-sh/uv:0.13.7
+#6 DONE 0.0s
+
+#7 [stage-0 1/8] FROM docker.io/library/python:3.12-slim
+#7 DONE 0.0s
+
+#8 [internal] load build context
+#8 transferring context: 1.01MB 0.0s done
+#8 DONE 0.1s
+
+#9 [stage-0 2/8] COPY --from=ghcr.io/astral-sh/uv:0.13.7 /uv /usr/local/bin/uv
+#9 CACHED
+
+#10 [stage-0 3/8] WORKDIR /app
+#10 CACHED
+
+#11 [stage-0 4/8] COPY pyproject.toml uv.lock .python-version ./
+#11 CACHED
+
+#12 [stage-0 5/8] RUN uv sync --locked --no-dev --no-install-project
+#12 CACHED
+
+#13 [stage-0 6/8] COPY README.md ./
+#13 DONE 0.1s
+
+#14 [stage-0 7/8] COPY src ./src
+#14 DONE 0.1s
+
+#15 [stage-0 8/8] RUN uv sync --locked --no-dev     && groupadd --gid 1000 coincoin     && useradd --uid 1000 --gid coincoin --no-create-home coincoin     && mkdir logs     && chown coincoin:coincoin logs
+#15 0.718 Resolved 45 packages in 26ms
+#15 0.745    Building coincoin @ file:///app
+#15 0.753       Built coincoin @ file:///app
+#15 0.762 Prepared 1 package in 22ms
+#15 0.764 Installed 1 package in 1ms
+#15 1.018 Bytecode compiled 1340 files in 253ms
+#15 1.018  + coincoin==0.1.0 (from file:///app)
+#15 DONE 1.2s
+
+#16 exporting to image
+#16 exporting layers 0.1s done
+#16 writing image sha256:1610c7dc3b7b9c9318abfe9185e3abdac4a8a6714dcdc5020c09f6c447b90125 done
+#16 naming to docker.io/library/coincoin-s5-coin-coin done
+#16 DONE 0.2s
+
+#17 resolving provenance for metadata file
+#17 DONE 0.0s
+ Image coincoin-s5-coin-coin Built 
+ Network coincoin-s5_default Creating 
+ Network coincoin-s5_default Creating 
+ Network coincoin-s5_default Created 
+ Network coincoin-s5_default Created 
+ Container coincoin-s5-coin-coin-1 Creating 
+ Container coincoin-s5-coin-coin-1 Created 
+ Container coincoin-s5-coin-coin-1 Starting 
+ Container coincoin-s5-coin-coin-1 Started 
+ Container coincoin-s5-coin-coin-1 Waiting 
+container coincoin-s5-coin-coin-1 exited (1)
+<shellId: 981 completed with exit code 1>

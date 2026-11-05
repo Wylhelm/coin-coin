@@ -28,6 +28,29 @@
 - Validation finale : commande qualité complète verte, 387 tests réussis,
   5 ignorés, couverture 90,91 % ; campagne sim 10/10 réussites.
 
+## S5 — Outils robot — 2026-11-05 — acceptation sim bloquée
+
+- Branchement des onze outils robot au gouverneur, contrats JSON bornés,
+  validation locale des types/arguments, liste dynamique des figures sans
+  `sit_toggle`, refus conservés et `NullQuack` explicitement sans son.
+- Installation par application, transport reconnectant, cycle STOP/coucher
+  et hook `shutdown` fermant gouverneur et liaison. La perte robot est annoncée
+  une fois par coupure si une session est ouverte ; les outils refusent avec
+  « je ne sens plus mes pattes » jusqu'au retour.
+- Annonce Realtime dédiée, sans faux output d'outil et sans seconde reprise
+  d'un lot : attente du parent et de tous les résultats ; STOP annule aussi
+  les annonces périmées. `audio_out` et `send_tool_result` restent inchangés.
+- Actions/refus affichés (20 dernières entrées), résumé de statut court,
+  journal complet du statut, latences des appels et de première consigne
+  (distinctes du début de mouvement physique).
+- Qualité : ruff/format/Pyright verts, 419 tests réussis, 3 sim ignorés hors
+  opt-in, couverture 91,33 %, 30 cas S5 et AudioWorklet 6/6.
+  Compose S5 healthy sur 8775 et CLI authentifiée vérifiés.
+- **Blocage conservé** : premier opt-in 3/3, avance 0,156 m ; dernier opt-in
+  1 échec/2 succès, avance 0,120359637 m sous le seuil inchangé > 0,15 m.
+  Tour 89,390°, regard 0,797 rad. Pas de cause établie ni de seuil assoupli.
+  Ressources S5 arrêtées ; validations humaines ouvertes avec procédure README.
+
 ## S4 — Conversation Realtime — 2026-11-05
 
 - Ajout du client WebSocket GA `/v1/realtime`, des évènements normalisés, du

@@ -1,0 +1,12 @@
+Container coincoin-s5-coin-coin-1 Stopping 
+ Container coincoin-s5-coin-coin-1 Stopped 
+ Container coincoin-s5-coin-coin-1 Removing 
+ Container coincoin-s5-coin-coin-1 Removed 
+ Network coincoin-s5_default Removing 
+ Network coincoin-s5_default Removed 
+your 131072x1 screen size is bogus. expect trouble
+51272 python3 relay/duck_relay.py --host 192.0.2.1 --robot-port 7850 --frame-port 7851 --state-dir /home/user/.cache/ds-s5
+== down
+State Recv-Q Send-Q Local Address:Port Peer Address:PortProcess
+b95192ba23fa78c91ef3c0db8cc250c4a00fd774
+<shellId: 1007 completed with exit code 0>

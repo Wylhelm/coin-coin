@@ -1,4 +1,4 @@
-# Coin-Coin — audio navigateur, réveil local et conversation Realtime (S1–S4)
+# Coin-Coin — voix Realtime et outils robot (S1–S5)
 
 Service vocal du MicroDuck Coin-Coin, développé séparément du code Pollen.
 S0 fournit le socle asynchrone ; S2 ajoute le micro et le haut-parleur du
@@ -7,8 +7,143 @@ S3 ajoute le réveil local, le VAD, la porte audio et la machine d'états.
 **S1 livre le relais filtrant, `TcpLink`, le gouverneur et `coincoin-cli`**,
 en plus du socle S0. S4 ajoute la conversation vocale bilingue par Realtime
 WebSocket côté serveur. Les sessions ne s'ouvrent qu'après le réveil local.
-Le serveur vocal n'établit aucune connexion robot ; les outils robot restent
-réservés aux futures features.
+S5 installe `RobotFeature` : le serveur vocal maintient désormais une liaison
+robot et expose les actions via le gouverneur, sans contourner ses sécurités.
+Les modes `--echo` et `--tone` restent sans liaison robot.
+
+## S5 — livraison bloquée par la dernière mesure de marche
+
+**L'acceptation agent reste ouverte.** La dernière suite réelle S5 donne
+**1 échec, 2 succès** : avance **0,120359637 m** au lieu de **> 0,15 m**,
+tour **89,390°**, regard gauche **0,797 rad**. Un premier passage avait donné
+3 succès (avance 0,156 m, tour 89,491°, regard 0,796 rad). Les scénarios et
+seuils n'ont pas changé ; aucune cause propre au transport n'est établie.
+Voir [les preuves S5](docs/network.md#s5--outils-robot-et-blocage-de-marche).
+Cette branche ne doit pas être présentée comme agent-done avant résolution.
+
+La qualité hors sim passe : **419 réussis, 3 sim ignorés**, couverture
+**91,33 %**, ruff/format/Pyright verts et vrai AudioWorklet **6/6**.
+Les deux tests Silero utilisent les assets locaux, sans saut. Les **30 cas S5**
+de `tests/integration/test_tools_e2e_fakes.py` couvrent les vrais transports
+WebSocket/TCP vers les faux, les refus intacts, les schémas/arguments, la
+reconnexion, les annonces sans réponse concurrente, STOP et le nettoyage.
+Aucun nouvel appel OpenAI n'a été exécuté.
+
+### Démarrer exclusivement les ressources S5
+
+Depuis WSL, le worktree existe déjà ; ne pas créer un autre worktree :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S5
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export UV_CACHE_DIR="$PWD/.cache/uv"
+export PYRIGHT_PYTHON_CACHE_DIR="$PWD/.cache/pyright"
+export DUCK_SIM_STATE="$HOME/.cache/ds-s5"
+export DUCK_SIM_PORT=7841 DUCK_SIM_FRAME_PORT=7941 DUCK_SIM_VIEWER=0
+export DUCK_SIM_CAMERAS=
+export DUCK_SIM_RL="$HOME/projects/microduck/microduck_rl"
+mkdir -p .cache/logs
+ip -4 -o addr show dev eth0
+```
+
+Le `.env` ignoré, mode 600, doit contenir `ROBOT_LINK` **et** `FRAME_LINK` :
+`tcp://<IPv4 eth0>:7850` et `tcp://<IPv4 eth0>:7851`, ainsi que
+`COINCOIN_PORT=8775`, `COMPOSE_PROJECT_NAME=coincoin-s5` et le `RELAY_TOKEN`
+propre à S5 déjà créé. Ne jamais afficher ni régénérer ce jeton pour un simple
+redémarrage. Vérifier les deux liens après chaque changement d'IP.
+
+Le montage `assets/models` doit contenir les modèles Vosk/Silero décrits dans
+`assets/wake/README.md`. Ils restent ignorés par Git. S'ils sont déjà présents
+dans le clone principal, les recopier **sans écrasement** :
+
+```sh
+mkdir -p assets/models
+cp -a --update=none ~/projects/microduck/coin-coin/assets/models/. assets/models/
+"$HOME/projects/microduck/microduck/scripts/duck-sim"
+```
+
+Dans un deuxième terminal WSL, avec l'IP redécouverte ci-dessus (mesure :
+192.0.2.1), lancer le relais depuis le même worktree :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S5
+set -a
+source .env
+set +a
+echo $$ > .cache/logs/s5-relay.pid
+exec python3 relay/duck_relay.py --host 192.0.2.1 \
+  --robot-port 7850 --frame-port 7851 --state-dir "$HOME/.cache/ds-s5"
+```
+
+Dans un troisième terminal WSL, depuis S5 :
+
+```sh
+docker compose up --build --detach --wait --wait-timeout 60
+curl --fail http://localhost:8775/healthz
+docker compose exec -T coin-coin coincoin-cli status
+```
+
+Le démarrage du service ne déclenche pas OpenAI : la session ne s'ouvre
+qu'après réveil. Les appels réels ci-dessous sont réservés aux essais
+explicitement lancés par user. Le développement utilise uniquement
+`fake_realtime` et la trace S4 inchangée.
+
+### Essais humains encore ouverts
+
+Ouvrir `http://localhost:8775/` dans Chrome/Edge sous Windows, cliquer sur
+**Démarrer**, autoriser le micro, puis prononcer les quatre séries suivantes.
+Ne cocher les critères humains de S5 qu'après observation et écoute réelles.
+
+1. « Coin-Coin, avance un peu puis tourne à gauche » : observer une avance,
+   puis un tour gauche et une annonce brève honnête. `move`/`turn` rendent
+   immédiatement la main ; une nouvelle action remplace la précédente.
+   `status` indique un mouvement encore actif, et le modèle doit attendre sa
+   fin avant de prétendre avoir exécuté une séquence.
+2. « Assieds-toi », deux fois, puis « lève-toi », « fais une roulade » et
+   « regarde en haut » : vérifier l'idempotence assis/debout et les actions,
+   ou un refus expliqué sans inventer une réussite. La liste de figures est
+   relue à chaque ouverture de session ; `sit_toggle` n'est jamais exposé.
+3. Pendant « avance pendant cinq secondes », cliquer sur **STOP** : observer
+   l'arrêt de consigne et le silence. Refaire une marche, puis interrompre
+   le relais par Ctrl-C dans son terminal : observer l'arrêt autonome
+   (deadman) et une annonce unique de perte des pattes. Relancer le relais
+   pour vérifier le retour des outils, sans redémarrer l'application.
+4. Consulter `.cache/logs/*.jsonl` : chaque appel/résultat Realtime possède
+   `call_id`, `name` et `latency_ms`. Les actions/refus sont aussi sur la page
+   (20 dernières entrées). `move_to_first_command_ms` mesure seulement l'envoi
+   de la première consigne, **pas** le début du déplacement physique.
+   Pour le critère humain `< 1 s`, mesurer séparément l'intervalle entre l'appel
+   et le mouvement observé ; ne pas substituer cette métrique de transport
+   à cette observation. Les journaux sont des données personnelles locales.
+
+`quack` est un **stub explicitement journalisé**, sans son jusqu'à S6 ;
+aucun `robot.sound` n'est utilisé en simulation. Vision/S7 et mémoire/S8 ne
+sont pas implémentées par S5. Le réveil reste provisoire selon ADR-003.
+
+### Qualité et arrêt S5
+
+```sh
+uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest
+"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node" --test tests/js/play_worklet.test.mjs
+COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s -rs
+```
+
+Exiger **3 essais exécutés**, pas trois sauts : sans relais attribué, les tests
+sim sont ignorés et ne prouvent rien. La dernière mesure reste en échec.
+Arrêter uniquement le projet S5 et le relais S5 (Ctrl-C dans son terminal) :
+
+```sh
+docker compose down
+setsid --wait timeout 45s env DUCK_SIM_STATE="$HOME/.cache/ds-s5" \
+  DUCK_SIM_PORT=7841 DUCK_SIM_FRAME_PORT=7941 \
+  "$HOME/projects/microduck/microduck/scripts/duck-sim" down </dev/null
+ss -ltn '( sport = :7841 or sport = :7941 or sport = :7850 or sport = :7851 or sport = :8775 )'
+docker ps -a --filter label=com.docker.compose.project=coincoin-s5
+```
+
+À la livraison, aucun listener sur ces cinq ports, aucun pidfile de la sim
+S5, ni conteneur/réseau Compose S5 ne subsiste. Les modèles et journaux locaux
+sont conservés ; les ressources live de user et celles de S9 sont intactes.
 
 ## Piloter la simulation S1 depuis le conteneur
 

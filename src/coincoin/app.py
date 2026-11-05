@@ -89,7 +89,7 @@ class App:
         wake_engine: WakeEngine | None = None,
         vad: Vad | None = None,
         clock: Clock | None = None,
-        features: Sequence[Feature] = FEATURES,
+        features: Sequence[Feature] | None = None,
         control: ControlSender = _discard_control,
     ) -> None:
         self.settings = settings
@@ -105,7 +105,8 @@ class App:
         self.tools = ToolRegistry()
         self._handlers: dict[str, list[EventHandler]] = {}
         self._context_providers: dict[str, Callable[[], str | Awaitable[str]]] = {}
-        self._features = tuple(features)
+        self._features = tuple(FEATURES if features is None else features)
+        self._announcement: str | None = None
         self._session: RealtimeSession | None = None
         self._session_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -216,7 +217,37 @@ class App:
         if self._session is not None:
             await self._session.close()
             self._session = None
+        await self._emit("shutdown")
         self._started = False
+
+    async def notify_action(self, text: str, *, ok: bool) -> None:
+        """Publish a bounded, text-only action/refusal to the browser."""
+        await self._send_control_safely({"type": "action", "text": text, "ok": ok})
+
+    async def announce(self, message: str) -> None:
+        """Defer a robot notice to the current response's single continuation."""
+        if self._stopping or self._session is None or not self.active:
+            return
+        self._announcement = message
+        if not self.state.response_active:
+            task = self._spawn(self._resume_response(self._session))
+            self._tool_tasks.add(task)
+            task.add_done_callback(self._tool_tasks.discard)
+            await task
+
+    async def _resume_response(self, session: RealtimeSession) -> None:
+        if self._stopping or self._session is not session or not self.active:
+            return
+        notice, self._announcement = self._announcement, None
+        if notice is None:
+            await session.create_response()
+        else:
+            await self._apply(Event("response_started"))
+            try:
+                await session.announce(notice)
+            except RealtimeConnectionError as exc:
+                self._report_error("robot announcement", exc)
+                await self._apply(Event("response_failed"))
 
     def _start_robot_stop(self) -> None:
         if self._stop_tasks:
@@ -423,8 +454,18 @@ class App:
             if effect.kind == "OpenSession" and event.kind == "wake":
                 continue
             await self._apply_effect(effect)
+        if (
+            event.kind == "response_failed"
+            and self._announcement is not None
+            and self._session is not None
+            and not self._stopping
+        ):
+            task = self._spawn(self._resume_response(self._session))
+            self._tool_tasks.add(task)
+            task.add_done_callback(self._tool_tasks.discard)
 
     def _invalidate_conversation(self, *, keep_playback: bool = False) -> None:
+        self._announcement = None
         self._session_generation += 1
         self._audio_generation += 1
         self._ignore_audio_until_response = True
@@ -775,10 +816,17 @@ class App:
     async def _handle_tool_call(self, event: ToolCall, turn: _ToolTurn) -> None:
         if not self._tool_turn_valid(turn):
             return
+        started = self.clock.now()
         self.journal.write("tool_call", name=event.name, call_id=event.call_id)
         result = await self.tools.dispatch(event.name, event.arguments, self)
         result_json = json.dumps(result, ensure_ascii=False, allow_nan=False)
-        self.journal.write("tool_result", name=event.name, call_id=event.call_id, result=result)
+        self.journal.write(
+            "tool_result",
+            name=event.name,
+            call_id=event.call_id,
+            result=result,
+            latency_ms=round((self.clock.now() - started) * 1000, 3),
+        )
         turn.results[event.call_id] = result_json
         await self._complete_tool_turn(turn)
 
@@ -800,7 +848,7 @@ class App:
                     return
                 await session.send_tool_result(call.call_id, turn.results[call.call_id])
             if self._tool_turn_valid(turn):
-                await session.create_response()
+                await self._resume_response(session)
         except RealtimeConnectionError as exc:
             self._report_error("tool result send", exc)
             if self._tool_turn_valid(turn):
@@ -867,6 +915,10 @@ class App:
             )
             await self._emit("response_done", event)
             self._remember_turn("Coin-Coin", self._assistant_text)
+            if self._announcement is not None and self._session is not None:
+                task = self._spawn(self._resume_response(self._session))
+                self._tool_tasks.add(task)
+                task.add_done_callback(self._tool_tasks.discard)
 
     async def _playback_loop(self) -> None:
         while True:

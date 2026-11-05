@@ -1,1 +1,3 @@
 * text=auto eol=lf
+# Raw console evidence retains original bytes, including terminal padding.
+docs/evidence/s5/*.txt -text -whitespace

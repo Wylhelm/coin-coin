@@ -273,6 +273,22 @@ class RealtimeSession:
         """Resume once all function outputs from a completed parent have been sent."""
         await self._send({"type": "response.create"})
 
+    async def announce(self, message: str) -> None:
+        """Use a response-level instruction, never synthetic function outputs."""
+        await self._send(
+            {
+                "type": "response.create",
+                "response": {
+                    "instructions": (
+                        "Briefly tell the user in their language this robot status: "
+                        + message
+                        + ". Be honest; do not claim a movement or sound happened."
+                    ),
+                    "tool_choice": "none",
+                },
+            }
+        )
+
     async def add_image(self, jpeg: bytes) -> None:
         raise NotImplementedError("Realtime image input is reserved for S7")
 

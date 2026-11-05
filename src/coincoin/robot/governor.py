@@ -295,6 +295,7 @@ class Governor:
             self._motion = asyncio.create_task(run())
 
     async def move(self, vx: float, vy: float, vyaw: float, duration_s: float) -> ToolResult:
+        requested_at = self.clock.now()
         if not _finite(vx, vy, vyaw, duration_s) or duration_s <= 0:
             return self._refuse("move", "velocities and positive duration must be finite")
         generation = self._stop_generation
@@ -311,7 +312,8 @@ class Governor:
             clamped = {key: value for key, value in actual.items() if requested[key] != value}
             params = {key: actual[key] for key in ("vx", "vy", "vyaw")}
             await self._replace_motion(
-                generation, lambda: self._run_move(params, actual["duration_s"], generation)
+                generation,
+                lambda: self._run_move(params, actual["duration_s"], generation, requested_at),
             )
         except ROBOT_ERRORS as error:
             return self._failure("move", error)
@@ -324,7 +326,7 @@ class Governor:
         return next_tick + 1 / self.settings.move_hz
 
     async def _run_move(
-        self, params: dict[str, float], duration: float, generation: int
+        self, params: dict[str, float], duration: float, generation: int, requested_at: float
     ) -> ToolResult:
         start = self.clock.now()
         deadline = start + duration
@@ -333,6 +335,12 @@ class Governor:
             while self.clock.now() < deadline:
                 self._check_safety(generation)
                 await self.link.notify("robot.move", params)
+                if next_tick == start + 1 / self.settings.move_hz:
+                    self.journal.write(
+                        "latency",
+                        method="move",
+                        move_to_first_command_ms=round((self.clock.now() - requested_at) * 1000, 3),
+                    )
                 next_tick = await self._tick(next_tick, deadline)
             await self.link.call("robot.stop", timeout=0.1)
             await self.mouth(0)
@@ -574,12 +582,34 @@ class Governor:
         sitting = policies.get("sitting")
         posture = "sitting" if sitting is True else "standing" if sitting is False else "unknown"
         mode_name = mode.get("mode", "unknown") if isinstance(mode, dict) else "unknown"
+        self.journal.write("robot_status", state=state, policies=policies, health=health, mode=mode)
+        if state is None or self.link.state_age() > 1:
+            summary = "etat perime / stale state"
+        elif safety.get("fallen") is True:
+            summary = "je suis tombe / fallen"
+        elif safety.get("picked_up") is True:
+            summary = "je suis souleve / picked up"
+        elif safety.get("fallen") is not False or safety.get("picked_up") is not False:
+            summary = "securite inconnue / unknown safety"
+        else:
+            summary = {"sitting": "assis", "standing": "debout", "unknown": "inconnu"}[posture]
+            summary += f" / {posture}"
+        healthy = isinstance(health, dict) and health.get("healthy") is True
+        all_clear = (
+            healthy
+            and policies["enabled"]
+            and policies.get("homed") is True
+            and state is not None
+            and self.link.state_age() <= 1
+            and safety.get("fallen") is False
+            and safety.get("picked_up") is False
+            and mode_name in ("walk", "roller")
+        )
+        summary += f", mode {mode_name}, "
+        summary += "tout va bien" if all_clear else "etat a verifier"
+        if self.moving:
+            summary += ", mouvement en cours / motion active"
         return ToolResult(
             True,
-            detail=(
-                f"{posture}; mode={mode_name}; enabled={policies['enabled']}; "
-                f"fallen={safety.get('fallen', 'unknown')}; "
-                f"picked_up={safety.get('picked_up', 'unknown')}; "
-                f"state_age_s={self.link.state_age():.2f}; health={health}"
-            ),
+            detail=summary,
         )

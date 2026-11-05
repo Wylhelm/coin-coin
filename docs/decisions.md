@@ -512,3 +512,59 @@ politique, de vitesse, de durée ou de seuil n'est autorisé par cette décision
 La campagne documentée a réussi 10 exécutions sur 10 (0,159–0,175 m) ; cela
 fiabilise ce contrôle odométrique sans constituer une mesure indépendante du
 corps physique.
+
+## ADR-S5-001 — Outils gouvernés et annonces dans la reprise unique
+
+Date : 2026-11-05. Statut : implémenté contre les faux ; acceptation sim bloquée.
+
+**Décision.** `RobotFeature` installe un runtime propre à chaque application,
+avec `TcpLink`, le gouverneur existant et ses tâches. Les onze outils S5
+délèguent l'actuation au gouverneur ; aucun appel brut robot n'est exposé.
+Les schémas précisent les bornes, directions et variantes de regard. Les
+arguments inconnus, booléens numériques, valeurs non finies et formes
+incomplètes sont refusés avant transport. Les valeurs numériques hors plage
+restent bornées une seconde fois par le gouverneur, qui rend `clamped`.
+Les figures du contexte et de l'enum sont relues à chaque ouverture de session ;
+un nom absent rend la liste disponible, sans exposer `sit_toggle`.
+`NullQuack` journalise explicitement le stub, sans son ni `robot.sound`.
+
+**Extensions S4 nécessaires, acceptées par le coordonnateur.** App publie les
+actions/refus via un envoi UI borné et émet `shutdown` après son arrêt prioritaire
+et l'annulation des tâches de conversation. Le runtime ferme alors gouverneur
+et transport. Le registre par défaut est résolu lors de la construction de
+l'application ; les anciens tests hors robot le remplacent par une liste vide
+pour ne jamais contacter une ressource réelle. Les tests S5 installent leur
+propre feature avec des transports locaux.
+
+Une perte de lien est journalisée et annoncée une seule fois par coupure.
+`RealtimeSession.announce` utilise un `response.create` avec instructions de
+réponse et `tool_choice:none` selon le
+[contrat des événements client](https://developers.openai.com/api/reference/resources/realtime/client-events#response.create).
+Si une réponse est active, App garde l'annonce en attente : soit elle remplace
+les instructions de l'unique reprise après tous les outputs du lot et la fin
+du parent, soit elle attend la fin de lecture de la réponse ordinaire.
+Un parent échoué peut être suivi de l'annonce, sans rejouer ses outils.
+L'annonce n'invente jamais un `function_call_output` et ne modifie pas
+`send_tool_result`. STOP invalide l'annonce en attente et annule aussi un
+envoi déjà bloqué. Les hooks `audio_out` et le transport audio sont inchangés.
+Cette annonce peut être différée par une réponse/lecture en cours ; on ne
+prétend pas produire du son si le navigateur ou Realtime est indisponible.
+
+**Extension S1 directement liée à S5.** `Governor.status` garde son contrat
+`ToolResult`, mais rend un résumé court FR/EN, notamment tombé/soulevé/périmé
+et mouvement actif, au lieu de lire un dictionnaire de santé à voix haute.
+Le détail complet reste dans `robot_status`. « Tout va bien » exige santé,
+politique active/homée, mode connu et état frais sans drapeau de danger.
+`move_to_first_command_ms` mesure l'appel du gouverneur jusqu'à l'envoi de la
+première consigne ; ce n'est pas une mesure de locomotion physique.
+Aucune fréquence, durée, borne de sécurité, mécanique d'arrêt ou seuil sim
+n'a changé.
+
+**Preuves et limites.** Ruff/format/Pyright verts ; 419 réussis/3 sim ignorés,
+couverture 91,33 %, dont 30 cas S5 ; deux tests Silero réels et vrai worklet 6/6.
+La trace S4 est inchangée, sans nouvel appel réel OpenAI.
+Le premier passage réel S5 donne 3/3 (0,156 m, 89,491°, 0,796 rad) ;
+le dernier donne 1 échec/2 succès : 0,120359637 m au lieu de > 0,15 m,
+89,390° et 0,797 rad. Aucun diagnostic causal n'est établi. On conserve
+le blocage et les seuils, sans campagne S9 ni correction Pollen.
+Tous les services S5 sont arrêtés. Les essais humains restent ouverts.

@@ -1,5 +1,58 @@
 # Réseau Coin-Coin — relevés S0 / S1 du 2026-11-04
 
+## S5 — outils robot et blocage de marche
+
+Branche `session/S5`, base `051eb33`, ressources exclusivement S5, sans caméra :
+`~/.cache/ds-s5`, corps 7841, frame réservée 7941, relais 7850/7851,
+HTTP 8775, projet `coincoin-s5`. IP eth0 redécouverte : `192.0.2.1`.
+
+**Sorties anonymisées, sans rejouer les essais.** Les captures originales
+ont été extraites automatiquement des résultats d'outils de cette session,
+sans réécrire leurs mesures : [premier passage](evidence/s5/sim-pass.txt),
+[qualité puis dernier passage en échec](evidence/s5/quality-and-sim-failure.txt),
+[tentative initiale non probante](evidence/s5/initial-unavailable.txt) et
+[nettoyage](evidence/s5/cleanup.txt). Le
+[manifeste](evidence/s5/captures.json) conserve les commandes PowerShell/WSL
+exactes, l'identifiant d'appel, l'heure UTC, le code de sortie et le SHA-256
+de chaque capture. Le contenu inclut les en-têtes et tableaux pytest complets,
+pas seulement une synthèse. Les logs originaux du simulateur sont conservés
+dans `~/.cache/ds-s5/*.log` et copiés sans écrasement dans
+`.cache/logs/s5-simulator/` ; les journaux applicatifs locaux restent dans
+`.cache/logs/2026-11-05.jsonl`. Ils ne sont pas suivis par Git.
+
+| Vérification du 2026-11-05 | Résultat exact |
+|---|---|
+| Qualité finale `ruff check`, `ruff format --check`, `pyright`, `pytest` | Verts, 0 diagnostic ; **419 passed, 3 skipped**, couverture **91,33 %** |
+| Nouveaux cas S5 | **30 passed**, WebSocket GA réel vers fake Realtime et TCP JSON-RPC vers fake robotd ; refus, lots/annonces, STOP et fermeture |
+| Silero avec assets locaux | **2 passed**, aucun saut VAD |
+| Vrai AudioWorklet | **6 passed** |
+| Première commande opt-in correctement configurée | **3 passed, 413 deselected**, aucun saut ; avance **0,156 m**, tour **89,491°**, regard **0,796 rad** |
+| Dernière commande `COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s -rs` | **1 failed, 2 passed, 419 deselected**, aucun saut |
+| Avance de ce dernier passage | **0,12035963701374283 m**, seuil inchangé **> 0,15 m** ; le RPC de mouvement termine avec succès, pas la distance exigée |
+| Odométrie de ce dernier passage | `[0.23583695881905897, -0.007036742004301863, 0.11728879250210117]` → `[0.3072591412978083, 0.08984883077854772, 0.11936911012051625]` ; projection sur le cap initial |
+| Tour et regard du dernier passage | **89,390°**, **0,797 rad**, tous deux conformes |
+| Smoke Docker intermédiaire | `docker compose up --build --detach --wait --wait-timeout 60` puis `/healthz` : **healthy**, HTTP 200 `{"status":"ok"}` ; CLI `status` authentifiée : debout, walk, tout va bien ; UID/GID **1000** |
+| Nettoyage final | Compose S5 down ; relais **PID 51272** certifié par cwd/argv puis SIGTERM, code **0** ; script sim down sans TTY, code **0** |
+| Contrôle après nettoyage | Aucun listener **7841/7941/7850/7851/8775**, aucun conteneur S5 ni pidfile dans `ds-s5` |
+| Code Pollen préexistant | Blob `scripts/duck-sim` toujours **b95192ba23fa78c91ef3c0db8cc250c4a00fd774**, aucune modification par S5 |
+
+**Blocage d'acceptation.** Le premier passage a été réalisé avant lancement
+du service vocal Compose ; le dernier avec ce service actif mais sans page
+micro ni session OpenAI. Cela ne démontre aucune cause : aucune mesure CPU,
+gait ou propre au transport n'établit l'origine de l'écart. On ne relance pas
+en boucle pour sélectionner un résultat favorable. Aucun seuil, scénario,
+code Pollen, verrou caméra ni ressource S9 n'a été modifié.
+
+**Préparation locale corrigée, sans fuite de secrets.** Le `.env` préparé
+ne contenait pas `ROBOT_LINK` ; la première tentative de tests opt-in a donc
+ignoré les trois essais faute de connexion. Ces sauts ne sont **pas** une preuve.
+Ajout de la seule clé `ROBOT_LINK=tcp://192.0.2.1:7850` ; `FRAME_LINK`
+pointait déjà vers 7851, le jeton propre à S5 est resté inchangé, mode 600.
+Le premier démarrage Compose avait aussi échoué faute de modèles Vosk locaux ;
+les modèles existants du clone principal ont été recopiés sans écrasement,
+ainsi que le WAV synthétique Silero requis par le test réel. Les données,
+modèles et journaux restent ignorés. Aucun secret n'a été affiché.
+
 ## Correction finale de priorité STOP sur `main` `143e015`
 
 Le verrou d'action pouvait retarder STOP pendant un RPC lent. L'arrêt ne

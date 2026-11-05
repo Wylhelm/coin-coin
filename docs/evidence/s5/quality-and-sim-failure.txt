@@ -1,0 +1,192 @@
+All checks passed!
+86 files already formatted
+0 errors, 0 warnings, 0 informations
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/S5
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 422 items
+
+tests/integration/test_conversation.py ........                          [  1%]
+tests/integration/test_relay_proxy.py .........                          [  4%]
+tests/integration/test_s4_followup.py .......................            [  9%]
+tests/integration/test_s4_regressions.py ...............                 [ 13%]
+tests/integration/test_tcp_link.py ..........................            [ 19%]
+tests/integration/test_tools_e2e_fakes.py .............................. [ 26%]
+                                                                         [ 26%]
+tests/integration/test_vad_real.py ..                                    [ 26%]
+tests/integration/test_ws_audio.py .........                             [ 28%]
+tests/integration/test_ws_audio_errors.py .....                          [ 30%]
+tests/sim/test_sim_motion.py sss                                         [ 30%]
+tests/unit/test_clock.py .......                                         [ 32%]
+tests/unit/test_config.py .............                                  [ 35%]
+tests/unit/test_contracts.py ....                                        [ 36%]
+tests/unit/test_frames.py ........................                       [ 42%]
+tests/unit/test_gate.py ..........                                       [ 44%]
+tests/unit/test_governor.py ............................................ [ 54%]
+........................                                                 [ 60%]
+tests/unit/test_journal.py .........                                     [ 62%]
+tests/unit/test_mixer.py ...                                             [ 63%]
+tests/unit/test_net_spike.py ....                                        [ 64%]
+tests/unit/test_realtime_events.py ...                                   [ 65%]
+tests/unit/test_realtime_tools.py ......                                 [ 66%]
+tests/unit/test_relay_filter.py ........................................ [ 76%]
+.......................                                                  [ 81%]
+tests/unit/test_resample.py ........                                     [ 83%]
+tests/unit/test_statemachine.py ..........................               [ 89%]
+tests/unit/test_tool_mapping.py ................                         [ 93%]
+tests/unit/test_vad.py .......                                           [ 95%]
+tests/unit/test_wake_corpus.py .............                             [ 98%]
+tests/unit/test_wake_engine.py .....                                     [ 99%]
+tests/unit/test_web.py ...                                               [100%]
+
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.3-final-0 ________________
+
+Name                                      Stmts   Miss  Cover   Missing
+-----------------------------------------------------------------------
+relay/duck_relay.py                         189     30    84%   153-154, 217, 230-232, 267-285, 289-303
+src/coincoin/__init__.py                      0      0   100%
+src/coincoin/app.py                         777     87    89%   174, 180, 186, 188, 190, 192, 218-219, 240, 294-295, 303, 306-309, 314, 322-324, 326-329, 333, 337, 344, 357, 366-367, 383, 417-418, 420-423, 432, 506, 517-518, 525, 534, 540, 546, 556, 563-564, 586-587, 593, 597, 627, 639, 641-643, 646, 648-649, 655, 665-666, 699, 736, 739, 767, 786, 791, 801-803, 818, 843, 848, 888, 890, 905, 928, 931, 964-965, 994, 1008, 1022-1025, 1053
+src/coincoin/audio/__init__.py                0      0   100%
+src/coincoin/audio/browser.py               250     20    92%   72-73, 97, 125, 152, 154, 158, 160, 162, 170, 173-174, 188, 218, 224, 269, 283-284, 288-289
+src/coincoin/audio/gate.py                   55      3    95%   40, 72-73
+src/coincoin/audio/io.py                     12      0   100%
+src/coincoin/audio/mixer.py                  16      0   100%
+src/coincoin/audio/resample.py               57      6    89%   31, 34, 37, 39, 75, 77
+src/coincoin/audio/tone.py                   25      0   100%
+src/coincoin/brain/__init__.py                0      0   100%
+src/coincoin/brain/base.py                    8      0   100%
+src/coincoin/cli.py                         105     11    90%   45, 56, 68, 89-90, 95, 102, 105, 108, 118, 120
+src/coincoin/clock.py                        48      0   100%
+src/coincoin/config.py                       26      0   100%
+src/coincoin/features.py                      4      0   100%
+src/coincoin/journal.py                      61      0   100%
+src/coincoin/realtime/__init__.py             0      0   100%
+src/coincoin/realtime/events.py              72      4    94%   138-146
+src/coincoin/realtime/instructions.py         6      0   100%
+src/coincoin/realtime/session.py            177     47    73%   29-33, 63, 66, 69, 72, 87, 135-137, 145, 150, 153-154, 158, 161-162, 164, 166-167, 173, 179-183, 187-194, 197-201, 204-205, 214, 216, 222, 226-227, 234, 248, 260, 293
+src/coincoin/realtime/tools/__init__.py      71      7    90%   34, 38, 50, 62, 64, 99, 104
+src/coincoin/realtime/tools/robot.py         48      1    98%   109
+src/coincoin/realtime/tools/session.py        6      0   100%
+src/coincoin/robot/__init__.py                0      0   100%
+src/coincoin/robot/feature.py               120      7    94%   110-111, 131, 149-150, 160-161
+src/coincoin/robot/frames.py                 83      3    96%   89, 115-116
+src/coincoin/robot/governor.py              482     23    95%   92-95, 103-106, 165-169, 181-182, 200, 222, 281-282, 555, 591, 593, 611
+src/coincoin/robot/jsonrpc.py               158      4    97%   131, 143, 159, 204
+src/coincoin/robot/link.py                   14      0   100%
+src/coincoin/robot/quack.py                   1      0   100%
+src/coincoin/robot/tcp_link.py              141     10    93%   78-79, 88, 117, 139, 148-150, 184-185
+src/coincoin/statemachine.py                 97      3    97%   120, 189, 254
+src/coincoin/wake/__init__.py                 0      0   100%
+src/coincoin/wake/engine.py                  16      7    56%   32-43
+src/coincoin/wake/oww_engine.py               9      9     0%   3-19
+src/coincoin/wake/vad.py                    104      3    97%   67-68, 83
+src/coincoin/wake/vosk_engine.py             74     10    86%   25, 29, 62-65, 86, 88, 110, 112
+src/coincoin/web/__init__.py                  0      0   100%
+src/coincoin/web/server.py                  205     10    95%   53, 127-128, 152, 159-160, 202-203, 218, 265
+-----------------------------------------------------------------------
+TOTAL                                      3517    305    91%
+Required test coverage of 80% reached. Total coverage: 91.33%
+======================= 419 passed, 3 skipped in 14.25s ========================
+✔ played reports retain exact samples for a sub-millisecond tail (0.652961ms)
+✔ flush sequence barrier drops delayed old packets, including repeated flushes (0.90224ms)
+✔ successive non-frame-aligned fragments and a short tail stay contiguous (0.70764ms)
+✔ linear interpolation stays sample-accurate across render blocks (1.944701ms)
+✔ fragment boundaries and recovery from underflow preserve resampling phase (4.275884ms)
+✔ played progress reports every 100 ms at the actual AudioContext rate (3.461701ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 48.399699
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/S5
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 422 items / 419 deselected / 3 selected
+
+tests/sim/test_sim_motion.py move: before=[0.23583695881905897, -0.007036742004301863, 0.11728879250210117] after=[0.3072591412978083, 0.08984883077854772, 0.11936911012051625] forward_m=0.120
+Fturn: delta_degrees=89.390
+.look gauche: head_yaw=0.797
+.
+
+=================================== FAILURES ===================================
+___________________ test_move_advances_more_than_fifteen_cm ____________________
+
+sim = (<coincoin.robot.governor.Governor object at 0x7bd0b3423a10>, <coincoin.robot.tcp_link.TcpLink object at 0x7bd0b35d3f20>, <coincoin.clock.SystemClock object at 0x7bd0b5c6b0e0>)
+
+    async def test_move_advances_more_than_fifteen_cm(sim):
+        governor, link, clock = sim
+        before = link.state()["odom"]
+        assert (await governor.move(0.2, 0, 0, 2)).ok
+        completed = await governor.wait_motion()
+        assert completed is not None and completed.ok, completed
+        await clock.sleep(0.3)
+        after = link.state()["odom"]
+        delta = [after["position"][i] - before["position"][i] for i in range(2)]
+        forward = delta[0] * math.cos(before["yaw"]) + delta[1] * math.sin(before["yaw"])
+        print(f"move: before={before['position']} after={after['position']} forward_m={forward:.3f}")
+>       assert forward > 0.15
+E       assert 0.12035963701374283 > 0.15
+
+tests/sim/test_sim_motion.py:64: AssertionError
+================================ tests coverage ================================
+_______________ coverage: platform linux, python 3.12.3-final-0 ________________
+
+Name                                      Stmts   Miss  Cover   Missing
+-----------------------------------------------------------------------
+relay/duck_relay.py                         189     30    84%   153-154, 217, 230-232, 267-285, 289-303
+src/coincoin/__init__.py                      0      0   100%
+src/coincoin/app.py                         777     87    89%   174, 180, 186, 188, 190, 192, 218-219, 240, 294-295, 303, 306-309, 314, 322-324, 326-329, 333, 337, 344, 357, 366-367, 383, 417-418, 420-423, 432, 506, 517-518, 525, 534, 540, 546, 556, 563-564, 586-587, 593, 597, 627, 639, 641-643, 646, 648-649, 655, 665-666, 699, 736, 739, 767, 786, 791, 801-803, 818, 843, 848, 888, 890, 905, 928, 931, 964-965, 994, 1008, 1022-1025, 1053
+src/coincoin/audio/__init__.py                0      0   100%
+src/coincoin/audio/browser.py               250     20    92%   72-73, 97, 125, 152, 154, 158, 160, 162, 170, 173-174, 188, 218, 224, 269, 283-284, 288-289
+src/coincoin/audio/gate.py                   55      3    95%   40, 72-73
+src/coincoin/audio/io.py                     12      0   100%
+src/coincoin/audio/mixer.py                  16      0   100%
+src/coincoin/audio/resample.py               57      6    89%   31, 34, 37, 39, 75, 77
+src/coincoin/audio/tone.py                   25      0   100%
+src/coincoin/brain/__init__.py                0      0   100%
+src/coincoin/brain/base.py                    8      0   100%
+src/coincoin/cli.py                         105     11    90%   45, 56, 68, 89-90, 95, 102, 105, 108, 118, 120
+src/coincoin/clock.py                        48      0   100%
+src/coincoin/config.py                       26      0   100%
+src/coincoin/features.py                      4      0   100%
+src/coincoin/journal.py                      61      0   100%
+src/coincoin/realtime/__init__.py             0      0   100%
+src/coincoin/realtime/events.py              72      4    94%   138-146
+src/coincoin/realtime/instructions.py         6      0   100%
+src/coincoin/realtime/session.py            177     47    73%   29-33, 63, 66, 69, 72, 87, 135-137, 145, 150, 153-154, 158, 161-162, 164, 166-167, 173, 179-183, 187-194, 197-201, 204-205, 214, 216, 222, 226-227, 234, 248, 260, 293
+src/coincoin/realtime/tools/__init__.py      71      7    90%   34, 38, 50, 62, 64, 99, 104
+src/coincoin/realtime/tools/robot.py         48      1    98%   109
+src/coincoin/realtime/tools/session.py        6      0   100%
+src/coincoin/robot/__init__.py                0      0   100%
+src/coincoin/robot/feature.py               120      7    94%   110-111, 131, 149-150, 160-161
+src/coincoin/robot/frames.py                 83      3    96%   89, 115-116
+src/coincoin/robot/governor.py              482     23    95%   92-95, 103-106, 165-169, 181-182, 200, 222, 281-282, 555, 591, 593, 611
+src/coincoin/robot/jsonrpc.py               158      4    97%   131, 143, 159, 204
+src/coincoin/robot/link.py                   14      0   100%
+src/coincoin/robot/quack.py                   1      0   100%
+src/coincoin/robot/tcp_link.py              141     10    93%   78-79, 88, 117, 139, 148-150, 184-185
+src/coincoin/statemachine.py                 97      3    97%   120, 189, 254
+src/coincoin/wake/__init__.py                 0      0   100%
+src/coincoin/wake/engine.py                  16      7    56%   32-43
+src/coincoin/wake/oww_engine.py               9      9     0%   3-19
+src/coincoin/wake/vad.py                    104      3    97%   67-68, 83
+src/coincoin/wake/vosk_engine.py             74     10    86%   25, 29, 62-65, 86, 88, 110, 112
+src/coincoin/web/__init__.py                  0      0   100%
+src/coincoin/web/server.py                  205     10    95%   53, 127-128, 152, 159-160, 202-203, 218, 265
+-----------------------------------------------------------------------
+TOTAL                                      3517    305    91%
+Required test coverage of 80% reached. Total coverage: 91.33%
+================= 1 failed, 2 passed, 419 deselected in 7.39s ==================
+<shellId: 1004 completed with exit code 1>

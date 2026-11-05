@@ -27,7 +27,9 @@ function waitForOpen(socket) {
 function addEntry(id, text) {
   const item = document.createElement("li");
   item.textContent = text;
-  document.querySelector(id).prepend(item);
+  const entries = document.querySelector(id);
+  entries.prepend(item);
+  while (entries.children.length > 20) entries.lastElementChild.remove();
 }
 
 function updateTranscript(event) {
@@ -100,7 +102,7 @@ async function start() {
       } else if (event.type === "transcript") {
         updateTranscript(event);
       } else if (event.type === "action") {
-        addEntry("#actions", event.text);
+        addEntry("#actions", (event.ok === false ? "Refus : " : "") + event.text);
       }
     });
 

@@ -1,0 +1,34 @@
+[
+  {
+    "file": "initial-unavailable.txt",
+    "tool_call_id": "call_egStxlY1ajaGTBRQvrmsB56t",
+    "timestamp_utc": "2026-11-05T17:11:49.188Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && ss -ltn \"( sport = :7841 or sport = :7850 or sport = :7851 )\" && COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s && docker compose up --build --detach --wait --wait-timeout 60 && curl --fail --silent --show-error http://localhost:8775/healthz && docker compose exec -T coin-coin coincoin-cli status'",
+    "exit_code": 1,
+    "sha256": "3e793d76f967bec3f11fc900c893da0b0df38dfbb2a679cbf9c6c2d765ffebe7"
+  },
+  {
+    "file": "sim-pass.txt",
+    "tool_call_id": "call_jQRlvmJcvTJpYEUImvM31H9G",
+    "timestamp_utc": "2026-11-05T17:12:45.411Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && docker compose down && docker compose run --rm --no-deps --user root --volume \"$PWD/assets/models:/s5-models\" coin-coin chown 1000:1000 /s5-models && cp -an \"$HOME/projects/microduck/coin-coin/assets/models/.\" assets/models/ && chmod 600 .env && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s -rs'",
+    "exit_code": 0,
+    "sha256": "2efd18c8ff4b869ee7727aa92c5bf711f407125194eb701af27f8a8701183f05"
+  },
+  {
+    "file": "quality-and-sim-failure.txt",
+    "tool_call_id": "call_GWyfqinyDEkRsmoOAlSzzGi3",
+    "timestamp_utc": "2026-11-05T17:16:52.654Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && mkdir -p assets/wake/vad/positives/fr && cp --update=none \"$HOME/projects/microduck/coin-coin/assets/wake/vad/positives/fr/fr_near_01.wav\" assets/wake/vad/positives/fr/ && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && uv run ruff check . && uv run ruff format --check . && uv run pyright && COINCOIN_REQUIRE_VAD_ASSETS=1 uv run pytest && \"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node\" --test tests/js/play_worklet.test.mjs && COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s -rs'",
+    "exit_code": 1,
+    "sha256": "8d6d95a9785aac7c35edf265456e6d07448ad580fe1e4b0696ca43165b8e8115"
+  },
+  {
+    "file": "cleanup.txt",
+    "tool_call_id": "call_fQwpxbQsC7QcWJ1jreWnuVGN",
+    "timestamp_utc": "2026-11-05T17:17:32.002Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && docker compose down && test \"$(readlink /proc/51272/cwd)\" = \"$PWD\" && ps -p 51272 -o pid=,args= && kill -TERM 51272 && setsid --wait timeout 45s env DUCK_SIM_STATE=\"$HOME/.cache/ds-s5\" DUCK_SIM_PORT=7841 DUCK_SIM_FRAME_PORT=7941 \"$HOME/projects/microduck/microduck/scripts/duck-sim\" down </dev/null && ss -ltn \"( sport = :7841 or sport = :7941 or sport = :7850 or sport = :7851 or sport = :8775 )\" && docker ps -a --filter label=com.docker.compose.project=coincoin-s5 --format \"{{.ID}} {{.Names}}\" && find \"$HOME/.cache/ds-s5\" -maxdepth 1 -name \"*.pid\" -print && git -C \"$HOME/projects/microduck/microduck\" hash-object scripts/duck-sim'",
+    "exit_code": 0,
+    "sha256": "2b658b81cc5404a9e296af4e3f49ab867a1a896ac481c5daa382d60f0d07a5de"
+  }
+]
