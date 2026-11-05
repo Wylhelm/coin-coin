@@ -25,7 +25,8 @@ async def test_mic_queue_drops_oldest_frames_and_pads_short_chunks() -> None:
 
         with pytest.raises(ValueError, match="little-endian PCM16"):
             await audio_service.play(b"\x01")
-        await audio_service.flush()
+        with pytest.raises(ConnectionError, match="UI WebSocket is disconnected"):
+            await audio_service.flush()
         await websocket.close()
 
 

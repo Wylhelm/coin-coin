@@ -96,6 +96,15 @@ worklet. Les paquets transportent leur longueur PCM exacte : les fragments
 incomplets ne sont ni complétés par du silence ni retenus, et le worklet les
 concatène avant lecture.
 
+L'appel `flush()` applique une échéance monotone unique de 100 ms couvrant
+l'attente de son verrou, l'envoi de la commande UI et l'acquittement. Il ne prend
+pas le verrou d'envoi audio : les trames déjà en transit sont invalidées par
+génération et numéro de séquence. Un timeout, une erreur d'envoi ou une
+annulation est signalé à l'appelant ; la page est alors considérée
+désynchronisée et les nouveaux `play()` échouent jusqu'à un flush acquitté.
+Cela ne garantit pas l'arrêt physique de l'audio si le navigateur ou sa voie UI
+ne répond pas.
+
 **Preuve automatisée.** `uv run pytest tests/integration/test_ws_audio.py`
 envoie 1 s de PCM au faux client et vérifie l'écho octet par octet, la limite
 de 300 ms d'avance, le remplacement d'une page et le flush acquitté en moins
@@ -116,12 +125,19 @@ fragments et après une sous-alimentation suivie d'une reprise. Un contre-exempl
 à 48 kHz vérifie aussi qu'avec les échantillons −30000, 0, 30000 aux indices
 63–65, le rendu n°129 interpole bien à +15000/32768.
 
+Les doubles WebSocket déterministes vérifient également qu'un `send_bytes`
+bloqué ne retient pas le flush UI, qu'un `send_json` bloqué échoue dans son
+échéance, et que deux flushs simultanés respectent chacun leur propre borne.
+Les régressions couvrent l'annulation, l'acquittement de génération périmée, le
+remplacement de page, le rejet des nouveaux `play()` après échec et le filtrage
+d'une ancienne trame reçue après un flush acquitté.
+
 **Validation de la correction rouverte.** La commande complète
 `uv run ruff check . && uv run ruff format --check . && uv run pyright &&
-uv run pytest` est verte sur le `main` courant : 294 tests réussis, 5 ignorés,
-couverture totale de 92,95 %, aucun diagnostic pyright. Le harness AudioWorklet
-séparé réussit ses 5 tests sous Node.js, dont les nouvelles vérifications
-d'interpolation à 16/24/44,1/48 kHz. Le README donne la procédure d'essai et de
+uv run pytest` est verte sur la base `main=0597380` : 332 tests réussis,
+5 ignorés, couverture totale de 93,16 %, aucun diagnostic pyright. Les tests
+ciblés WebSocket réussissent (14 tests), et le harness AudioWorklet séparé
+réussit ses 5 tests sous Node.js. Le README donne la procédure d'essai et de
 nettoyage Compose depuis le clone principal `~/projects/microduck/coin-coin`,
 après la suppression du worktree S2.
 

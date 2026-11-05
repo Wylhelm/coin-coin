@@ -14,6 +14,7 @@ _FRAME_BYTES = _FRAME_SAMPLES * 2
 _MAX_MIC_FRAMES = 100
 _MAX_AHEAD_SAMPLES = 24_000 * 300 // 1_000
 _SEQUENCE_HEADER = struct.Struct("<Q")
+_FLUSH_TIMEOUT = 0.1
 
 
 @dataclass(slots=True)
@@ -31,6 +32,7 @@ class _Page:
     flush_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     flush_complete: asyncio.Event = field(default_factory=asyncio.Event)
     flushed: asyncio.Event = field(default_factory=asyncio.Event)
+    flush_error: str | None = None
 
     def __post_init__(self) -> None:
         self.flush_complete.set()
@@ -77,6 +79,7 @@ class BrowserAudio:
     async def disconnect(self, page: _Page) -> None:
         async with self._page_lock:
             page.closed = True
+            page.flushed.set()
             async with page.condition:
                 page.condition.notify_all()
             if self._page is page:
@@ -109,32 +112,53 @@ class BrowserAudio:
         page = self._page
         if page is None or page.closed or page.ui_ws is None:
             raise ConnectionError("No browser audio page is connected")
-        await page.flush_complete.wait()
-        generation = page.generation
+        while True:
+            await page.flush_complete.wait()
+            async with page.condition:
+                if page.closed:
+                    raise ConnectionError("Browser audio page disconnected")
+                if page.flush_error is not None:
+                    raise ConnectionError(
+                        f"Browser audio playback is unavailable: {page.flush_error}"
+                    )
+                if page.flush_complete.is_set():
+                    generation = page.generation
+                    break
         for offset in range(0, len(pcm), _FRAME_BYTES):
             frame = pcm[offset : offset + _FRAME_BYTES]
             frame_samples = len(frame) // 2
-            async with page.condition:
-                await page.condition.wait_for(
-                    lambda frame_samples=frame_samples: (
-                        page.closed
-                        or page.generation != generation
-                        or page.ui_ws is None
-                        or page.ui_ws.closed
-                        or page.sent_samples - page.played_ms * 24 + frame_samples
-                        <= _MAX_AHEAD_SAMPLES
+            while True:
+                await page.flush_complete.wait()
+                async with page.condition:
+                    await page.condition.wait_for(
+                        lambda frame_samples=frame_samples: (
+                            page.closed
+                            or page.flush_error is not None
+                            or not page.flush_complete.is_set()
+                            or page.generation != generation
+                            or page.ui_ws is None
+                            or page.ui_ws.closed
+                            or page.sent_samples - page.played_ms * 24 + frame_samples
+                            <= _MAX_AHEAD_SAMPLES
+                        )
                     )
-                )
-                if page.closed:
-                    raise ConnectionError("Browser audio page disconnected")
-                if page.ui_ws is None or page.ui_ws.closed:
-                    raise ConnectionError("Browser UI WebSocket disconnected")
-                if page.generation != generation:
-                    return
-                self._last_sequence += 1
-                sequence = self._last_sequence
-                page.last_sequence = sequence
-                page.sent_samples += frame_samples
+                    if page.closed:
+                        raise ConnectionError("Browser audio page disconnected")
+                    if page.flush_error is not None:
+                        raise ConnectionError(
+                            f"Browser audio playback is unavailable: {page.flush_error}"
+                        )
+                    if page.ui_ws is None or page.ui_ws.closed:
+                        raise ConnectionError("Browser UI WebSocket disconnected")
+                    if page.generation != generation:
+                        return
+                    if not page.flush_complete.is_set():
+                        continue
+                    self._last_sequence += 1
+                    sequence = self._last_sequence
+                    page.last_sequence = sequence
+                    page.sent_samples += frame_samples
+                    break
             async with page.send_lock:
                 if page.generation != generation:
                     return
@@ -144,44 +168,79 @@ class BrowserAudio:
                     raise ConnectionError("Browser audio page disconnected") from exc
 
     async def flush(self) -> None:
-        """Clear server and browser playback, returning after ack or 100 ms."""
+        """Flush browser playback within 100 ms or raise an explicit failure."""
         page = self._page
         if page is None or page.closed:
             return
-        async with page.flush_lock:
-            page.flush_complete.clear()
-            try:
-                async with page.condition:
-                    page.generation += 1
-                    page.sent_samples = 0
-                    page.played_ms = 0
-                    page.is_playing = False
-                    page.flushed.clear()
-                    page.condition.notify_all()
-                    generation = page.generation
-                    through_sequence = page.last_sequence
-                if page.ui_ws is None or page.ui_ws.closed:
-                    return
-                async with page.send_lock:
-                    if page.generation != generation:
-                        return
+        deadline = asyncio.get_running_loop().time() + _FLUSH_TIMEOUT
+        gated = False
+        phase = "waiting for flush lock"
+        try:
+            async with asyncio.timeout_at(deadline):
+                async with page.flush_lock:
+                    if page.closed or self._page is not page:
+                        raise ConnectionError("Browser audio page was replaced")
+                    page.flush_complete.clear()
+                    page.flush_error = None
+                    gated = True
+                    phase = "updating playback generation"
+                    async with page.condition:
+                        page.generation += 1
+                        page.sent_samples = 0
+                        page.played_ms = 0
+                        page.is_playing = False
+                        page.flushed.clear()
+                        page.condition.notify_all()
+                        generation = page.generation
+                        through_sequence = page.last_sequence
+                    ui_ws = page.ui_ws
+                    if ui_ws is None or ui_ws.closed:
+                        raise ConnectionError("Browser UI WebSocket is disconnected")
+                    phase = "sending flush command"
                     try:
                         await self._send_control(
-                            page.ui_ws,
+                            ui_ws,
                             {
                                 "type": "flush",
                                 "generation": generation,
                                 "through_sequence": str(through_sequence),
                             },
                         )
-                    except (ConnectionError, RuntimeError):
-                        return
-                try:
-                    await asyncio.wait_for(page.flushed.wait(), timeout=0.1)
-                except TimeoutError:
-                    _LOGGER.warning("Browser did not acknowledge audio flush within 100 ms")
-            finally:
-                page.flush_complete.set()
+                    except (ConnectionError, RuntimeError) as exc:
+                        raise ConnectionError("Could not send browser audio flush command") from exc
+                    phase = "waiting for flush acknowledgement"
+                    await page.flushed.wait()
+                    if page.closed or self._page is not page:
+                        raise ConnectionError("Browser audio page was replaced during flush")
+                    if page.generation != generation:
+                        raise ConnectionError("Browser audio flush generation changed")
+                    page.flush_error = None
+                    page.flush_complete.set()
+                    gated = False
+        except TimeoutError as exc:
+            if gated:
+                self._fail_flush(page, f"flush timed out while {phase}")
+            _LOGGER.warning("Browser audio flush exceeded its 100 ms deadline while %s", phase)
+            raise TimeoutError(f"Browser audio flush exceeded 100 ms while {phase}") from exc
+        except asyncio.CancelledError:
+            if gated:
+                self._fail_flush(page, "flush was cancelled")
+            raise
+        except Exception as exc:
+            if gated:
+                self._fail_flush(page, str(exc))
+            raise
+
+    @staticmethod
+    def _fail_flush(page: _Page, reason: str) -> None:
+        page.flush_error = reason
+        page.flush_complete.set()
+        asyncio.create_task(BrowserAudio._notify_condition(page))
+
+    @staticmethod
+    async def _notify_condition(page: _Page) -> None:
+        async with page.condition:
+            page.condition.notify_all()
 
     async def send_control(self, message: dict[str, object]) -> None:
         """Send a UI event to the active browser, if one is connected."""
@@ -215,6 +274,7 @@ class BrowserAudio:
 
     async def _replace(self, page: _Page) -> None:
         page.closed = True
+        page.flushed.set()
         async with page.condition:
             page.condition.notify_all()
         if page.ui_ws is not None and not page.ui_ws.closed:

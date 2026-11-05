@@ -3,10 +3,11 @@ import struct
 import time
 
 import numpy as np
+import pytest
 from aiohttp import WSMsgType
 from aiohttp.test_utils import TestClient, TestServer
 
-from coincoin.audio.browser import BrowserAudio
+from coincoin.audio.browser import BrowserAudio, _Page
 from coincoin.web.server import create_app
 
 _SEQUENCE = struct.Struct("<Q")
@@ -29,6 +30,54 @@ class _PlaybackHarness:
     def receive_flush(self, event: dict[str, object]) -> None:
         self.discard_through = int(str(event["through_sequence"]))
         self.queued_samples.clear()
+
+
+class _ControlledWebSocket:
+    def __init__(self) -> None:
+        self.closed = False
+        self.sent_bytes: list[bytes] = []
+        self.sent_json: list[dict[str, object]] = []
+        self.audio_started = asyncio.Event()
+        self.control_started = asyncio.Event()
+        self.release_audio = asyncio.Event()
+        self.release_control = asyncio.Event()
+        self.hold_audio = False
+        self.hold_control = False
+        self.on_json = None
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.audio_started.set()
+        if self.hold_audio:
+            await self.release_audio.wait()
+        self.sent_bytes.append(data)
+
+    async def send_json(self, data: dict[str, object]) -> None:
+        self.sent_json.append(data)
+        if data.get("type") == "flush":
+            self.control_started.set()
+            if self.on_json is not None:
+                self.on_json(data)
+            if self.hold_control:
+                await self.release_control.wait()
+
+    async def close(self, **_kwargs: object) -> None:
+        self.closed = True
+
+
+def _controlled_audio() -> tuple[BrowserAudio, _Page, _ControlledWebSocket, _ControlledWebSocket]:
+    audio = BrowserAudio()
+    audio_ws = _ControlledWebSocket()
+    ui_ws = _ControlledWebSocket()
+    page = _Page(audio_ws)  # type: ignore[arg-type]
+    page.ui_ws = ui_ws  # type: ignore[assignment]
+    audio._page = page
+    return audio, page, audio_ws, ui_ws
+
+
+def _generation(message: dict[str, object]) -> int:
+    generation = message["generation"]
+    assert isinstance(generation, int)
+    return generation
 
 
 async def _flush(audio: BrowserAudio, ui) -> dict[str, object]:
@@ -176,6 +225,124 @@ async def test_play_preserves_arbitrary_fragment_boundaries_and_short_tail() -> 
 
         await audio_ws.close()
         await ui.close()
+
+
+async def test_flush_bypasses_blocked_audio_send_and_stale_audio_stays_discarded() -> None:
+    audio_io, page, audio_ws, ui_ws = _controlled_audio()
+    audio_ws.hold_audio = True
+    old_pcm = struct.pack("<h", 1200) * 480
+    old_play = asyncio.create_task(audio_io.play(old_pcm))
+    await audio_ws.audio_started.wait()
+
+    flush_task = asyncio.create_task(audio_io.flush())
+    await asyncio.wait_for(ui_ws.control_started.wait(), timeout=0.05)
+    flush_event = ui_ws.sent_json[-1]
+    assert flush_event["generation"] == 1
+    assert flush_event["through_sequence"] == "1"
+    audio_io.acknowledge_flush(page, 1)
+    await flush_task
+
+    audio_ws.release_audio.set()
+    await old_play
+    harness = _PlaybackHarness()
+    harness.receive_flush(flush_event)
+    harness.receive_audio(audio_ws.sent_bytes[0])
+    assert harness.queued_samples == []
+
+    audio_ws.hold_audio = False
+    fresh_pcm = struct.pack("<h", -2300) * 480
+    await audio_io.play(fresh_pcm)
+    fresh_packet = audio_ws.sent_bytes[-1]
+    harness.receive_audio(fresh_packet)
+    assert _SEQUENCE.unpack_from(fresh_packet)[0] == 2
+    assert harness.queued_samples == [-2300] * 480
+
+
+async def test_flush_deadline_includes_blocked_control_send_and_fails_closed() -> None:
+    audio_io, page, _audio_ws, ui_ws = _controlled_audio()
+    ui_ws.hold_control = True
+    started = asyncio.get_running_loop().time()
+    flush_task = asyncio.create_task(audio_io.flush())
+    await ui_ws.control_started.wait()
+
+    with pytest.raises(TimeoutError, match="exceeded 100 ms"):
+        await asyncio.wait_for(flush_task, timeout=0.15)
+    elapsed = asyncio.get_running_loop().time() - started
+    assert elapsed < 0.15
+    assert page.flush_error is not None
+    assert page.flush_complete.is_set()
+    with pytest.raises(ConnectionError, match="playback is unavailable"):
+        await audio_io.play(struct.pack("<h", 1) * 480)
+
+
+async def test_concurrent_flushes_each_use_one_absolute_deadline() -> None:
+    audio_io, _page, _audio_ws, ui_ws = _controlled_audio()
+    first_started = asyncio.get_running_loop().time()
+    first = asyncio.create_task(audio_io.flush())
+    await ui_ws.control_started.wait()
+    await asyncio.sleep(0.02)
+    second_started = asyncio.get_running_loop().time()
+    second = asyncio.create_task(audio_io.flush())
+
+    results = await asyncio.gather(first, second, return_exceptions=True)
+    first_elapsed = asyncio.get_running_loop().time() - first_started
+    second_elapsed = asyncio.get_running_loop().time() - second_started
+    assert all(isinstance(result, TimeoutError) for result in results)
+    assert first_elapsed < 0.15
+    assert second_elapsed < 0.15
+
+
+async def test_cancelled_flush_fails_closed_until_current_generation_is_acknowledged() -> None:
+    audio_io, page, audio_ws, ui_ws = _controlled_audio()
+    cancelled = asyncio.create_task(audio_io.flush())
+    await ui_ws.control_started.wait()
+    old_generation = _generation(ui_ws.sent_json[-1])
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+
+    assert page.flush_error == "flush was cancelled"
+    with pytest.raises(ConnectionError, match="playback is unavailable"):
+        await audio_io.play(struct.pack("<h", 2) * 480)
+
+    ui_ws.control_started.clear()
+    recovered = asyncio.create_task(audio_io.flush())
+    await ui_ws.control_started.wait()
+    current_generation = _generation(ui_ws.sent_json[-1])
+    assert current_generation > old_generation
+    audio_io.acknowledge_flush(page, old_generation)
+    assert not page.flushed.is_set()
+    audio_io.acknowledge_flush(page, current_generation)
+    await recovered
+    assert page.flush_error is None
+
+    await audio_io.play(struct.pack("<h", 3) * 480)
+    assert _SEQUENCE.unpack_from(audio_ws.sent_bytes[-1])[0] == 1
+
+
+async def test_page_replacement_aborts_old_flush_without_touching_new_generation() -> None:
+    audio_io, old_page, _old_audio, old_ui = _controlled_audio()
+    old_ui.hold_control = True
+    old_flush = asyncio.create_task(audio_io.flush())
+    await old_ui.control_started.wait()
+    old_generation = _generation(old_ui.sent_json[-1])
+
+    new_audio = _ControlledWebSocket()
+    new_page = await audio_io.connect_audio(new_audio)  # type: ignore[arg-type]
+    new_ui = _ControlledWebSocket()
+    assert await audio_io.connect_ui(new_ui) is new_page  # type: ignore[arg-type]
+    old_ui.release_control.set()
+    with pytest.raises(ConnectionError, match="replaced"):
+        await asyncio.wait_for(old_flush, timeout=0.05)
+
+    recovery = asyncio.create_task(audio_io.flush())
+    await new_ui.control_started.wait()
+    new_generation = _generation(new_ui.sent_json[-1])
+    assert new_generation == 1
+    audio_io.acknowledge_flush(old_page, old_generation)
+    assert not new_page.flushed.is_set()
+    audio_io.acknowledge_flush(new_page, new_generation)
+    await recovery
 
 
 async def test_new_audio_page_replaces_the_previous_page() -> None:
