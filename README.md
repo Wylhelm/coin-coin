@@ -149,6 +149,9 @@ tuer un processus par son nom. Tous les services S1 sont arrêtés à la livrais
   walk/roller, l'état frais, la sécurité, l'activation par `on:true` et
   l'attente de `homed` sont vérifiés avant une action. Aucun `init`/`toggle`.
   Un changement de mode observé arrête le mouvement actif.
+  STOP ne prend pas le verrou des actions : il invalide et annule leurs RPC
+  en attente, puis envoie `robot.stop` avant d'attendre leur nettoyage ou de
+  fermer le bec. Une réponse tardive ne peut pas réarmer une action antérieure.
 - `frame()` utilise déjà `frames.fetch_frame()` : authentification sur la
   connexion images, en-tête ≤ 4096 octets, UYVY ≤ 16 Mio, rotation horaire et
   JPEG qualité 80. `FrameError` explicite si la caméra manque ; S7 ne doit
@@ -275,6 +278,18 @@ complète est verte : **294 tests réussis, 5 ignorés**, couverture totale
 Les cinq sauts correspondent aux trois tests sim sans opt-in et aux deux
 tests Silero réels dont les assets ne sont pas présents dans le worktree S1.
 Les trois tests AudioWorklet S2 passent aussi avec le runtime Node local.
+
+Après correction de la priorité STOP sur `main` `143e015` : **314 tests
+réussis, 5 ignorés**, couverture totale **93,04 %**, gouverneur **96 %** et
+relais **84 %** ; ruff/format/pyright verts. Les 20 nouveaux cas couvrent
+les RPC regard/skills/politiques/activation lents, leurs réponses tardives,
+les actions en attente du verrou et le watchdog. Les 5 tests AudioWorklet
+courants passent aussi. Les 3 tests sim passent sans saut (avance 0,161 m,
+tour 89,198°, regard 0,795 rad). Avec une réponse `robot.look` volontairement
+retenue pendant une marche réelle, l'appel transport STOP débute en
+**0,116 ms**, le RPC est acquitté en **moins de 200 ms**, la consigne revient
+à zéro et l'action retardée est refusée. Le premier délai mesure l'entrée
+dans `link.call`, pas l'arrivée réseau ni l'immobilisation physique (EMA).
 
 Pour les trois tests contre la sim **attribuée explicitement**, après la
 commande qualité et avec la sim/relais actifs :

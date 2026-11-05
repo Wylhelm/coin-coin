@@ -57,6 +57,7 @@ class Governor:
         self._mode_at = -math.inf
         self._mode_lock = asyncio.Lock()
         self._action_lock = asyncio.Lock()
+        self._action_calls: set[asyncio.Task[Any]] = set()
         self._stop_generation = 0
         self._closed = False
 
@@ -199,8 +200,37 @@ class Governor:
             raise RobotRefused("robot mode unavailable")
         return self.settings.max_vx, self.settings.max_vy, self.settings.max_vyaw
 
-    async def _policies(self) -> dict[str, Any]:
-        policies = await self.link.call("robot.policies")
+    async def _action_call(
+        self,
+        generation: int,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: float = 2.0,  # noqa: ASYNC109 - RobotLink contract
+    ) -> Any:
+        async def send() -> Any:
+            self._check_safety(generation)
+            return await self.link.call(method, params, timeout=timeout)
+
+        self._check_safety(generation)
+        task = asyncio.create_task(send())
+        self._action_calls.add(task)
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            if generation != self._stop_generation:
+                raise RobotRefused("action cancelled by stop") from None
+            raise
+        finally:
+            self._action_calls.discard(task)
+        self._check_safety(generation)
+        return result
+
+    async def _policies(self, generation: int | None = None) -> dict[str, Any]:
+        policies = (
+            await self.link.call("robot.policies")
+            if generation is None
+            else await self._action_call(generation, "robot.policies")
+        )
         if not isinstance(policies, dict) or type(policies.get("enabled")) is not bool:
             raise RobotRefused("robot policies unavailable")
         return policies
@@ -209,17 +239,17 @@ class Governor:
         await self.start()
         self._check_safety(generation)
         await self._refresh_mode()
-        policies = await self._policies()
+        policies = await self._policies(generation)
         self._check_safety(generation)
         if not policies["enabled"]:
-            await self.link.call("robot.enable", {"on": True})
+            await self._action_call(generation, "robot.enable", {"on": True})
         deadline = self.clock.now() + 5
         while policies.get("homed") is not True or not policies["enabled"]:
             self._check_safety(generation)
             if self.clock.now() >= deadline:
                 raise RobotRefused("robot did not reach home within 5 s")
             await self.clock.sleep(0.1)
-            policies = await self._policies()
+            policies = await self._policies(generation)
         self._check_safety(generation)
         return policies
 
@@ -231,20 +261,29 @@ class Governor:
 
     async def stop(self, reason: str = "stop") -> ToolResult:
         self._stop_generation += 1
-        async with self._action_lock:
-            motion, look = self._motion, self._look
-            self._motion = self._look = None
-            await self._cancel(motion)
-            await self._cancel(look)
-            self.journal.write("state", action="stop", reason=reason)
+        motion, look = self._motion, self._look
+        self._motion = self._look = None
+        # Never wait for an action's RPC response or cleanup before sending STOP.
+        for task in (*self._action_calls, motion, look):
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+        self.journal.write("state", action="stop", reason=reason)
+        try:
             if not self.link.connected:
                 return self._refuse("stop", "robot link down; relying on deadman")
             try:
-                await self.mouth(0)
                 await self.link.call("robot.stop", timeout=0.1)
             except ROBOT_ERRORS as error:
-                return self._failure("stop", error)
-            return ToolResult(True, detail=reason)
+                result = self._failure("stop", error)
+            else:
+                result = ToolResult(True, detail=reason)
+            await self.mouth(0)
+        except ROBOT_ERRORS as error:
+            return self._failure("stop", error)
+        finally:
+            await self._cancel(motion)
+            await self._cancel(look)
+        return result
 
     async def _replace_motion(
         self, generation: int, run: Callable[[], Coroutine[Any, Any, ToolResult]]
@@ -252,6 +291,7 @@ class Governor:
         async with self._action_lock:
             self._check_safety(generation)
             await self._cancel(self._motion)
+            self._check_safety(generation)
             self._motion = asyncio.create_task(run())
 
     async def move(self, vx: float, vy: float, vyaw: float, duration_s: float) -> ToolResult:
@@ -387,9 +427,10 @@ class Governor:
             await self.start()
             self._check_safety(generation)
             async with self._action_lock:
+                self._check_safety(generation)
                 await self._cancel(self._look)
                 self._look = None
-                result = await self.link.call("robot.look", {"x": x, "y": y, "z": z})
+                result = await self._action_call(generation, "robot.look", {"x": x, "y": y, "z": z})
                 head = result.get("head") if isinstance(result, dict) else None
                 names = ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
                 if not isinstance(head, dict) or not _finite(*(head.get(name) for name in names)):
@@ -481,8 +522,8 @@ class Governor:
                 self._check_safety(generation)
                 await self._cancel(self._motion)
                 self._motion = None
-                await self.link.call("robot.stop", timeout=0.1)
-                result = await self.link.call("robot.do", {"skill": name})
+                await self._action_call(generation, "robot.stop", timeout=0.1)
+                result = await self._action_call(generation, "robot.do", {"skill": name})
         except ROBOT_ERRORS as error:
             return self._failure("do_skill", error)
         self.journal.write("tool_result", method="do_skill", name=name, result=result)
@@ -492,7 +533,7 @@ class Governor:
         method = "sit" if sitting else "stand"
         generation = self._stop_generation
         try:
-            policies = await self._policies()
+            policies = await self._policies(generation)
             current = policies.get("sitting")
             if type(current) is not bool:
                 return self._refuse(method, "je ne sais pas si je suis assis")
@@ -500,7 +541,7 @@ class Governor:
                 return ToolResult(True, detail=f"already {'sitting' if sitting else 'standing'}")
             await self._prepare(generation)
             async with self._action_lock:
-                policies = await self._policies()
+                policies = await self._policies(generation)
                 current = policies.get("sitting")
                 if type(current) is not bool:
                     return self._refuse(method, "je ne sais pas si je suis assis")
@@ -508,8 +549,8 @@ class Governor:
                 if current is not sitting:
                     await self._cancel(self._motion)
                     self._motion = None
-                    await self.link.call("robot.stop", timeout=0.1)
-                    await self.link.call("robot.do", {"skill": "sit_toggle"})
+                    await self._action_call(generation, "robot.stop", timeout=0.1)
+                    await self._action_call(generation, "robot.do", {"skill": "sit_toggle"})
         except ROBOT_ERRORS as error:
             return self._failure(method, error)
         self.journal.write("tool_result", method=method)

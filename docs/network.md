@@ -1,5 +1,27 @@
 # Réseau Coin-Coin — relevés S0 / S1 du 2026-11-04
 
+## Correction finale de priorité STOP sur `main` `143e015`
+
+Le verrou d'action pouvait retarder STOP pendant un RPC lent. L'arrêt ne
+prend plus ce verrou, annule les RPC d'action et invalide leur génération.
+Voir ADR-005 pour les courses et la limite des commandes déjà traitées.
+
+| Vérification finale | Résultat |
+|---|---|
+| Commande qualité complète | Ruff/format verts, 0 diagnostic pyright ; **314 passed, 5 skipped** |
+| Couverture | **93,04 %** totale ; gouverneur **96 %**, relais **84 %** |
+| Sauts | 3 sim sans opt-in ; 2 Silero réels sans assets locaux S1 |
+| Tests gouverneur ciblés | **68 passed**, dont 20 nouveaux cas de réponses lentes/tardives et courses STOP |
+| Harness AudioWorklet sur la base S2 corrigée | **5 passed** |
+| `COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s` | **3 passed, 316 deselected**, aucun saut ; avance **0,161 m**, tour **89,198°**, regard gauche **0,795 rad** |
+| Reproduction sur la vraie sim S1 | Marche vx=0,2, attente `applied.vx > 0,05`, réponse `robot.look` retenue par événement ; appel `link.call` STOP débuté en **0,116 ms**, RPC acquitté en **< 200 ms**, consigne `[0,0,0]`, ancienne action refusée `action cancelled by stop` |
+| Nettoyage final | Relais PID 12938 certifié par argv/cwd puis SIGTERM code 0 ; sim `ds-s1` down sans TTY code 0 ; aucun listener 7821/7921/7830/7831/8771 ni conteneur S1 |
+
+Simulation sans caméra (`DUCK_SIM_CAMERAS` vide), ressources S1 uniquement ;
+aucun processus, port, verrou ou donnée ignorée de S9 modifié. Les essais
+Docker/deadman précédents restent les preuves historiques ci-dessous ;
+ils ne sont pas présentés comme de nouvelles mesures de cette correction.
+
 ## Revalidation S1 après rebase sur S2/S3
 
 Base `main` : `c1ee52d`. Dépendances ONNX/Vosk/SoXR conservées, Pillow

@@ -436,6 +436,7 @@ async def test_request_timeout_and_stop_refusal_surface(rig):
     governor, link, _ = rig
     link.refusals["robot.stop"] = "exact stop refusal"
     assert (await governor.stop("test")).reason == "exact stop refusal"
+    assert commands(link, "robot.mouth")[-1].params == {"open": 0}
     original = link.call
 
     async def timeout_call(method, params=None, timeout=2):  # noqa: ASYNC109 - fake contract
@@ -446,3 +447,123 @@ async def test_request_timeout_and_stop_refusal_surface(rig):
     link.call = timeout_call
     assert (await governor.move(0.1, 0, 0, 1)).reason == "robot request timed out"
     assert (await governor.status()).reason == "robot request timed out"
+
+
+@pytest.mark.parametrize("late_reply", [False, True])
+@pytest.mark.parametrize(
+    ("action", "method", "occurrence"),
+    [
+        ("look", "robot.look", 1),
+        ("skill", "robot.skills", 1),
+        ("skill", "robot.stop", 1),
+        ("skill", "robot.do", 1),
+        ("sit", "robot.policies", 3),
+        ("sit", "robot.do", 1),
+        ("stand", "robot.policies", 3),
+        ("move", "robot.policies", 1),
+        ("move", "robot.enable", 1),
+    ],
+)
+async def test_stop_preempts_slow_action_rpc(rig, action, method, occurrence, late_reply):
+    governor, link, clock = rig
+    assert (await governor.move(0.2, 0, 0, 5)).ok
+    await pump()
+    assert link.twist[0] == 0.2
+    if action == "stand":
+        link.policies["sitting"] = True
+    if method == "robot.enable":
+        link.policies["enabled"] = False
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = link.call
+    seen = 0
+
+    async def delayed(method_, params=None, timeout=2):  # noqa: ASYNC109 - fake contract
+        nonlocal seen
+        result = await original(method_, params, timeout)
+        if method_ == method:
+            seen += 1
+            if seen == occurrence:
+                entered.set()
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    if not late_reply:
+                        raise
+                    # Model a response already in flight despite cancellation.
+                    await release.wait()
+        return result
+
+    link.call = delayed
+    match action:
+        case "look":
+            pending = asyncio.create_task(governor.look("gauche"))
+        case "skill":
+            pending = asyncio.create_task(governor.do_skill("roulade"))
+        case "sit":
+            pending = asyncio.create_task(governor.sit())
+        case "stand":
+            pending = asyncio.create_task(governor.stand())
+        case _:
+            pending = asyncio.create_task(governor.move(-0.2, 0, 0, 5))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        start = len(link.records)
+        assert (await asyncio.wait_for(governor.stop("priority STOP"), 0.1)).ok
+        assert any(record.method == "robot.stop" for record in link.records[start:])
+        assert link.twist == [0, 0, 0]
+        assert not governor.moving
+        release.set()
+        result = await asyncio.wait_for(pending, 1)
+        assert not result.ok and result.reason == "action cancelled by stop"
+        await advance(clock, 0.3)
+        assert not any(
+            record.method in ("robot.move", "robot.head", "robot.enable", "robot.do")
+            for record in link.records[start:]
+        )
+        assert (await governor.wait_look()).reason == "look interrupted"
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+
+
+async def test_stop_invalidates_look_waiting_for_action_lock(rig):
+    governor, link, _ = rig
+    async with governor._action_lock:
+        pending = asyncio.create_task(governor.look("gauche"))
+        await pump()
+        assert not pending.done()
+        assert (await asyncio.wait_for(governor.stop("queued action"), 0.1)).ok
+    assert (await pending).reason == "action cancelled by stop"
+    assert not commands(link, "robot.look")
+    assert not commands(link, "robot.head")
+    assert (await governor.look("droite")).ok
+    await pump()
+    assert commands(link, "robot.head")
+
+
+async def test_watchdog_preempts_slow_look_and_rejects_late_head(rig):
+    governor, link, clock = rig
+    assert (await governor.move(0.2, 0, 0, 5)).ok
+    entered, release = asyncio.Event(), asyncio.Event()
+    original = link.call
+
+    async def delayed(method, params=None, timeout=2):  # noqa: ASYNC109 - fake contract
+        result = await original(method, params, timeout)
+        if method == "robot.look":
+            entered.set()
+            await release.wait()
+        return result
+
+    link.call = delayed
+    pending = asyncio.create_task(governor.look("gauche"))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        link.safety["fallen"] = True
+        await advance(clock, 0.2)
+        assert commands(link, "robot.stop")
+        assert link.twist == [0, 0, 0]
+        assert (await asyncio.wait_for(pending, 1)).reason == "action cancelled by stop"
+        assert not commands(link, "robot.head")
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)

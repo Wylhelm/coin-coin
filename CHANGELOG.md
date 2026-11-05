@@ -32,6 +32,14 @@
 
 ## S1 — 2026-11-04
 
+- Correction de priorité STOP sur `main` `143e015` : aucun verrou d'action
+  ni réponse RPC lente ne retarde son envoi ; RPC d'action invalidés/annulés,
+  générations vérifiées avant envoi et après réponse, aucune reprise tardive.
+  20 nouveaux cas déterministes ; 314 tests Python réussis, 5 sauts documentés,
+  couverture totale 93,04 % (gouverneur 96 %, relais 84 %), qualité verte.
+  3 tests sim et 5 AudioWorklet passent ; STOP pendant un regard retardé et
+  une marche réelle acquitté en moins de 200 ms (appel transport débuté en
+  0,116 ms), consigne zéro, action retardée refusée.
 - Rebase sur `main` `c1ee52d` : dépendances et procédures S2/S3 préservées,
   lock combiné régénéré, ADR robot renumérotées 004/005, procédure S1 adaptée
   au dépôt principal et au montage `.cache/logs/`.

@@ -251,6 +251,34 @@ est une tâche séparée et ne bloque pas la surveillance. Le mode est relu
 toutes les 30 s et après reconnexion ; un changement observé interrompt le
 mouvement pour ne jamais continuer avec les anciennes bornes.
 
+**Correction de priorité STOP.** La séparation des tâches ne suffisait pas :
+`look`, les skills et la revérification de posture attendaient des RPC sous
+le verrou partagé avec STOP. Une réponse lente empêchait donc l'envoi de
+l'arrêt. STOP ne prend désormais jamais ce verrou. Il incrémente la génération,
+annule immédiatement les RPC d'action et les tâches mouvement/regard, puis
+envoie la requête d'arrêt avant d'attendre leur nettoyage et de fermer le bec.
+Le délai de réponse de l'arrêt reste 100 ms ; la fermeture du bec est tentée
+même si l'arrêt est refusé.
+
+Les appels d'action vérifient sécurité et génération juste avant le transport
+et après la réponse ; une annulation par STOP devient un refus explicite.
+La vérification après attente du verrou empêche aussi une ancienne action en
+file de reprendre. Les réponses déjà en vol ne peuvent plus créer de maintien,
+enchaîner un skill ou activer le robot. Une commande déjà traitée côté robot
+ne peut pas être retirée ; STOP la suit et l'EMA reste observable (ADR-004).
+Le verrou sérialise toujours les actions ordinaires, notamment les toggles
+assis/debout et les remplacements, mais n'est plus une barrière à la sécurité.
+
+Les tests par événements retiennent les réponses `look`, `skills`, `stop`
+avant skill, `do`, `policies` (y compris sous verrou) et `enable`, avec ou
+sans annulation effective de la réponse. STOP doit terminer sans libérer la
+réponse retenue (< 100 ms), aucune commande d'action ne suit ; watchdog et
+action en attente du verrou sont aussi couverts. La reproduction réelle avec
+marche et réponse regard retenue mesure l'entrée dans `link.call` STOP en
+0,116 ms et vérifie son acquittement en moins de 200 ms, consigne zéro et
+refus de l'ancienne action. Le premier délai n'est pas une mesure de
+réception réseau ou d'immobilisation physique.
+
 **Conséquences.** Les interfaces S0 sont inchangées ; S9 peut adapter les
 flux WebRTC sans recopier corrélation/état. S5 utilise le gouverneur, jamais
 la CLI `raw`. Les tests contre la simulation sont en opt-in explicite
