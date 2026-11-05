@@ -31,6 +31,7 @@ EventKind = Literal[
     "user_speech_end",
     "response_started",
     "response_done",
+    "response_failed",
     "quack_started",
     "quack_done",
     "sleep_requested",
@@ -72,16 +73,17 @@ def _sleep(state: State, *, stopped: bool = False, summary: str = "") -> tuple[S
         Effect("MouthClose"),
         Effect("SetWakeEnabled", False),
         Effect("SetGate", Mode.SLEEPING.value),
-        Effect("Quack", "coo"),
         Effect("BrainSessionEnd", summary),
         Effect("CloseSession"),
     ]
-    if stopped:
+    if not stopped:
+        effects.insert(5, Effect("Quack", "coo"))
+    if stopped or state.speaking:
         effects[0:0] = [Effect("FlushPlayback"), Effect("CancelResponse")]
     return State(
         mode=Mode.SLEEPING,
-        speaking=True,
-        quack_active=True,
+        speaking=not stopped,
+        quack_active=not stopped,
         wake_enabled=False,
         followup_s=state.followup_s,
     ), effects
@@ -176,6 +178,22 @@ def transition(state: State, event: Event, now: float) -> tuple[State, list[Effe
                 followup_deadline=now + state.followup_s
                 if event.kind == "response_done"
                 else state.followup_deadline,
+            ),
+            effects,
+        )
+    if event.kind == "response_failed":
+        if state.mode == Mode.SLEEPING:
+            return state, []
+        speaking = state.quack_active
+        effects = [] if speaking else [Effect("MouthClose")]
+        effects.append(Effect("SetWakeEnabled", False))
+        return (
+            replace(
+                state,
+                speaking=speaking,
+                response_active=False,
+                wake_enabled=False,
+                wake_enable_at=None if speaking else now + 0.5,
             ),
             effects,
         )

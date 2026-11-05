@@ -57,3 +57,16 @@ async def test_registry_converts_handler_errors_and_timeouts() -> None:
     registry.register("slow", "Slow test", SCHEMA, slow)
     assert (await registry.dispatch("fail", "{}", object()))["reason"] == "ValueError: unavailable"
     assert (await registry.dispatch("slow", "{}", object()))["reason"] == "Tool slow timed out"
+
+
+async def test_registry_preserves_valid_refusal_results() -> None:
+    registry = ToolRegistry()
+
+    async def refuse(_context, _arguments):
+        return {"ok": False, "reason": "fallen"}
+
+    registry.register("refuse", "Refuse test", SCHEMA, refuse)
+    assert await registry.dispatch("refuse", "{}", object()) == {
+        "ok": False,
+        "reason": "fallen",
+    }

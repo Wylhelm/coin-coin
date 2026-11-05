@@ -144,7 +144,7 @@ def test_sleep_and_stop_emit_distinct_cleanup_effects() -> None:
     assert ("BrainSessionEnd", "bye") in kinds(effects)
     stopped, effects = transition(active, Event("stop_pressed"), 1)
     assert stopped.mode == Mode.SLEEPING
-    assert stopped.speaking
+    assert not stopped.speaking
     assert kinds(effects)[:2] == [("FlushPlayback", None), ("CancelResponse", None)]
 
 

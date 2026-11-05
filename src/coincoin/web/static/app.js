@@ -94,7 +94,9 @@ async function start() {
       } else if (event.type === "error") {
         messageLabel.textContent = event.message;
       } else if (event.type === "state") {
-        statusLabel.textContent = event.state;
+        const speaking = Boolean(event.speaking);
+        statusLabel.dataset.speaking = String(speaking);
+        statusLabel.textContent = event.state + (speaking ? " · parle" : "");
       } else if (event.type === "transcript") {
         updateTranscript(event);
       } else if (event.type === "action") {

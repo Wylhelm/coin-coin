@@ -16,6 +16,16 @@
   `marin` (écoute humaine encore requise).
 - Ajout du faux serveur fixture-backed et des tests de conversation, sommeil,
   reconnexion, renouvellement, journalisation, latence et barge-in.
+- Corrections après revue : STOP priorise l'initiation du hook robot et le
+  flush, invalide sessions/VAD/audio périmés, conserve l'ordre des trames,
+  tronque l'item réellement entendu à l'échantillon près, et traite les outils
+  sans bloquer SpeechStarted. Ajout de 15 régressions App/UI/transport,
+  notamment un refus TCP local réel, les résultats de refus d'outil, le contexte
+  mémoire avant ouverture et les octets FOLLOWUP réellement acceptés.
+- Revalidation complète après correction : 366 tests réussis, 3 tests de
+  simulation ignorés, couverture totale 90,40 %, ruff/format/Pyright verts ;
+  le harness AudioWorklet réel passe 5/5. La trace API unique demeure inchangée ;
+  aucun nouvel appel OpenAI, aucune sim et aucun robot.
 
 ## S2 — Flush borné — 2026-11-05
 

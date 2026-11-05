@@ -272,6 +272,16 @@ cd ~/projects/microduck/coin-coin-wt/S4
 COINCOIN_PORT=8774 COMPOSE_PROJECT_NAME=coincoin-s4 docker compose down
 ```
 
+Les régressions S4 vérifient également STOP en sommeil et avec hooks/UI/annulation
+lents, l'invalidation d'une ouverture périmée, l'ordre du tampon micro, la
+troncature barge-in par item et par échantillon, le traitement prioritaire des
+évènements durant un outil, la reconnexion après refus TCP local, le contexte
+mémoire avant l'ouverture Realtime, l'état de parole UI et les compteurs d'audio
+transmis sans conserver le PCM. La revalidation complète après correction
+compte 366 tests réussis, 3 tests de simulation ignorés et 90,40 % de couverture ;
+ruff, format et Pyright passent, ainsi que les 5 tests AudioWorklet Node. Les
+tests automatisés ne remplacent pas les validations vocales humaines ci-dessus.
+
 ## Développement et qualité
 
 ```sh

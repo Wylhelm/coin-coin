@@ -74,19 +74,11 @@ class RealtimeSession:
         url = f"{self.base_url}?model={quote(model, safe='')}"
         self._client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None))
         try:
-            try:
-                self._socket = await self._client.ws_connect(
-                    url,
-                    headers={"Authorization": f"Bearer {key}"},
-                    heartbeat=20,
-                )
-            except aiohttp.WSServerHandshakeError as exc:
-                request_id = exc.headers.get("x-request-id") if exc.headers else None
-                suffix = f" (request {request_id})" if request_id else ""
-                raise RealtimeConnectionError(
-                    f"Realtime WebSocket handshake failed: HTTP {exc.status}{suffix}",
-                    status=exc.status,
-                ) from None
+            self._socket = await self._client.ws_connect(
+                url,
+                headers={"Authorization": f"Bearer {key}"},
+                heartbeat=20,
+            )
             created = await self._receive_handshake_event()
             if created.get("type") != "session.created":
                 raise RealtimeConnectionError("Realtime did not create a session")
@@ -134,8 +126,19 @@ class RealtimeSession:
                             self.session_expires_at = expires_at
                     break
             self._reader_task = asyncio.create_task(self._read_events())
-        except BaseException:
+        except BaseException as exc:
             await self._close_transport()
+            if isinstance(exc, aiohttp.WSServerHandshakeError):
+                request_id = exc.headers.get("x-request-id") if exc.headers else None
+                suffix = f" (request {request_id})" if request_id else ""
+                raise RealtimeConnectionError(
+                    f"Realtime WebSocket handshake failed: HTTP {exc.status}{suffix}",
+                    status=exc.status,
+                ) from None
+            if isinstance(exc, (aiohttp.ClientError, TimeoutError)):
+                raise RealtimeConnectionError(
+                    f"Realtime WebSocket connection failed: {type(exc).__name__}"
+                ) from None
             raise
 
     async def _receive_handshake_event(self) -> dict[str, object]:

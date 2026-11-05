@@ -1,6 +1,7 @@
 """HTTP and paired WebSocket endpoints for browser audio."""
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -36,6 +37,8 @@ class Conversation(Protocol):
 
     async def stop_pressed(self) -> None: ...
 
+    async def ui_connected(self) -> None: ...
+
 
 class _OfflineConversation:
     active = False
@@ -47,6 +50,9 @@ class _OfflineConversation:
         return
 
     async def stop_pressed(self) -> None:
+        return
+
+    async def ui_connected(self) -> None:
         return
 
 
@@ -134,6 +140,13 @@ async def _ui_ws(request: web.Request) -> web.WebSocketResponse:
         await websocket.close(code=4000, message=b"Audio WebSocket required")
         return websocket
 
+    conversation = request.app[_CONVERSATION]
+    ui_connected = getattr(conversation, "ui_connected", None)
+    if ui_connected is not None:
+        result = ui_connected()
+        if inspect.isawaitable(result):
+            await result
+
     async for message in websocket:
         if message.type != WSMsgType.TEXT:
             continue
@@ -164,11 +177,10 @@ async def _ui_ws(request: web.Request) -> web.WebSocketResponse:
                 audio.acknowledge_flush(page, generation)
                 await websocket.send_json({"type": "flush_complete", "generation": generation})
         elif kind == "stop":
-            conversation = request.app[_CONVERSATION]
-            if conversation.active:
-                _spawn(request.app, conversation.stop_pressed())
-            else:
+            if request.app[_ECHO] or request.app[_TONE]:
                 _spawn(request.app, audio.flush())
+            else:
+                _spawn(request.app, request.app[_CONVERSATION].stop_pressed())
         else:
             await websocket.send_json({"type": "error", "message": "Unknown UI event"})
     await audio.disconnect_ui(page, websocket)

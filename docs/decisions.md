@@ -372,3 +372,15 @@ avec un résumé de conversation court et non fiable injecté comme contexte.
 La voix `marin` est un choix de travail, pas une sélection humaine validée.
 FR/EN, le barge-in sous 500 ms et le retour en sommeil après 7 minutes restent
 à écouter/vérifier par user.
+
+**Corrections après revue S4.** Le hook `stop` est initié avant le flush,
+l'interface et l'annulation Realtime ; le flush et l'annulation ne dépendent pas
+de leur achèvement. Les ouvertures et travaux audio/VAD anciens sont invalidés
+au coucher, les trames micro gardent leur ordre, et la troncature utilise
+l'identité d'item et le nombre d'échantillons réellement joués capturés avant
+flush. Les outils s'exécutent hors du consommateur d'évènements ; leurs refus
+valides sont conservés. Une perte TCP locale a été testée avec un port refusé,
+sans appel externe. Les régressions App/UI/transport et la suite complète
+valident les compteurs audio uniquement après acceptation par le transport,
+l'état de parole synchronisé à la connexion, les hooks de sommeil et les
+erreurs UI bornées. Les vérifications humaines ci-dessus restent ouvertes.

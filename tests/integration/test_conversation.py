@@ -190,11 +190,17 @@ async def test_followup_timeout_updates_journal_and_ui(tmp_path: Path) -> None:
     journal = Journal(log_dir=tmp_path / "logs")
     app = App(_settings(), _FakeAudio(), journal, clock=FakeClock(10), control=control)
     app.state = State(Mode.FOLLOWUP, followup_deadline=10)
+    slept: list[str] = []
+    app.on("sleep", lambda summary: slept.append(summary))
 
     await app._apply(Event("tick"))
 
     assert app.mode == Mode.SLEEPING
-    assert {"type": "state", "state": "SLEEPING"} in controls
+    assert any(
+        message.get("type") == "state" and message.get("state") == "SLEEPING"
+        for message in controls
+    )
+    assert slept == [""]
     entries = [
         json.loads(line)
         for path in journal.log_dir.glob("*.jsonl")
@@ -275,18 +281,24 @@ class _ReconnectSession(RealtimeSession):
 
 async def test_barge_in_truncates_only_current_item_at_pre_flush_playback(tmp_path: Path) -> None:
     audio = _FakeAudio()
+    audio.progress = 50
     app = App(_settings(), audio, Journal(log_dir=tmp_path / "logs"))
     session = _RecordingSession()
     app._session = session
     app.state = State(Mode.AWAKE, speaking=True, wake_enabled=False)
-    app._active_audio_item = "second-item"
-    app._item_start_ms.update({"first-item": 0, "second-item": 120})
-    app._item_queued_ms.update({"first-item": 120, "second-item": 500})
-    app._output_enqueued_ms = 620
+    app._active_response_id = "response"
+    app._ignore_audio_until_response = False
+    await app._handle_realtime_event(
+        AudioDelta(item_id="first-item", pcm=bytes(2400), response_id="response")
+    )
+    await app._handle_realtime_event(
+        AudioDelta(item_id="second-item", pcm=bytes(2400), response_id="response")
+    )
 
     await app._apply(Event("user_speech_start"))
+    await asyncio.sleep(0)
 
     assert audio.flushed
     assert session.cancelled
-    assert session.truncation == ("second-item", 130)
-    assert app._output_enqueued_ms == 0
+    assert session.truncation == ("first-item", 50)
+    assert app._output_enqueued_samples == 0

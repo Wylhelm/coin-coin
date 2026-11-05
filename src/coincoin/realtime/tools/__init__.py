@@ -95,9 +95,13 @@ class ToolRegistry:
             detail = _SECRET.sub("[REDACTED]", str(exc))
             _LOGGER.error("Realtime tool %s failed: %s", name, type(exc).__name__)
             return {"ok": False, "reason": f"{type(exc).__name__}: {detail}"}
-        if not isinstance(result, dict) or result.get("ok") is not True:
+        if not isinstance(result, dict):
             return {"ok": False, "reason": "Tool returned an invalid result"}
-        return result
+        if result.get("ok") is True:
+            return result
+        if result.get("ok") is False and isinstance(result.get("reason"), str):
+            return result
+        return {"ok": False, "reason": "Tool returned an invalid result"}
 
 
 def default_tools() -> tuple[ToolDefinition, ...]:

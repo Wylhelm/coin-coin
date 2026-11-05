@@ -24,6 +24,8 @@ def test_post_wake_buffer_is_replayed_in_order_when_ready() -> None:
     assert gate.process(second, Mode.AWAKE) == []
     assert gate.process(current, Mode.AWAKE, session_ready=True) == [first, second, current]
     assert gate.buffered_bytes == 0
+    assert gate.bytes_sent == {}
+    gate.record_sent(Mode.AWAKE, 6)
     assert gate.bytes_sent == {"AWAKE": 6}
 
 
@@ -44,12 +46,16 @@ def test_followup_sends_only_vad_speech_frames() -> None:
     gate = AudioGate()
     assert gate.process(FRAME, Mode.FOLLOWUP) == []
     assert gate.process(FRAME, Mode.FOLLOWUP, speech=True) == [FRAME]
+    assert gate.bytes_sent == {}
+    gate.record_sent(Mode.FOLLOWUP, len(FRAME))
     assert gate.bytes_sent == {"FOLLOWUP": len(FRAME)}
 
 
 def test_awake_sends_all_frames_after_session_is_ready() -> None:
     gate = AudioGate()
     assert gate.process(FRAME, Mode.AWAKE, session_ready=True) == [FRAME]
+    assert gate.bytes_sent == {}
+    gate.record_sent(Mode.AWAKE, len(FRAME))
     assert gate.bytes_sent == {"AWAKE": len(FRAME)}
 
 
@@ -65,6 +71,8 @@ def test_reset_preserves_cumulative_counters() -> None:
     gate = AudioGate()
     gate.process(FRAME, Mode.AWAKE, session_ready=True)
     gate.reset()
+    assert gate.bytes_sent == {}
+    gate.record_sent(Mode.AWAKE, len(FRAME))
     assert gate.bytes_sent == {"AWAKE": len(FRAME)}
 
 

@@ -14,6 +14,7 @@ class AudioDelta(_Event):
     item_id: str
     pcm: bytes
     content_index: int = 0
+    response_id: str | None = None
 
 
 class AssistantTranscript(_Event):
@@ -83,6 +84,7 @@ def parse_event(payload: dict[str, Any]) -> RealtimeEvent | None:
             item_id=payload["item_id"],
             pcm=base64.b64decode(payload["delta"], validate=True),
             content_index=payload.get("content_index", 0),
+            response_id=payload.get("response_id"),
         )
     if kind in {"response.output_audio_transcript.delta", "response.output_audio_transcript.done"}:
         return AssistantTranscript(

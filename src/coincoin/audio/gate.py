@@ -34,6 +34,13 @@ class AudioGate:
         self._buffer.clear()
         self._buffer_bytes = 0
 
+    def record_sent(self, mode: Mode, byte_count: int) -> None:
+        """Record PCM only after the transport has accepted it."""
+        if byte_count < 0 or byte_count % 2:
+            raise ValueError("Sent audio byte count must be nonnegative and sample-aligned")
+        if byte_count:
+            self._counters[mode.value] = self._counters.get(mode.value, 0) + byte_count
+
     def process(
         self,
         pcm16_24k: bytes,
@@ -70,7 +77,4 @@ class AudioGate:
         if pcm16_24k:
             frames.append(pcm16_24k)
         self.reset()
-        self._counters[mode.value] = self._counters.get(mode.value, 0) + sum(
-            len(frame) for frame in frames
-        )
         return frames
