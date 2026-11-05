@@ -1,5 +1,29 @@
 # Réseau Coin-Coin — relevés S0 / S1 du 2026-11-04
 
+## Revalidation S1 après rebase sur S2/S3
+
+Base `main` : `c1ee52d`. Dépendances ONNX/Vosk/SoXR conservées, Pillow
+ajouté et `uv.lock` régénéré. Aucun module S2/S3 modifié ; leurs procédures
+audio/réveil et réserves humaines restent présentes. Les décisions robot
+portent désormais les numéros ADR-004/005, sans renuméroter les ADR S2/S3.
+La procédure robot décrit aussi la configuration locale depuis le dépôt
+principal : `.env` non transporté par Git, jeton généré sans affichage,
+liens eth0 et montage `.cache/logs/`.
+
+| Vérification après rebase | Résultat |
+|---|---|
+| Commande qualité complète ci-dessous | Ruff/format verts, 0 diagnostic pyright ; **294 passed, 5 skipped** |
+| Couverture combinée | **92,95 %** totale ; gouverneur **95 %**, relais **84 %** |
+| Sauts hors opt-in | 3 sim ; 2 tests Silero réels sans leurs assets locaux (pas de régression revendiquée sur ces assets) |
+| `.cache/pyright/pyright-python/nodeenv/bin/node --test tests/js/play_worklet.test.mjs` | **3 passed**, vrai AudioWorklet S2 |
+| `COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s` | **3 passed, 296 deselected**, aucun saut ; avance **0,154 m**, tour **88,647°**, regard gauche **0,795 rad** |
+| `docker compose up --build --detach --wait --wait-timeout 60` | Lock combiné installé ; projet S1 healthy avec `.cache/logs/` |
+| HTTP `8771/healthz` puis CLI Docker `status` | HTTP 200 ; robot debout, walk, enabled, healthy, état frais |
+| Nettoyage | Compose down, relais PID 71600 certifié puis SIGTERM (code 0), duck-sim down sans TTY (code 0) |
+| Contrôle final | Aucun listener 7821/7921/7830/7831/8771 ni conteneur `coincoin-s1` |
+
+Les relevés ci-dessous conservent les essais initiaux Docker, refus et deadman.
+
 ## S1 : conteneur → relais authentifié → vraie simulation
 
 IP `eth0` redécouverte : **192.0.2.1**. `.env` ignoré configuré avec

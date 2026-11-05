@@ -32,6 +32,13 @@
 
 ## S1 — 2026-11-04
 
+- Rebase sur `main` `c1ee52d` : dépendances et procédures S2/S3 préservées,
+  lock combiné régénéré, ADR robot renumérotées 004/005, procédure S1 adaptée
+  au dépôt principal et au montage `.cache/logs/`.
+- Revalidation combinée : 294 tests réussis, 5 sauts documentés, couverture
+  92,95 %, qualité verte ; 3 tests AudioWorklet et 3 tests sim réels réussis
+  (avance 0,154 m, tour 88,647°, regard 0,795 rad). Compose reconstruit healthy,
+  CLI authentifiée vérifiée, toutes les ressources S1 arrêtées.
 - Relais TCP/Unix stdlib autonome, refus par défaut par port, lignes bornées,
   authentification avant connexion Unix et arrêt propre SIGINT/SIGTERM.
 - Couche `JsonRpcConnection` réutilisable en S9 : corrélation par identifiant,

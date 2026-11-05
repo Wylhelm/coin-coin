@@ -265,9 +265,16 @@ couverture totale 92,91 %, machine d'états
 sont ignorés en CI sans assets ; leur commande obligatoire figure dans
 `assets/wake/README.md`.
 
-Résultat S1 : commande complète verte, 225 tests réussis, 3 tests sim
+Résultat S1 initial : commande complète verte, 225 tests réussis, 3 tests sim
 sautés volontairement hors opt-in ; couverture totale 93,99 %, gouverneur
 95 %, relais 84 % ; aucun diagnostic pyright.
+
+Après rebase S1 sur `main` `c1ee52d` (S2/S3 corrigées), la même commande
+complète est verte : **294 tests réussis, 5 ignorés**, couverture totale
+**92,95 %**, gouverneur 95 %, relais 84 %, aucun diagnostic ruff/pyright.
+Les cinq sauts correspondent aux trois tests sim sans opt-in et aux deux
+tests Silero réels dont les assets ne sont pas présents dans le worktree S1.
+Les trois tests AudioWorklet S2 passent aussi avec le runtime Node local.
 
 Pour les trois tests contre la sim **attribuée explicitement**, après la
 commande qualité et avec la sim/relais actifs :
@@ -280,8 +287,11 @@ COINCOIN_TEST_SIM=1 uv run pytest -m sim --cov-append -s
 pas sur trois essais physiques seuls. Pour un essai ciblé sans couverture,
 utiliser `--no-cov`. Sans opt-in ou si le relais attribué est indisponible,
 les tests sim sont sautés ; ils ne se rabattent jamais sur une sim live.
-Mesure finale : avance **0,162 m** en 2 s (> 0,15), tour **88,813°**
-(erreur < 15°), regard gauche **0,797 rad** (> 0,2).
+Mesure après rebase : **3 passed, 296 deselected**, aucun saut ; avance
+**0,154 m** en 2 s (> 0,15), tour **88,647°** (erreur < 15°), regard gauche
+**0,795 rad** (> 0,2). La reconstruction Compose avec le lock combiné,
+le montage `.cache/logs`, `/healthz` et la CLI `status` authentifiée ont
+aussi été vérifiés. Sim, relais et projet Compose S1 arrêtés ensuite.
 
 Pyright installe son runtime Node localement si Node manque dans WSL.
 Les tests hors sim ne lisent pas les vrais secrets de `.env` et ne contactent aucun
