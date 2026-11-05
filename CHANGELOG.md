@@ -9,7 +9,7 @@
   identité et complétude non vérifiées. Refus des copies exactes des TTS locaux.
 - Corpus `assets/wake/` exclus du contexte Docker et sessions humaines ignorées
   par Git. Données existantes conservées, aucune capture micro lancée.
-- Validation sur `143e015` : 309 tests réussis, 3 ignorés, dont 13 nouvelles
+- Validation après rebase sur `19bd4c3` : 329 tests réussis, 3 ignorés, dont 13 nouvelles
   régressions déterministes ; qualité complète verte.
 
 ## S2 — 2026-11-04

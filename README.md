@@ -261,10 +261,10 @@ node --test tests/js/play_worklet.test.mjs
 
 Node.js n'est pas requis pour exécuter le service.
 
-Après la seconde correction S3 sur `main=143e015` :
-309 tests réussis, 3 tests de simulation ignorés, dont deux tests Silero ONNX
+Après la seconde correction S3 rebasée sur `main=19bd4c3` :
+329 tests réussis, 3 tests de simulation ignorés, dont deux tests Silero ONNX
 réels avec les assets locaux et 13 tests déterministes de corpus/provenance ;
-couverture totale 92,95 %, machine d'états
+couverture totale 93,04 %, machine d'états
 98 %, porte audio 96 %, aucun diagnostic ruff ou pyright. Les tests ONNX réels
 sont ignorés en CI sans assets ; leur commande obligatoire figure dans
 `assets/wake/README.md`.
