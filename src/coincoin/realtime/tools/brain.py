@@ -17,7 +17,7 @@ FailureReporter = Callable[[str, FailureKind], None]
 SlowReporter = Callable[[float], None]
 
 ASK_DESCRIPTION = (
-    "Ask Coin-Coin's long-term memory agent (OpenClaw) about user, past conversations, "
+    "Ask Coin-Coin's long-term memory agent (OpenClaw) about the user, past conversations, "
     "or a question needing long reasoning. It may take several seconds: in the same response, "
     "first say one very short waiting phrase in the user's language such as « je réfléchis… », "
     "then call this tool. Repeat the answer briefly; if it says memory is unavailable, say so."

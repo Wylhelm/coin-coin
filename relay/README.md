@@ -8,7 +8,7 @@ Le relais n'active pas le robot et ne remplace pas le gouverneur.
 
 Depuis le dépôt principal `~/projects/microduck/coin-coin` après fusion,
 ou le worktree S1 pendant son développement. Configurer d'abord le `.env`
-local selon la procédure du [README principal](../README.md), sans afficher
+local selon la [procédure de livraison](../docs/delivery.md), sans afficher
 le jeton (les fichiers `.env` ne sont pas transportés par une fusion) :
 
 ```sh

@@ -1,12 +1,17 @@
 # Réseau Coin-Coin — état actuel et relevés historiques
 
+> Les captures, commandes et chemins publiés ont été anonymisés ; les mesures
+> et résultats des essais restent inchangés. Les adresses `192.0.2.x` sont des
+> substituts de documentation, pas les adresses utilisées lors des essais.
+> Les SHA-256 des captures publiées ont été recalculés.
+
 ## État assemblé au 2026-11-05
 
 Base intégrée `main=e7cb24f` : S0–S8 intégrées côté agent, validations humaines
 ouvertes ; S9 intégrée sous réserves, TCP conservé par défaut ; S10 non commencée.
 La [procédure actuelle depuis main](delivery.md) remplace les anciens lancements
 par worktree ci-dessous : IP `eth0` redécouverte, relais TCP authentifié,
-modèles et sons locaux hors Git, lancement et arrêt réservés à user.
+modèles et sons locaux hors Git, lancement et arrêt réservés à l'utilisateur.
 La dernière suite sim S9 conserve **6 réussites, 2 échecs de marche, zéro saut**,
 sans nouvel essai. Docker reste arrêté pour cette préparation documentaire.
 
@@ -95,15 +100,15 @@ Captures anonymisées suivies par Git :
 [démarrage](evidence/s5/rebased-sim-start.txt),
 [passage sim unique](evidence/s5/rebased-sim-single-run.txt),
 [nettoyage](evidence/s5/rebased-cleanup.txt).
-[Manifeste](evidence/s5/rebased-captures.json) : commandes exactes, UTC,
+[Manifeste](evidence/s5/rebased-captures.json) : commandes anonymisées, UTC,
 identifiants d'appels, méthode de capture, codes et SHA-256. Les deux sorties
-sim/nettoyage sont capturées directement par `tee`, sans réécriture.
+sim/nettoyage ont été capturées par `tee` puis anonymisées pour publication.
 Les nouveaux logs simulateur sont conservés dans `.cache/logs/s5-simulator-rebased/`,
 séparément de la copie initiale `.cache/logs/s5-simulator/`.
 
 Le blocage initial ci-dessous est levé par ce passage du protocole SIMWALK,
-sur décision de user. Aucune sélection/reprise d'essai, aucun nouvel appel
-OpenAI et aucun travail S9. La mesure inclut la décélération post-STOP ;
+sur décision du responsable du projet. Aucune sélection/reprise d'essai,
+aucun nouvel appel OpenAI et aucun travail S9. La mesure inclut la décélération post-STOP ;
 elle reste odométrique, pas une preuve indépendante de déplacement physique.
 Les critères humains demeurent ouverts ; l'intégration reste au coordonnateur.
 
@@ -115,14 +120,14 @@ Branche `session/S5`, base `051eb33`, ressources exclusivement S5, sans caméra 
 `~/.cache/ds-s5`, corps 7841, frame réservée 7941, relais 7850/7851,
 HTTP 8775, projet `coincoin-s5`. IP eth0 redécouverte : `192.0.2.1`.
 
-**Sorties anonymisées, sans rejouer les essais.** Les captures originales
-ont été extraites automatiquement des résultats d'outils de cette session,
-sans réécrire leurs mesures : [premier passage](evidence/s5/sim-pass.txt),
+**Sorties anonymisées, sans rejouer les essais.** Les captures ont été
+extraites des résultats d'outils puis anonymisées, sans modifier leurs mesures :
+[premier passage](evidence/s5/sim-pass.txt),
 [qualité puis dernier passage en échec](evidence/s5/quality-and-sim-failure.txt),
 [tentative initiale non probante](evidence/s5/initial-unavailable.txt) et
 [nettoyage](evidence/s5/cleanup.txt). Le
 [manifeste](evidence/s5/captures.json) conserve les commandes PowerShell/WSL
-exactes, l'identifiant d'appel, l'heure UTC, le code de sortie et le SHA-256
+anonymisées, l'identifiant d'appel, l'heure UTC, le code de sortie et le SHA-256
 de chaque capture. Le contenu inclut les en-têtes et tableaux pytest complets,
 pas seulement une synthèse. Les logs originaux du simulateur sont conservés
 dans `~/.cache/ds-s5/*.log` et copiés sans écrasement dans

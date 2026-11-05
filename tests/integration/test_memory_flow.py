@@ -41,9 +41,7 @@ async def test_memory_prompts_share_one_openclaw_session_and_local_summary() -> 
     try:
         assert await brain.session_start() == "user aime le français."
         await brain.remember("Je m'appelle user.")
-        assert await brain.ask("Comment est-ce que je m'appelle ?") == (
-            "user aime le français."
-        )
+        assert await brain.ask("Comment est-ce que je m'appelle ?") == ("user aime le français.")
         summary = build_session_summary(["Je m'appelle user."], ["remember"])
         await brain.session_end(summary)
 
@@ -237,9 +235,7 @@ async def test_app_remembers_across_sleep_with_non_blocking_session_end(
         assert "Aucun souvenir." in first.instructions
 
         first.push(
-            UserTranscript(
-                item_id="user-1", text="Souviens-toi que je m'appelle user.", final=True
-            )
+            UserTranscript(item_id="user-1", text="Souviens-toi que je m'appelle user.", final=True)
         )
         stored = await harness.call_tool(
             first, "remember", {"fact": "L'utilisateur s'appelle user."}, "call-1"

@@ -1,5 +1,9 @@
 # Livraison assemblée avant réception
 
+> Les chemins, identités et adresses réseau des relevés historiques ont été
+> anonymisés pour la publication. Les adresses `192.0.2.x` sont des exemples
+> réservés à la documentation et doivent être remplacées.
+
 ## État de référence
 
 Procédure depuis `~/projects/microduck/coin-coin`, branche `main`, base intégrée

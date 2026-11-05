@@ -1,5 +1,9 @@
 # S9 : suite réelle unique après intégration SIMWALK
 
+> Les captures ont été anonymisées pour publication, sans modification des
+> résultats d'essais. L'adresse `192.0.2.1` remplace l'adresse réseau réelle ;
+> les identifiants de commits proviennent de l'historique local d'origine.
+
 Exécution autorisée après revue du HEAD `2fc23f94e8d5dea97f8d5d6be4dabbc88eacff30`,
 base `8de5e3ebcc16734053d7cf96b5dbb3f75847c543`, le 2026-11-05 à 20:49 UTC.
 

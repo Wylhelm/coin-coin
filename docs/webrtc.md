@@ -1,9 +1,13 @@
 # WebRTC LAN : S9
 
+> Les relevés et captures publics ont été anonymisés. Les adresses `192.0.2.x`
+> sont des substituts de documentation, pas les adresses utilisées lors des
+> essais ; les résultats numériques sont inchangés.
+
 **Intégration pré-réception autorisée sous réserves, 2026-11-05 :**
-user demande « finissons d'intégrer s9 et tout le reste, tout ce qu'on
-peut avant d'avoir le robot ». Le coordonnateur prépare l'intégration ;
-aucune fusion n'est revendiquée ici. TCP reste le transport par défaut.
+le projet poursuit l'intégration avant réception du robot. Le coordonnateur
+prépare l'intégration ; aucune fusion n'est revendiquée ici. TCP reste le
+transport par défaut.
 Cette décision ne vaut ni validation du critère sim ni `agent-done` strict.
 Résultats et nettoyage ont été contre-vérifiés ; les deux échecs de marche
 restent ouverts sans cause imputée au transport.

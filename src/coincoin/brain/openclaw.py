@@ -15,7 +15,7 @@ _LOGGER = logging.getLogger(__name__)
 _USER = "coin-coin-voice"
 _START_PROMPT = (
     "[Coin-Coin se réveille] Donne en 5 lignes max ce que je dois savoir pour "
-    "parler à user maintenant (souvenirs utiles, préférences)."
+    "parler à l'utilisateur maintenant (souvenirs utiles, préférences)."
 )
 
 

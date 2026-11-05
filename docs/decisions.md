@@ -1,5 +1,9 @@
 # Décisions
 
+> Les relevés publiés ont été anonymisés. Les adresses `192.0.2.x` sont des
+> substituts de documentation ; les identifiants de commits historiques
+> désignent l'historique local d'origine.
+
 ## ADR-000 — aiohttp pour le socle web asynchrone
 
 Date : 2026-11-04. Statut : accepté.

@@ -1,5 +1,11 @@
 # Changelog
 
+> Les archives publiées ont été anonymisées : identités, chemins et adresses
+> réseau ont été remplacés, sans modifier les résultats des essais. Les
+> empreintes des captures publiées ont été recalculées. Les identifiants de
+> commits mentionnés dans les relevés correspondent à l'historique local
+> d'origine, dont les identifiants diffèrent de l'historique public.
+
 ## Pré-réception — procédure assemblée et actifs locaux — 2026-11-05
 
 - Procédure actuelle depuis `main=e7cb24f` : modèles, sons, configuration
