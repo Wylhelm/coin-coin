@@ -17,6 +17,7 @@ assets/wake/positives/
 assets/wake/negatives/
 assets/wake/downloads/
 assets/wake/vad/
+assets/wake/recorded/
 dist/
 build/
 *.egg-info/

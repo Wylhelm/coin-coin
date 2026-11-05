@@ -18,24 +18,61 @@ criterion. Once available, record 20 examples in each language at both near and
 far distances from WSL:
 
 ```sh
-uv run python scripts/record_positives.py --count 20 --seconds 2.5
+uv run python scripts/record_positives.py --out assets/wake/recorded/session-01 --count 20 --seconds 2.5
 ```
 
 The script records from the WSL PulseAudio `default` source with ffmpeg and
-writes 16 kHz mono PCM16 files under `assets/wake/positives/{fr,en}`. Pass
+writes 16 kHz mono PCM16 files under `assets/wake/recorded/session-01/{fr,en}`. Pass
 `--device SOURCE_NAME` to use another PulseAudio source.
 Use 20 natural repetitions per language at approximately 0.5 m and 2–3 m; include
 both « Coin-Coin » and « Hey Coin-Coin » in the recordings.
 `--count 20` means 20 examples at each language/distance combination (80 WAVs).
-The recorded filenames replace the synthetic files with matching names. After
-recording, label the positives correctly in the report:
+Human sessions are separate from synthetic `assets/wake/positives/` and
+`assets/wake/vad/`. No existing WAV is replaced. A nonempty output/session
+requires explicit `--resume` with matching count/duration; use a new session
+directory for another take. The immutable `recording-plan.json` describes the
+requested slots, not verified provenance. Resume validates WAV format/duration,
+skips already completed files, and records missing slots only:
 
 ```sh
-uv run python scripts/eval_wake.py --positive-source recorded
+uv run python scripts/record_positives.py --out assets/wake/recorded/session-01 --count 20 --seconds 2.5 --resume
 ```
 
+ffmpeg writes to a uniquely owned temporary `.partial`, then the script
+validates it and publishes via a no-clobber hard link. Interrupted temporary
+captures are preserved and reported, never automatically removed or promoted.
+The next resume retries that missing slot without losing completed WAVs.
+An existing incomplete/corrupt WAV or unexpected WAV stops resume explicitly:
+preserve it, inspect it, and use a new session rather than overwrite it.
+
+Listen to every final WAV, check that user spoke the expected phrase at
+the requested distances, and verify 20 valid files per language/distance
+(80 total) before claiming H-POSITIFS completion. Neither the recording plan
+nor the evaluator can recognize a speaker or validate those contents.
+For evaluation, `--positive-source recorded` alone is rejected. An explicit,
+exact attestation is required; quote it only if it is true for **every** WAV:
+
+```sh
+uv run python scripts/eval_wake.py \
+  --positives assets/wake/recorded/session-01 --positive-source recorded \
+  --attest-recorded 'I attest that every positive WAV in this directory is a human recording, not synthesized speech; speaker identity, phrase and distance are not automatically verified.' \
+  --report assets/wake/recorded/session-01/wake-eval.md
+```
+
+Imported human recordings are also allowed via `--positives DIR` and the same
+attestation; no claim that their speaker is user is made. Local known
+synthetic directories and byte-identical copies of their WAVs are rejected
+as recorded even with attestation. This hash comparison cannot detect other
+TTS, altered TTS, or infer provenance. Reports say **user-attested human**,
+quote the attestation, and give filename coverage only (not verified
+completeness). Imports without near/far filenames remain evaluable; they do
+not prove H-POSITIFS coverage.
+
 Without real recordings, the default `--positive-source synthetic` labels the
-Windows TTS smoke corpus.
+legacy Windows TTS smoke corpus as user-declared, not independently verified.
+Do not mix human WAVs into that directory. Models and every local corpus
+remain Git-ignored; `.dockerignore` excludes all `assets/wake/` so personal
+recordings and reports are not sent as Docker build context.
 
 For negatives, place at least one hour of licensed French and English speech or
 radio clips as mono 16 kHz PCM16 WAV under `assets/wake/negatives/fr` and
@@ -66,7 +103,7 @@ reporting a false pass.
 
 The durable checkout is `~/projects/microduck/coin-coin`, not the temporary S3
 worktree. Before removing that worktree, preserve `assets/models/` and
-`assets/wake/{positives,negatives,downloads,vad}/` in the durable checkout.
+`assets/wake/{positives,negatives,downloads,vad,recorded}/` in the durable checkout.
 Git does not transfer these ignored directories. From WSL, copy without
 overwriting any recordings or models already present at the destination:
 
@@ -74,7 +111,8 @@ overwriting any recordings or models already present at the destination:
 cd ~/projects/microduck/coin-coin
 mkdir -p assets/models assets/wake
 cp -a --update=none ../coin-coin-wt/S3/assets/models/. assets/models/
-for name in positives negatives downloads vad; do
+for name in positives negatives downloads vad recorded; do
+    test -d "../coin-coin-wt/S3/assets/wake/$name" || continue
     mkdir -p "assets/wake/$name"
     cp -a --update=none "../coin-coin-wt/S3/assets/wake/$name/." "assets/wake/$name/"
 done

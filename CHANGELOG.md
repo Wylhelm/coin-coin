@@ -1,5 +1,17 @@
 # Changelog
 
+## Correctif S3 H-POSITIFS — 2026-11-04
+
+- Sessions humaines isolées sous `assets/wake/recorded/`, capture temporaire et
+  publication sans écrasement ; reprise explicite conservant les WAV complets
+  et les temporaires interrompus.
+- Attestation exacte exigée pour les imports humains ; provenance déclarée,
+  identité et complétude non vérifiées. Refus des copies exactes des TTS locaux.
+- Corpus `assets/wake/` exclus du contexte Docker et sessions humaines ignorées
+  par Git. Données existantes conservées, aucune capture micro lancée.
+- Validation sur `143e015` : 309 tests réussis, 3 ignorés, dont 13 nouvelles
+  régressions déterministes ; qualité complète verte.
+
 ## S2 — 2026-11-04
 
 - Ajout de `BrowserAudio` : micro et lecture PCM16 sur `/ws/audio`, contrôles

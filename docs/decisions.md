@@ -200,6 +200,30 @@ la bouche n'est pas fermée par la fin du seul premier cycle, le barge-in annule
 les deux lectures et le réveil ne reprend que 500 ms après la dernière fin.
 La fin du cancanement ne réarme pas le délai de suivi démarré par la réponse.
 
+**Seconde correction : H-POSITIFS et provenance.** Les enregistrements humains
+vont désormais dans `assets/wake/recorded/session-01`, séparés des anciens TTS
+sous `positives/` et `vad/`, qui restent intacts. Le script refuse un répertoire
+existant sans `--resume`, enregistre dans un temporaire unique, valide le WAV
+et publie sans écrasement par lien dur. Une interruption conserve les prises
+complètes et le temporaire ; la reprise explicite avec le même plan enregistre
+uniquement les emplacements manquants. Les WAV invalides ou inattendus sont
+signalés sans suppression. Le plan est une intention d'enregistrement et non
+une preuve d'identité ou de contenu.
+
+Le seul choix `--positive-source recorded` n'est plus suffisant : le banc exige
+l'attestation exacte documentée dans `assets/wake/README.md` pour tous les WAV
+du dossier. Le rapport la cite comme déclaration utilisateur non vérifiée,
+indique les comptes par langue et la couverture des noms près/loin sans
+certifier la complétude H-POSITIFS. Il ne prétend pas identifier user,
+vérifier la phrase ou la distance. Les imports humains restent possibles.
+Les dossiers TTS connus et leurs copies strictement identiques par SHA-256
+sont refusés comme humains ; ce contrôle local n'est pas un détecteur général
+de parole synthétique. Les prises doivent être écoutées et attestées par la
+personne réalisant la validation. Le rapport historique Vosk synthétique et
+ses mesures ne sont pas recalculés. `recorded/` est ignoré par Git et tout
+`assets/wake/` exclu de Docker pour ne pas envoyer de prises personnelles
+dans le contexte de construction.
+
 ## ADR-004 — requête `robot.stop`, pas notification ; observer l'EMA
 
 Date : 2026-11-04. Statut : accepté, vérifié contre la simulation réelle.

@@ -261,9 +261,10 @@ node --test tests/js/play_worklet.test.mjs
 
 Node.js n'est pas requis pour exécuter le service.
 
-Après intégration et correction S3 sur S2 corrigée (`81a4e0d`) :
-110 tests réussis, dont deux tests Silero ONNX réels avec les assets locaux,
-couverture totale 92,91 %, machine d'états
+Après la seconde correction S3 sur `main=143e015` :
+309 tests réussis, 3 tests de simulation ignorés, dont deux tests Silero ONNX
+réels avec les assets locaux et 13 tests déterministes de corpus/provenance ;
+couverture totale 92,95 %, machine d'états
 98 %, porte audio 96 %, aucun diagnostic ruff ou pyright. Les tests ONNX réels
 sont ignorés en CI sans assets ; leur commande obligatoire figure dans
 `assets/wake/README.md`.
@@ -326,9 +327,31 @@ cd ~/projects/microduck/coin-coin
 scripts/download_wake_models.sh
 scripts/download_wake_negatives.sh
 uv run python scripts/import_quacks.py
-uv run python scripts/record_positives.py --count 20 --seconds 2.5
-uv run python scripts/eval_wake.py --positive-source recorded
+uv run python scripts/record_positives.py --out assets/wake/recorded/session-01 --count 20 --seconds 2.5
 ```
+
+Les sessions humaines sont séparées des TTS et ne remplacent aucun WAV.
+Après interruption, relancer la même commande avec `--resume` ; les prises
+complètes sont conservées et seuls les emplacements manquants sont enregistrés.
+Les fichiers temporaires interrompus sont préservés. Un WAV existant invalide
+arrête la reprise sans modification. Utiliser un nouveau dossier pour refaire
+des prises. Écouter/vérifier les 80 WAV (20 par langue/distance) avant de
+valider H-POSITIFS, puis lancer :
+
+```sh
+uv run python scripts/eval_wake.py \
+  --positives assets/wake/recorded/session-01 --positive-source recorded \
+  --attest-recorded 'I attest that every positive WAV in this directory is a human recording, not synthesized speech; speaker identity, phrase and distance are not automatically verified.' \
+  --report assets/wake/recorded/session-01/wake-eval.md
+```
+
+Cette attestation doit être exacte et vraie pour chaque WAV ; le banc ne
+reconnaît pas le locuteur et ne vérifie pas le contenu ou la distance.
+Les imports humains sont possibles avec la même attestation et un autre
+`--positives DIR`, sans les attribuer automatiquement à user. Les copies
+exactes des TTS locaux connus sont refusées, mais aucune détection générale
+de TTS n'est revendiquée. Le rapport affiche une provenance attestée et des
+comptes de fichiers, jamais une complétude humaine vérifiée.
 
 Le rapport `docs/wake-eval.md` contient les mesures ; `WAKE_THRESHOLD=0.9` est
 un meilleur compromis provisoire, pas un seuil validé (le rappel synthétique et
@@ -347,9 +370,12 @@ réveil reste coupé jusqu'à 500 ms après la dernière fin.
 Le test ONNX réel et les horodatages WAV sont rejouables selon
 `assets/wake/README.md`. Avant tout retrait du worktree S3, préserver dans le
 repo principal les dossiers ignorés `assets/models/`, `assets/wake/positives/`,
-`assets/wake/negatives/`, `assets/wake/downloads/` et `assets/wake/vad/` :
+`assets/wake/negatives/`, `assets/wake/downloads/`, `assets/wake/vad/` et
+`assets/wake/recorded/` :
 ils ne sont pas transportés par une fusion Git. La procédure de copie sans
 écrasement est donnée dans ce même document ; ne pas supprimer ces données.
+Tout `assets/wake/` est exclu du contexte Docker ; les sessions humaines et
+leurs rapports sous `recorded/` sont également ignorés par Git.
 
 S0 ne lançait aucune simulation. S1 utilise uniquement son instance réservée.
 `.env`, logs, caches, modèles et sons sont ignorés par Git et par le contexte

@@ -1,6 +1,7 @@
 """Measure local wake-word recall, false activations per hour, and latency."""
 
 import argparse
+import hashlib
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,42 @@ from coincoin.wake.engine import WakeEngine
 from coincoin.wake.vosk_engine import VoskWakeEngine, load_pcm16_16k
 
 FRAME_BYTES = 16_000 * 2 * 80 // 1000
+RECORDED_ATTESTATION = (
+    "I attest that every positive WAV in this directory is a human recording, "
+    "not synthesized speech; speaker identity, phrase and distance are not automatically verified."
+)
+
+
+def validate_positive_source(directory: Path, source: str, attestation: str | None) -> str:
+    if source == "synthetic":
+        if attestation:
+            raise ValueError("A recorded attestation cannot label a synthetic corpus")
+        return "User-declared synthetic corpus; no automatic provenance verification."
+    if attestation != RECORDED_ATTESTATION:
+        raise ValueError(
+            f"--positive-source recorded requires --attest-recorded '{RECORDED_ATTESTATION}'"
+        )
+    synthetic_roots = [Path("assets/wake/positives"), Path("assets/wake/vad")]
+    resolved = directory.resolve()
+    if any(
+        resolved == root.resolve() or root.resolve() in resolved.parents for root in synthetic_roots
+    ):
+        raise ValueError("Known synthetic directory cannot be evaluated as recorded")
+    known_hashes = {
+        hashlib.sha256(path.read_bytes()).digest()
+        for root in synthetic_roots
+        for path in root.rglob("*.wav")
+    }
+    if any(
+        hashlib.sha256(path.read_bytes()).digest() in known_hashes
+        for path in directory.rglob("*.wav")
+    ):
+        raise ValueError("Positive WAV matches a known local synthetic WAV; recorded label refused")
+    return (
+        f"User attestation (not independently verified): {attestation} "
+        "Hash comparison only excludes exact matches to available local synthetic WAVs; "
+        "it cannot detect other TTS or identify a speaker."
+    )
 
 
 @dataclass(frozen=True)
@@ -106,36 +143,47 @@ def _write_report(
     thresholds: list[float],
     engine_name: str,
     positive_source: str,
+    provenance: str,
 ) -> float | None:
     positive_counts = {
         lang: sum(clip.category == "positive" and clip.lang == lang for clip in clips)
         for lang in ("fr", "en")
     }
-    positive_label = "synthetic TTS" if positive_source == "synthetic" else "recorded"
+    positive_label = (
+        "user-declared synthetic" if positive_source == "synthetic" else "user-attested human"
+    )
     lines = [
         "# Wake-word evaluation",
         "",
         f"- Engine: `{engine_name}`",
         f"- Positives: FR={positive_counts['fr']}, EN={positive_counts['en']} "
         f"{positive_label} WAVs.",
-        *(
-            [
-                "- Synthetic voices use Windows System.Speech and are only a smoke-test corpus; "
-                "they are not user's recordings."
-            ]
-            if positive_source == "synthetic"
-            else [
-                "- Recordings must be verified near/far samples from user; synthetic "
-                "positives have been overwritten or excluded."
-            ]
-        ),
-        "- Public negatives: FLEURS French (CC BY 4.0) and LibriSpeech test-clean English "
-        "(CC BY 4.0), plus the read-only duck sound bank and contextual TTS.",
+        f"- Positive provenance: {provenance}",
+        "- File counts do not verify speaker identity, phrase, distance or H-POSITIFS completion.",
+        "- Negative source names are inferred from filenames, not verified automatically; "
+        "see the documented acquisition procedure for FLEURS/LibriSpeech and duck/TTS sources.",
         "",
         "| Threshold | FR recall | EN recall | FA / h (all) | FA / h (public + quacks) | "
         "Median detection offset |",
         "|---:|---:|---:|---:|---:|---:|",
     ]
+    if positive_source == "recorded":
+        counts = {
+            f"{lang}/{distance}": sum(
+                clip.category == "positive"
+                and clip.lang == lang
+                and clip.path.name.startswith(f"{lang}_{distance}_")
+                for clip in clips
+            )
+            for lang in ("fr", "en")
+            for distance in ("near", "far")
+        }
+        coverage = ", ".join(f"{key}={value}/20" for key, value in counts.items())
+        lines.insert(
+            7,
+            f"- H-POSITIFS filename coverage only: {coverage}. "
+            "This is not verified human acceptance; inspect/listen to every WAV.",
+        )
     measured: list[tuple[float, float, int, float]] = []
     compromise: list[tuple[float, float, int, float]] = []
     has_both_languages = all(
@@ -249,6 +297,9 @@ def main() -> int:
         default="synthetic",
         help="Label the positive WAVs in the report",
     )
+    parser.add_argument(
+        "--attest-recorded", help=f"Exact required attestation: {RECORDED_ATTESTATION}"
+    )
     parser.add_argument("--models", type=Path, default=Path("assets/models"))
     parser.add_argument("--report", type=Path, default=Path("docs/wake-eval.md"))
     args = parser.parse_args()
@@ -256,6 +307,12 @@ def main() -> int:
     negative_files = list(args.negatives.rglob("*.wav")) if args.negatives.is_dir() else []
     if not positive_files:
         parser.error(f"No positive WAVs found under {args.positives}")
+    try:
+        provenance = validate_positive_source(
+            args.positives, args.positive_source, args.attest_recorded
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if not negative_files:
         parser.error(f"No negative WAVs found under {args.negatives}; see assets/wake/README.md")
     thresholds = (
@@ -266,11 +323,15 @@ def main() -> int:
     if any(not 0 <= threshold <= 1 for threshold in thresholds):
         parser.error("Threshold must be between 0 and 1")
     engine = VoskWakeEngine(threshold=0, model_root=args.models)
-    positive_source = "synthetic TTS" if args.positive_source == "synthetic" else "recorded"
+    positive_source = (
+        "user-declared synthetic" if args.positive_source == "synthetic" else "user-attested human"
+    )
     clips = _clips(args.positives, "positive", engine, positive_source=positive_source) + _clips(
         args.negatives, "negative", engine
     )
-    selected = _write_report(args.report, clips, thresholds, args.engine, args.positive_source)
+    selected = _write_report(
+        args.report, clips, thresholds, args.engine, args.positive_source, provenance
+    )
     if selected is None:
         print(f"Wrote {args.report}; no WAKE_THRESHOLD selected (negative corpus < 1 hour)")
     else:

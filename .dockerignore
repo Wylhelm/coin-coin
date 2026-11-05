@@ -14,6 +14,7 @@ coverage.xml
 logs
 assets/sounds
 assets/models
+assets/wake/
 dist
 build
 *.egg-info
