@@ -1,5 +1,31 @@
 # Changelog
 
+## S6 — Bec et cancanements — 2026-11-05
+
+- Ajout de `MouthAnimator` avec enveloppe RMS à 25 Hz calée sur l'horloge
+  physique, fermeture immédiate puis répétée, et rejet des anciennes positions
+  après remise à zéro de la lecture.
+- Ajout de `OutputMixer`, `StreamQuack` et `RobotQuack`. L'annulation préserve
+  les trames vocales déjà en file ; si un cancanement est déjà mixé avec une
+  voix envoyée, seule sa portion non encore envoyée peut être retirée sans
+  interrompre cette voix.
+- `VoiceFeature` utilise désormais un runtime par application ; les
+  automatiques greet/coo/inquire et les hooks d'interruption/STOP sont câblés.
+- Tests d'intégration et validations de la livraison en cours ; les critères
+  humains (bec MuJoCo, audibilité et absence de faux réveil/barge-in) restent
+  à mesurer par user. Aucun résultat de simulation n'est revendiqué.
+- Vérification ciblée : **22 tests réussis** (`test_mouth.py`, `test_quack.py`,
+  `test_voice_feature.py`) ; ruff/format sur les fichiers S6 touchés et Pyright
+  ciblé verts, avant les validations complètes ci-dessous.
+- Qualité complète : ruff/format/Pyright verts, **479 tests réussis, 5 ignorés**,
+  couverture **91,78 %**. Tests sim autorisés : **3 réussis, 481 désélectionnés** ;
+  marche **0,177 m**, tour **87,710°**, regard **0,796 rad**. Ce passage valide la
+  motion sim, pas les critères visuels/auditifs S6.
+- Simulation et relais arrêtés ; les ports S6 `7861`, `7961`, `7870`, `7871` et
+  `8776` sont libres et le state-dir ne contient plus de pidfiles. Docker
+  Desktop étant arrêté, Compose et l'essai humain via navigateur restent bloqués
+  par l'environnement et ne sont pas déclarés validés.
+
 ## S5 — Correction de la course d'annonce — 2026-11-05
 
 - Livraison `46bdee4` non acceptée : reproduction déterministe de deux

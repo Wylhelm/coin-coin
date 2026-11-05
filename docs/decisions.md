@@ -569,6 +569,48 @@ le dernier donne 1 échec/2 succès : 0,120359637 m au lieu de > 0,15 m,
 le blocage et les seuils, sans campagne S9 ni correction Pollen.
 Tous les services S5 sont arrêtés. Les essais humains restent ouverts.
 
+## ADR-S6-001 — Mixer partagé et runtime vocal par application
+
+Date : 2026-11-05. Statut : implémenté ; validation automatisée et humaine en cours.
+
+**Contexte.** Les cancanements simulés doivent rester dans la sortie du navigateur
+pour appartenir à la référence AEC, sans fausser le compte d'échantillons de la
+voix Realtime ni retarder son démarrage. L'annulation d'un son ne doit pas vider
+les trames vocales déjà mises en file.
+
+**Décision.** `OutputMixer` additionne la voix et `StreamQuack` à la sortie
+physique. Son horloge virtuelle expose à Realtime uniquement les échantillons de
+voix. L'annulation supprime le son non envoyé et ne vide la sortie physique que
+s'il n'y a pas de voix en attente ; un cancanement déjà mixé dans des trames
+émises peut donc subsister jusqu'à leur lecture si une voix est en file. STOP et
+barge-in utilisent le flush global existant. `RobotQuack` n'est choisi que par
+`QUACK_SINK=robot`.
+
+Chaque installation `VoiceFeature` crée un `_VoiceRuntime` propre à son `App`,
+comme `RobotFeature`. Les positions du bec proviennent du PCM effectivement
+émis, sont différées selon `played_ms` et les positions en retard sont écartées
+au lieu d'être rejouées en rafale. Une remise à zéro de l'horloge vide aussi les
+anciennes fenêtres.
+
+**Conséquences et validation restante.** Une banque absente journalise une seule
+erreur et n'empêche pas la conversation. Aucun seuil d'enveloppe ou de cadence
+n'est modifié. Les tests ciblés d'enveloppe, de mixage, d'annulation et du cycle
+de vie App passent : **22 réussis** ; ruff/format sur les fichiers touchés et
+Pyright ciblé sont verts. La commande qualité complète passe : ruff/format/
+Pyright verts, **479 tests réussis, 5 ignorés**, couverture **91,78 %**.
+Le passage sim autorisé réussit **3 tests** (motion : 0,177 m, 87,710°,
+0,796 rad), mais ne mesure pas le bec ni les cancanements.
+
+La première commande `duck-sim down` n'avait pas reçu `DUCK_SIM_PORT=7861` et
+a laissé le body server. Son PID et sa ligne de commande S6 ont été vérifiés
+avant l'arrêt ciblé ; `down` a ensuite été rejoué avec le port attribué. Le
+relais a également été arrêté. Vérification finale : aucun listener sur les
+ports S6 `7861`, `7961`, `7870`, `7871`, `8776`, aucun pidfile à la racine de
+`ds-s6`. Docker Desktop étant arrêté, Compose n'a pas été lancé. L'essai MuJoCo
+requis par la spec doit confirmer visuellement le bec et audiblement les trois
+automatiques, sans faux réveil ni faux barge-in ; aucun critère humain n'est
+déclaré réussi avant mesure.
+
 **Revalidation après rebase sur `cc30372` (S8 et ADR-008 SIMWALK).** Le blocage
 historique ci-dessus est levé par un passage complet unique, sans sélection
 ni rejeu : **3 passed, 447 deselected**, avance **0,162 m**, tour **89,222°**,

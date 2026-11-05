@@ -1,4 +1,4 @@
-# Coin-Coin — voix Realtime et outils robot (S1–S5)
+# Coin-Coin — voix Realtime et outils robot (S1–S6)
 
 Service vocal du MicroDuck Coin-Coin, développé séparément du code Pollen.
 S0 fournit le socle asynchrone ; S2 ajoute le micro et le haut-parleur du
@@ -9,7 +9,88 @@ en plus du socle S0. S4 ajoute la conversation vocale bilingue par Realtime
 WebSocket côté serveur. Les sessions ne s'ouvrent qu'après le réveil local.
 S5 installe `RobotFeature` : le serveur vocal maintient désormais une liaison
 robot et expose les actions via le gouverneur, sans contourner ses sécurités.
+S6 ajoute l'animation du bec et les cancanements : en simulation, `QUACK_SINK=stream`
+mixe les WAV dans l'audio navigateur ; `QUACK_SINK=robot` utilise `robot.sound`.
 Les modes `--echo` et `--tone` restent sans liaison robot.
+
+## S6 — bec et cancanements
+
+`VoiceFeature` s'installe après `RobotFeature` et crée un runtime indépendant par
+application. Le bec suit les fenêtres PCM réellement envoyées au haut-parleur,
+avec l'enveloppe et le décalage d'horloge de la spécification. `greet` est lancé
+au réveil, `coo` au coucher et `inquire` après une transcription finissant par
+`?`, avec un intervalle minimal de 30 secondes. Le volume `assets/sounds` est
+monté en lecture seule dans Compose. Si la banque est absente ou vide, l'erreur
+est journalisée une fois et seuls les cancanements sont désactivés.
+
+Après autorisation explicite du créneau de simulation par la coordination,
+procéder depuis WSL et le worktree S6. Ces commandes sont une procédure, pas la
+preuve d'un essai déjà effectué. Le service Docker n'est pas nécessaire aux
+tests unitaires ; ne modifier ni la configuration Docker/WSL ni les ressources
+d'une autre session.
+
+Terminal de simulation :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S6
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export DUCK_SIM_STATE="$HOME/.cache/ds-s6"
+export DUCK_SIM_PORT=7861 DUCK_SIM_FRAME_PORT=7961
+export DUCK_SIM_VIEWER=0 DUCK_SIM_CAMERAS=
+export DUCK_SIM_RL="$HOME/projects/microduck/microduck_rl"
+setpriv --no-new-privs ~/projects/microduck/microduck/scripts/duck-sim
+```
+
+Après le démarrage autorisé, copier la banque attribuée à S6 :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S6
+DUCK_SIM_STATE="$HOME/.cache/ds-s6" ./scripts/copy_sound_bank.sh
+```
+
+Dans un second terminal WSL, charger le `.env` S6 sans afficher son contenu,
+redécouvrir l'IP de `eth0`, puis démarrer le relais :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S6
+set -a
+source .env
+set +a
+HOST_IP="$(ip -4 -o addr show dev eth0 | awk '{split($4, a, "/"); print a[1]}')"
+python3 relay/duck_relay.py --host "$HOST_IP" \
+  --robot-port 7870 --frame-port 7871 --state-dir "$HOME/.cache/ds-s6"
+```
+
+Seulement si Docker Desktop est disponible, un troisième terminal démarre
+Compose sur le port S6 :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S6
+docker compose up --build --detach --wait --wait-timeout 60
+curl --fail http://localhost:8776/healthz
+```
+
+Dans le navigateur, ouvrir `http://localhost:8776/`, démarrer l'écoute et
+vérifier le réveil, le mouvement du bec pendant une réponse, sa fermeture après
+la réponse et sur interruption/STOP, puis l'audibilité de `greet`, `coo` et
+`inquire`. Vérifier que les sons ne provoquent ni faux réveil ni faux barge-in.
+Consigner séparément les résultats visuels et auditifs ; aucune réussite humaine
+n'est revendiquée avant cet essai. Après la mesure, arrêter uniquement les
+ressources S6 : Ctrl+C dans le terminal du relais, puis :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S6
+docker compose down
+DUCK_SIM_STATE="$HOME/.cache/ds-s6" \
+  setsid --wait timeout 45s setpriv --no-new-privs \
+  "$HOME/projects/microduck/microduck/scripts/duck-sim" down
+```
+
+**État de validation (2026-11-05).** La qualité complète passe : ruff, format
+et Pyright verts ; 479 tests réussis, 5 ignorés, couverture 91,78 %. Le test sim
+autorisé donne 3 réussites (motion 0,177 m, tour 87,710°, regard 0,796 rad) ;
+ces résultats ne valident pas le bec ou l'audio. Docker Desktop est arrêté :
+Compose n'a pas été lancé, et les critères visuels/auditifs restent ouverts.
 
 ## S5 — correctif de reprise unique, en attente de contre-vérification
 
