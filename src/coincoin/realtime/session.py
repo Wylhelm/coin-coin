@@ -289,8 +289,22 @@ class RealtimeSession:
             }
         )
 
-    async def add_image(self, jpeg: bytes) -> None:
-        raise NotImplementedError("Realtime image input is reserved for S7")
+    async def add_image(self, jpeg: bytes, question: str | None = None) -> None:
+        """Append a user image; the tool-turn owner schedules the response."""
+        content = [
+            {
+                "type": "input_image",
+                "image_url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii"),
+            }
+        ]
+        if question:
+            content.append({"type": "input_text", "text": question})
+        await self._send(
+            {
+                "type": "conversation.item.create",
+                "item": {"type": "message", "role": "user", "content": content},
+            }
+        )
 
     async def close(self) -> None:
         await self._close_transport()

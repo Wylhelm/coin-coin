@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from coincoin.realtime.tools.vision import prepare_image
 from coincoin.robot.frames import FrameError, MediaFrameHeader, decode_uyvy, fetch_frame
 from coincoin.robot.jsonrpc import JsonRpcError
 
@@ -132,3 +133,33 @@ async def test_camera_missing_and_invalid_token():
     await server.wait_closed()
     with pytest.raises(FrameError, match="Camera unavailable"):
         await fetch_frame("127.0.0.1", port)
+
+
+@pytest.mark.parametrize("rotate", [0, 90, 180, 270])
+def test_color_bars_are_at_expected_rotated_positions(rotate):
+    colors = [(90, 81, 240, 81), (54, 145, 34, 145), (240, 41, 110, 41)]
+    raw = b"".join(bytes(color) * 32 for color in colors) * 48
+    metadata = MediaFrameHeader.parse(header(width=192, height=48, bytes=len(raw), rotate=rotate))
+    pixels = np.asarray(Image.open(BytesIO(decode_uyvy(metadata, raw).jpeg)))
+    if rotate == 0:
+        samples = pixels[24, [32, 96, 160]]
+    elif rotate == 90:
+        samples = pixels[[32, 96, 160], 24]
+    elif rotate == 180:
+        samples = pixels[24, [159, 95, 31]]
+    else:
+        samples = pixels[[159, 95, 31], 24]
+    for channel, pixel in enumerate(samples):
+        assert pixel[channel] > 240
+        assert all(pixel[other] < 15 for other in range(3) if other != channel)
+
+
+@pytest.mark.parametrize("size", [(1600, 1200), (640, 5000), (320, 240)])
+def test_prepare_image_bounds_payload_width_and_aspect_ratio(size):
+    pixels = np.random.default_rng(42).integers(0, 256, (size[1], size[0], 3), dtype=np.uint8)
+    output = BytesIO()
+    Image.fromarray(pixels).save(output, "JPEG", quality=100)
+    jpeg = prepare_image(output.getvalue())
+    image = Image.open(BytesIO(jpeg))
+    assert len(jpeg) <= 150_000 and image.width <= 640
+    assert image.width / image.height == pytest.approx(size[0] / size[1], rel=0.01)

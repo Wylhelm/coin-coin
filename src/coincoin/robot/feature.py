@@ -8,6 +8,7 @@ from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from coincoin.realtime.tools.robot import install_tools, invalid_arguments
+from coincoin.realtime.tools.vision import install_tools as install_vision_tools
 from coincoin.robot.governor import ROBOT_ERRORS, Governor, ToolResult
 from coincoin.robot.link import RobotLink
 from coincoin.robot.quack import QuackSink, QuackUnavailable
@@ -69,6 +70,7 @@ class _RobotRuntime:
         self.governor = Governor(self.link, app.settings, app.clock, app.journal)
         self.quack = self._provided_quack or NullQuack(app)
         self.contracts = install_tools(app, self.dispatch)
+        install_vision_tools(app, self.link)
         app.instructions_context("skills", self.skills_context)
         app.on("stop", self.stop)
         app.on("reset_pose", self.reset_pose)

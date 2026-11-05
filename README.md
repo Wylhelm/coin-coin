@@ -1,4 +1,4 @@
-# Coin-Coin — voix Realtime et outils robot (S1–S6)
+# Coin-Coin — voix Realtime et outils robot (S1–S7)
 
 Service vocal du MicroDuck Coin-Coin, développé séparément du code Pollen.
 S0 fournit le socle asynchrone ; S2 ajoute le micro et le haut-parleur du
@@ -92,6 +92,60 @@ et Pyright verts ; 479 tests réussis, 5 ignorés, couverture 91,78 %. Le test s
 autorisé donne 3 réussites (motion 0,177 m, tour 87,710°, regard 0,796 rad) ;
 ces résultats ne valident pas le bec ou l'audio. Docker Desktop est arrêté :
 Compose n'a pas été lancé, et les critères visuels/auditifs restent ouverts.
+
+## S7 — Vision
+
+`RobotFeature` expose `see(question?)` sur son `RobotLink` existant :
+capture bornée à 2 s, une nouvelle demande si l'image a plus de 2 s, conversion
+JPEG de largeur au plus 640 px et taille au plus 150 000 octets.
+Sans caméra, l'outil répond « je n'ai pas d'yeux en ce moment ».
+L'image et la question éventuelle forment un message utilisateur Realtime ;
+le résultat d'outil précède l'unique continuation du lot S5. L'annulation,
+le sommeil et le remplacement de session empêchent l'envoi d'une capture orpheline.
+Le journal garde l'appel, la taille et la latence, jamais le JPEG ni sa base64.
+Le stockage d'images est désactivé (politique `LOG_IMAGES=false`, sans opt-in).
+
+### Caméra sur les ressources S7
+
+Depuis WSL, réserver d'abord le verrou caméra partagé (ne jamais effacer celui
+d'une autre session ; attendre 60 s entre tentatives, maximum 2 h) :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S7
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export UV_CACHE_DIR="$PWD/.cache/uv" PYRIGHT_PYTHON_CACHE_DIR="$PWD/.cache/pyright"
+mkdir -p "$HOME/.cache/coin-coin-locks"
+mkdir "$HOME/.cache/coin-coin-locks/sim-camera"
+printf 'S7 %s\n' "$(date -Is)" > "$HOME/.cache/coin-coin-locks/sim-camera/owner"
+export DUCK_SIM_STATE="$HOME/.cache/ds-s7"
+export DUCK_SIM_PORT=7881 DUCK_SIM_FRAME_PORT=7981 DUCK_SIM_VIEWER=0
+export DUCK_SIM_CAMERAS=a DUCK_SIM_RL="$HOME/projects/microduck/microduck_rl"
+export GST_PLUGIN_PATH="/opt/gst-plugins-rs/lib/gstreamer-1.0${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
+setpriv --no-new-privs "$HOME/projects/microduck/microduck/scripts/duck-sim"
+```
+
+Vérifier `duck-sim ctl frame` avant de continuer. En cas d'échec de `mediad`,
+arrêter et signaler le blocage, sans changer Pollen.
+Dans un autre terminal S7, charger `.env` sans l'afficher (`set -a; source .env;
+set +a`), redécouvrir `ip -4 -o addr show dev eth0`, puis lancer :
+
+```sh
+python3 relay/duck_relay.py --host <IPv4-eth0> --robot-port 7890 \
+  --frame-port 7891 --state-dir "$HOME/.cache/ds-s7"
+```
+
+Le `.env` S7 doit viser ces deux ports et contenir le jeton S7 déjà attribué.
+Tests sans OpenAI : `COINCOIN_TEST_SIM=1 uv run pytest --no-cov -m sim -s -rs`.
+Le test caméra vérifie le JPEG dans un répertoire temporaire puis le supprime.
+Pour l'essai vocal de user seulement, choisir `DUCK_SIM_SCENE=apartment`
+avant de lancer la sim (le canard n'y marche pas), puis `docker compose up`
+avec `COINCOIN_PORT=8777 COMPOSE_PROJECT_NAME=coincoin-s7`. Ouvrir
+`http://localhost:8777` et demander « Coin-Coin, qu'est-ce que tu vois ? ».
+
+Après usage : arrêter le relais avec son PID exact, le Compose S7 si lancé,
+puis `DUCK_SIM_STATE="$HOME/.cache/ds-s7" setsid --wait timeout 45s setpriv
+--no-new-privs ~/projects/microduck/microduck/scripts/duck-sim down`.
+Libérer ensuite uniquement le verrou S7 (`rm -r ~/.cache/coin-coin-locks/sim-camera`).
 
 ## S5 — correctif de reprise unique, en attente de contre-vérification
 

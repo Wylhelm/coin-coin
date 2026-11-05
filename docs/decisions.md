@@ -654,3 +654,26 @@ S5 reste non intégrée et les essais humains ouverts.
 Ressources S5 arrêtées, aucun nouvel appel OpenAI, Pollen inchangé.
 Cette mesure reste odométrique et inclut la décélération ; intégration et
 validation vocale humaine ne sont pas revendiquées.
+
+## ADR-S7-001 — Image utilisateur et continuation du lot d'outils
+
+Date : 2026-11-05. Statut : accepté ; validation caméra sim en attente.
+
+Le guide officiel
+[Realtime conversations — image inputs](https://developers.openai.com/api/docs/guides/realtime-conversations)
+a été consulté avant l'implémentation : `conversation.item.create` avec un
+message utilisateur `input_image`, `image_url: data:image/jpeg;base64,...`,
+et `input_text` facultatif. `RealtimeSession.add_image` ajoute seulement cet
+item ; il ne crée pas de réponse. Le lot S5 envoie ensuite les outputs ordonnés
+et demande une seule réponse après la fin du parent. Aucun nouvel appel réel
+OpenAI : validation exclusivement contre le faux WebSocket.
+
+`see` est installé par le runtime `RobotFeature`, avec son `RobotLink` existant,
+sans deuxième connexion de commande ni nouvelle feature singleton. Chaque
+capture attend au maximum 2 s ; une image périmée ou datée du futur provoque
+une seule nouvelle capture. La compression travaille hors de la boucle asyncio,
+réduit la largeur puis la qualité et, si nécessaire, les dimensions pour garantir
+150 000 octets même sur une image bruitée très haute. L'identité de session et
+l'état actif sont revérifiés après ces attentes ; l'annulation est propagée.
+Le journal ne reçoit jamais les octets ni l'URL de données de l'image :
+`LOG_IMAGES=false` est la politique de cette version, sans stockage opt-in.

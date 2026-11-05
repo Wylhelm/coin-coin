@@ -26,6 +26,18 @@
   Desktop étant arrêté, Compose et l'essai humain via navigateur restent bloqués
   par l'environnement et ne sont pas déclarés validés.
 
+## S7 — Vision — 2026-11-05
+
+- Outil `see(question?)` sur le lien de `RobotFeature`, capture 2 s, contrôle
+  de fraîcheur et une reprise, erreur caméra explicite.
+- Message utilisateur Realtime GA `input_image` JPEG + `input_text` facultatif ;
+  résultat d'outil et continuation unique conservés dans le lot S5.
+- JPEG borné à 640 px de large et 150 000 octets, journal sans pixels/base64,
+  interruption et remplacement de session protégés.
+- Tests de barres UYVY et rotations, compression d'images bruitées, vrai relais
+  vers faux socket caméra, faux Realtime, caméra absente/périmée et annulation.
+  Test sim caméra opt-in avec sauvegarde temporaire puis suppression.
+
 ## S5 — Correction de la course d'annonce — 2026-11-05
 
 - Livraison `46bdee4` non acceptée : reproduction déterministe de deux
