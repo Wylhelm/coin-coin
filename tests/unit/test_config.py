@@ -17,7 +17,7 @@ def test_master_defaults() -> None:
         "frame_link": "tcp://host.docker.internal:7811",
         "quack_sink": "stream",
         "wake_engine": "vosk",
-        "wake_threshold": None,
+        "wake_threshold": 0.9,
         "followup_s": 420,
         "langs": "fr,en",
         "max_vx": 0.25,

@@ -1,9 +1,11 @@
-# Coin-Coin — audio navigateur (S2)
+# Coin-Coin — audio navigateur et réveil local (S2/S3)
 
 Service vocal du MicroDuck Coin-Coin, développé séparément du code Pollen.
 S0 fournit le socle asynchrone ; S2 ajoute le micro et le haut-parleur du
 navigateur, deux WebSockets PCM16, le mode écho et le test de latence par tonalité.
 Le service n'ouvre toujours aucun accès au robot, à OpenAI ou à OpenClaw.
+S3 ajoute le réveil local, le VAD, la porte audio et la machine d'états.
+Les sessions Realtime et l'accès au robot restent livrés par d'autres sessions.
 
 ## Prérequis
 
@@ -111,6 +113,30 @@ service externe. Les essais unitaires de `net_spike.sh` remplacent Docker et
 la découverte `eth0` par des faux ; ils ne prouvent pas le chemin Docker réel.
 Ils utilisent uniquement le port réservé 7899 et vérifient le nettoyage.
 
+## Mot de réveil et machine d'états (S3)
+
+Le réveil et le VAD sont locaux : `assets/wake/README.md` décrit le téléchargement
+des modèles (Vosk FR/EN et Silero ONNX), la génération d'échantillons synthétiques,
+l'enregistrement de positifs réels et la constitution d'un corpus négatif licencié.
+Les modèles et corpus audio sont ignorés par Git. Après leur obtention :
+
+```sh
+scripts/download_wake_models.sh
+scripts/download_wake_negatives.sh
+uv run python scripts/import_quacks.py
+uv run python scripts/record_positives.py --count 20 --seconds 2.5
+uv run python scripts/eval_wake.py --positive-source recorded
+```
+
+Le rapport `docs/wake-eval.md` contient les mesures ; `WAKE_THRESHOLD=0.9` est
+un meilleur compromis provisoire, pas un seuil validé (le rappel synthétique et
+les faux réveils en contexte n'atteignent pas la cible). Les positifs synthétiques
+ne remplacent pas les enregistrements de user.
+`VoiceActivityDetector` consomme du PCM16 mono à 16 kHz par fenêtres de 512
+échantillons et produit le pré-roll/la fin de parole avec maintien. La fonction
+pure `transition()` pilote les états sans effectuer d'I/O ; `AudioGate` garantit
+qu'aucun octet n'est transmis en ENDORMI et tient le compteur par état.
+
 Les futurs tests `@pytest.mark.sim` sont enregistrés mais S0 ne lance **aucune**
 simulation. `.env`, logs, caches, modèles et sons sont ignorés par Git et par
 le contexte Docker.
@@ -164,8 +190,8 @@ attentes échues par deadline, puis par ordre d'inscription.
 `state_age()` vaut l'infini avant le premier état.
 
 La configuration reprend toutes les variables de la spec maître §4.2 j.
-Modèle et voix Realtime restent vides jusqu'à S4 ; le seuil de réveil reste
-`None` jusqu'aux mesures S3. Les trois identifiants sensibles utilisent
+Modèle et voix Realtime restent vides jusqu'à S4 ; le seuil Vosk provisoire
+sélectionné en S3 vaut `0.9`. Les trois identifiants sensibles utilisent
 `SecretStr`. Le journal masque récursivement les clés sensibles, les motifs
 de clé API et les en-têtes Authorization ; il refuse les données non JSON
 et laisse remonter les erreurs d'écriture.

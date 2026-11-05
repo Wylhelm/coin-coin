@@ -5,6 +5,7 @@ services:
       - "127.0.0.1:${COINCOIN_PORT:-8765}:8765"
     volumes:
       - ./.cache/logs:/app/logs
+      - ./assets/models:/app/assets/models:ro
     env_file:
       - .env
     environment:

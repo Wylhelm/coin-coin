@@ -9,7 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Load the master specification's settings from the environment and .env.
 
-    Unselected Realtime model/voice and wake threshold remain unset until S4/S3.
+    Realtime model/voice remain unset until S4. The S3 Vosk threshold is the
+    measured best-compromise setting, not a validated production threshold.
     Empty credentials are valid for the offline foundation and its fake services.
     """
 
@@ -31,7 +32,7 @@ class Settings(BaseSettings):
     frame_link: str = "tcp://host.docker.internal:7811"
     quack_sink: Literal["stream", "robot"] = "stream"
     wake_engine: Literal["vosk", "oww"] = "vosk"
-    wake_threshold: float | None = Field(default=None, ge=0, le=1)
+    wake_threshold: float = Field(default=0.9, ge=0, le=1)
     followup_s: float = Field(default=420, gt=0)
     langs: str = "fr,en"
     max_vx: float = Field(default=0.25, gt=0)

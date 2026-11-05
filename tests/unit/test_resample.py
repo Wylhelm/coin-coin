@@ -71,3 +71,20 @@ def test_tone_generation_and_correlation_find_the_round_trip_offset() -> None:
     assert find_tone_offset(np.zeros(7_200, dtype=np.float32), tone) is None
     with pytest.raises(ValueError, match="must be positive"):
         make_tone(frequency=0)
+
+
+def test_resample_converts_24khz_to_16khz_pcm16() -> None:
+    samples = np.full(480, 1000, dtype="<i2")
+    output = resample_pcm16(samples.tobytes(), 24_000, 16_000)
+    assert len(output) == 320 * 2
+    converted = np.frombuffer(output, dtype="<i2")
+    assert np.mean(converted) == pytest.approx(1000, abs=1)
+
+
+@pytest.mark.parametrize(
+    "pcm,input_rate,output_rate",
+    [(b"\x00", 24_000, 16_000), (b"\x00\x00", 0, 16_000)],
+)
+def test_resample_rejects_invalid_inputs(pcm: bytes, input_rate: int, output_rate: int) -> None:
+    with pytest.raises(ValueError):
+        resample_pcm16(pcm, input_rate, output_rate)

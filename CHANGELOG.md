@@ -13,6 +13,16 @@
 - Validation : 55 tests réussis, couverture 93,82 %, ruff et pyright verts.
   Le test humain d'écho/AEC reste à faire par user.
 
+## 0.2.0 — 2026-11-04
+
+- S3 : machine d'états pure, porte audio par état, VAD Silero ONNX avec pré-roll
+  et maintien, rééchantillonnage PCM16 et moteurs de réveil Vosk FR/EN.
+- Banc hors ligne `scripts/eval_wake.py`, enregistrement via PulseAudio/ffmpeg,
+  obtention des modèles et corpus publics documentés ; données audio et modèles
+  ignorés par Git.
+- Valeurs de mesure, choix du seuil et limites documentés dans
+  `docs/wake-eval.md` et l'ADR-003 ; modèles montés en lecture seule dans Compose.
+
 ## 0.1.0 — 2026-11-04
 
 - S0 : repo Git indépendant sur `session/S0`, Python 3.12, `uv.lock`,

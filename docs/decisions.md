@@ -20,9 +20,9 @@ L'absence de secrets n'empêche pas de lancer le socle.
 
 Les signatures prescrites restent intactes. L'unique exemption ruff
 `ASYNC109` est locale au `timeout` imposé par `RobotLink.call`.
-Les valeurs non encore sélectionnées par S3/S4 restent explicitement
-non sélectionnées (`None` pour le seuil, chaînes vides pour modèle/voix),
-plutôt que d'inventer un modèle, une voix ou un seuil.
+À S0, le seuil de réveil n'était pas choisi ; S3 publie désormais un seuil
+Vosk provisoire mesuré en ADR-003. Le modèle et la voix Realtime restent
+explicitement non sélectionnés (chaînes vides) jusqu'à S4.
 
 ## ADR-001 — plan B : IP eth0 WSL et jeton sur la première ligne
 
@@ -129,3 +129,41 @@ UDP publié. Elle n'est pas implémentée dans S2.
 **Conséquences.** Les sons de Coin-Coin doivent être mixés et joués par
 `BrowserAudio`, jamais via `robot.sound` en simulation, afin de rester dans
 la référence AEC. Le choix reste à confirmer par le test live avant S4.
+
+## ADR-003 — Vosk provisoire, seuil 0.90
+
+Date : 2026-11-04. Statut : compromis mesuré, validation humaine en attente.
+
+**Contexte.** S3 devait mesurer un moteur de réveil bilingue avec au moins 90 %
+de rappel par langue, au plus un faux réveil par heure et aucun déclenchement
+sur les cancanements. Un modèle openWakeWord personnalisé n'était envisagé
+qu'après la mesure Vosk. Les positifs de user n'étaient pas enregistrés.
+
+**Mesures.** Le banc `scripts/eval_wake.py` a évalué 40 positifs TTS synthétiques
+par langue (près/loin), 30 minutes de FLEURS français, 30 minutes de
+LibriSpeech test-clean anglais, 82 cancanements copiés en lecture seule et
+20 phrases TTS contenant « Coin-Coin » dans un contexte. Positifs et audio
+téléchargés/synthétisés restent ignorés par Git. À `WAKE_THRESHOLD=0.90` :
+
+- rappel synthétique : FR 15/40 (37,5 %), EN 21/40 (52,5 %) ;
+- 0 faux réveil/h sur FLEURS + LibriSpeech + banque de sons, 0 sur la banque ;
+- 20 déclenchements sur 20 phrases TTS en contexte ; 19,30 faux réveils/h en
+  comptant tous les négatifs, donc la cible globale n'est pas atteinte ;
+- la grille 0,30–0,90 ne change pas le rappel ; 0,90 réduit le plus les faux
+  positifs en discours public parmi les seuils mesurés ;
+- les deux recognizers ont évalué le corpus en 2 min 15,5 s dans l'image Docker
+  S3 isolée du réseau (environ 1,07 h d'audio au total, environ 28× le temps réel).
+
+**Décision.** Garder Vosk small FR 0.22 et EN-US 0.15 comme référence exécutable,
+grammaire stricte `["coin coin", "[unk]"]`, et exposer `WAKE_THRESHOLD=0.90`
+comme **meilleur compromis provisoire**, pas comme seuil validé. Le
+`OpenWakeWordEngine` reste un stub explicite : aucun modèle candidat n'a été
+mesuré comme meilleur, et les phrases où le mot de réveil est prononcé
+intentionnellement ne peuvent pas être séparées par un simple seuil Vosk.
+
+**Conséquences.** S4 peut charger un moteur et un seuil configurables, mais
+l'activation réelle reste conditionnée à la vérification des vrais positifs
+par user. Le rapport final est `docs/wake-eval.md`; procédure de reprise
+dans `assets/wake/README.md`. Les critères FR/EN et faux réveils totaux restent
+ouverts tant que les positifs réels ne sont pas enregistrés et le compromis
+réévalué.
