@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from coincoin.brain.feature import BrainFeature
 from coincoin.robot.feature import RobotFeature
+from coincoin.robot.voice_feature import VoiceFeature
 
 if TYPE_CHECKING:
     from coincoin.app import App
@@ -20,4 +21,5 @@ class Feature(Protocol):
 FEATURES: list[Feature] = [
     BrainFeature(),
     RobotFeature(),
+    VoiceFeature(),
 ]

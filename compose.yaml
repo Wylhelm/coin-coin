@@ -6,6 +6,7 @@ services:
     volumes:
       - ./.cache/logs:/app/logs
       - ./assets/models:/app/assets/models:ro
+      - ./assets/sounds:/app/assets/sounds:ro
     env_file:
       - .env
     environment:

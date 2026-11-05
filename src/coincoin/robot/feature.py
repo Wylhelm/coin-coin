@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from coincoin.realtime.tools.robot import install_tools, invalid_arguments
 from coincoin.robot.governor import ROBOT_ERRORS, Governor, ToolResult
 from coincoin.robot.link import RobotLink
-from coincoin.robot.quack import QuackSink
+from coincoin.robot.quack import QuackSink, QuackUnavailable
 from coincoin.robot.tcp_link import TcpLink
 
 if TYPE_CHECKING:
@@ -42,6 +42,7 @@ class RobotFeature:
 
     async def install(self, app: App) -> None:
         runtime = _RobotRuntime(self._link, self._quack)
+        app.robot = runtime
         await runtime.install(app)
         self.runtime = runtime
 
@@ -127,6 +128,7 @@ class _RobotRuntime:
 
     async def close(self) -> None:
         self._closing = True
+        await self.app._emit("voice_shutdown")
         for task in tuple(self._tasks):
             task.cancel()
         await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
@@ -142,12 +144,19 @@ class _RobotRuntime:
             await self._down()
             result = {"ok": False, "reason": LINK_LOST}
         elif name == "quack":
-            await self.quack.quack(**arguments)
-            result = {"ok": True, "detail": "quack logged only; sound is not implemented in S5"}
+            try:
+                await self.quack.quack(**arguments)
+                result = {"ok": True, "detail": "quack completed"}
+            except QuackUnavailable as error:
+                result = {"ok": False, "reason": str(error)}
+            except (OSError, ValueError, TimeoutError, *ROBOT_ERRORS) as error:
+                self.app.journal.write("error", component="quack", reason=str(error))
+                result = {"ok": False, "reason": str(error)}
         else:
             if name == "stop":
                 outcome = await self.governor.stop("outil stop")
                 await self.quack.cancel()
+                await self.app._emit("mouth_close")
             else:
                 action = getattr(self.governor, name)
                 outcome: ToolResult = await action(**arguments)

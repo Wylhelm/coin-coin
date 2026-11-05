@@ -11,7 +11,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from aiohttp import web
 
@@ -41,6 +41,9 @@ from coincoin.statemachine import Effect, Event, Mode, State, transition
 from coincoin.wake.engine import WakeEngine, create_wake_engine
 from coincoin.wake.vad import VadEvent, VoiceActivityDetector
 from coincoin.web.server import create_app
+
+if TYPE_CHECKING:
+    from coincoin.robot.feature import _RobotRuntime
 
 _LOGGER = logging.getLogger(__name__)
 _SECRET_TEXT = re.compile(r"sk-[A-Za-z0-9_-]+|(?i:Bearer)\s+[^\s,;]+")
@@ -93,6 +96,7 @@ class App:
         control: ControlSender = _discard_control,
     ) -> None:
         self.settings = settings
+        self.robot: _RobotRuntime | None = None
         self.audio = audio
         self.journal = journal
         self.session_factory = session_factory
@@ -480,6 +484,8 @@ class App:
                 continue
             if effect.kind == "OpenSession" and event.kind == "wake":
                 continue
+            if effect.kind == "Quack" and entering_sleep:
+                await asyncio.gather(*tuple(self._stop_tasks), return_exceptions=True)
             await self._apply_effect(effect)
         if (
             event.kind == "response_failed"

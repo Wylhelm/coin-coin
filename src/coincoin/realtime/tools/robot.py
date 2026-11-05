@@ -85,7 +85,7 @@ DESCRIPTIONS = {
     "sit": "Assieds-toi / sit, idempotent.",
     "stand": "Leve-toi / stand, idempotent.",
     "do_skill": "Figure / perform one currently available skill.",
-    "quack": "Cancane / quack; S5 logs only, no audible sound until S6.",
+    "quack": "Cancane / quack; wheee can be held for at most 3 seconds.",
     "status": "Etat / short robot posture, safety, mode and health summary.",
 }
 
