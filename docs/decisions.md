@@ -167,3 +167,24 @@ par user. Le rapport final est `docs/wake-eval.md`; procédure de reprise
 dans `assets/wake/README.md`. Les critères FR/EN et faux réveils totaux restent
 ouverts tant que les positifs réels ne sont pas enregistrés et le compromis
 réévalué.
+
+**Correctifs et intégration après revue.** S3 est rebasée sur S2 et réutilise
+son module `audio/resample.py` sans changement de son API ; ses tests audio et
+WebSocket, le montage `.cache/logs` et ses dépendances sont conservés.
+Le wrapper Silero v5.1.2 suit désormais
+[`OnnxWrapper.__call__`](https://github.com/snakers4/silero-vad/blob/v5.1.2/src/silero_vad/utils_vad.py) :
+64 échantillons de contexte + 512 nouveaux (entrée 576), contexte et état
+récurrent remis à zéro ensemble. Les tests unitaires vérifient les entrées
+ONNX, le contexte de la fenêtre précédente et les resets explicite/fin de
+parole. Le test réel `tests/integration/test_vad_real.py` constate un écart
+maximal de probabilité de 0 sur 51 fenêtres et un replay identique après reset.
+Le WAV parole/silence produit 1,248 s pour le début et 2,496 s pour la fin
+avec maintien (attendus 1,200 s et 2,508 s, tolérance ±100 ms). Modèle et WAV
+restent ignorés ; commande, empreintes et conservation dans `assets/wake/README.md`.
+Le banc Vosk et son compromis ne sont pas modifiés.
+
+Les cycles `response_active`/`quack_active` sont indépendants : terminer un
+cancanement ne termine pas une réponse, et inversement. `speaking` reste actif,
+la bouche n'est pas fermée par la fin du seul premier cycle, le barge-in annule
+les deux lectures et le réveil ne reprend que 500 ms après la dernière fin.
+La fin du cancanement ne réarme pas le délai de suivi démarré par la réponse.

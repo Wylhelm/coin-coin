@@ -57,7 +57,9 @@ def test_response_lifecycle_enters_followup_and_closes_mouth() -> None:
     state, effects = transition(awake, Event("response_done", question=True), 5)
     assert state.mode == Mode.FOLLOWUP
     assert state.followup_deadline == 425
-    assert not state.speaking
+    assert state.speaking
+    assert state.quack_active
+    assert not state.response_active
     assert ("MouthClose", None) in kinds(effects)
     assert ("Quack", "inquire") in kinds(effects)
     assert ("SetGate", Mode.FOLLOWUP.value) in kinds(effects)
@@ -164,3 +166,46 @@ def test_sleep_quack_keeps_wake_disabled_until_500ms_after_it_finishes() -> None
 def test_non_finite_transition_time_is_rejected() -> None:
     with pytest.raises(ValueError, match="finite"):
         transition(State(), Event("tick"), float("nan"))
+
+
+@pytest.mark.parametrize("first_done", ["quack_done", "response_done"])
+def test_overlapping_response_and_quack_preserve_remaining_playback(
+    first_done: EventKind,
+) -> None:
+    state, _ = transition(State(), Event("wake"), 0)
+    state, _ = transition(state, Event("quack_started"), 0.1)
+    state, _ = transition(state, Event("response_started"), 0.2)
+    remaining, effects = transition(state, Event(first_done), 0.3)
+    assert remaining.speaking
+    assert remaining.response_active == (first_done == "quack_done")
+    assert remaining.quack_active == (first_done == "response_done")
+    assert remaining.wake_enable_at is None
+    assert ("MouthClose", None) not in kinds(effects)
+    assert not transition(remaining, Event("tick"), 1)[0].wake_enabled
+    interrupted, effects = transition(remaining, Event("user_speech_start"), 0.4)
+    assert not interrupted.speaking
+    assert not interrupted.response_active
+    assert not interrupted.quack_active
+    assert ("FlushPlayback", None) in kinds(effects)
+    assert ("CancelResponse", None) in kinds(effects)
+    second_done: EventKind = "response_done" if first_done == "quack_done" else "quack_done"
+    finished, effects = transition(remaining, Event(second_done), 2)
+    assert not finished.speaking
+    assert not finished.response_active
+    assert not finished.quack_active
+    assert finished.wake_enable_at == 2.5
+    assert ("MouthClose", None) in kinds(effects)
+    assert not transition(finished, Event("tick"), 2.49)[0].wake_enabled
+    assert transition(finished, Event("tick"), 2.5)[0].wake_enabled
+    assert finished.followup_deadline == (422 if first_done == "quack_done" else 420.3)
+
+
+def test_inquiry_quack_keeps_wake_disabled_until_playback_finishes() -> None:
+    state, _ = transition(State(Mode.AWAKE), Event("response_started"), 0)
+    inquiry, _ = transition(state, Event("response_done", question=True), 1)
+    assert inquiry.speaking
+    assert inquiry.quack_active
+    assert not transition(inquiry, Event("tick"), 2)[0].wake_enabled
+    quiet, _ = transition(inquiry, Event("quack_done"), 3)
+    assert quiet.followup_deadline == inquiry.followup_deadline
+    assert quiet.wake_enable_at == 3.5

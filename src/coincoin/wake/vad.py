@@ -12,6 +12,7 @@ from numpy.typing import NDArray
 SAMPLE_RATE = 16_000
 WINDOW_SAMPLES = 512
 WINDOW_BYTES = WINDOW_SAMPLES * 2
+CONTEXT_SAMPLES = 64
 
 
 @dataclass(frozen=True)
@@ -67,29 +68,36 @@ class VoiceActivityDetector:
             raise RuntimeError(
                 "onnxruntime is required; install the project dependencies."
             ) from exc
-        session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
-        inputs = {item.name for item in session.get_inputs()}
+        options = ort.SessionOptions()
+        options.inter_op_num_threads = 1
+        options.intra_op_num_threads = 1
+        session = ort.InferenceSession(
+            str(model_path), sess_options=options, providers=["CPUExecutionProvider"]
+        )
         state = np.zeros((2, 1, 128), dtype=np.float32)
+        context = np.zeros((1, CONTEXT_SAMPLES), dtype=np.float32)
 
         def probability(frame: NDArray[np.int16]) -> float:
-            nonlocal state
-            input_array = np.empty((1, len(frame)), dtype=np.float32)
-            input_array[0, :] = frame / 32768.0
+            nonlocal state, context
+            if frame.shape != (WINDOW_SAMPLES,):
+                raise ValueError("Silero VAD requires 512 new samples per window")
+            samples = frame.astype(np.float32).reshape(1, WINDOW_SAMPLES) / 32768.0
+            input_array = np.concatenate((context, samples), axis=1)
             feed: dict[str, np.ndarray] = {
                 "input": input_array,
+                "state": state,
+                "sr": np.asarray(SAMPLE_RATE, dtype=np.int64),
             }
-            if "state" in inputs:
-                feed["state"] = state
-            if "sr" in inputs:
-                feed["sr"] = np.asarray(SAMPLE_RATE, dtype=np.int64)
             outputs = session.run(None, feed)
-            state = cast(NDArray[np.float32], outputs[-1])
+            state = cast(NDArray[np.float32], outputs[1])
+            context = input_array[:, -CONTEXT_SAMPLES:].copy()
             scores = cast(NDArray[np.float32], outputs[0])
             return float(scores[0, 0])
 
         def reset_state() -> None:
-            nonlocal state
+            nonlocal state, context
             state = np.zeros((2, 1, 128), dtype=np.float32)
+            context = np.zeros((1, CONTEXT_SAMPLES), dtype=np.float32)
 
         return probability, reset_state
 

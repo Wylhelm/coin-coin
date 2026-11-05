@@ -22,6 +22,13 @@
   ignorés par Git.
 - Valeurs de mesure, choix du seuil et limites documentés dans
   `docs/wake-eval.md` et l'ADR-003 ; modèles montés en lecture seule dans Compose.
+- Correction Silero v5.1.2 : contexte de 64 échantillons, état récurrent et
+  contexte réinitialisés ensemble, preuve ONNX réelle parole/silence (±100 ms).
+- Lectures voix/cancanement suivies séparément pour conserver le barge-in et
+  le délai de réveil quand les deux cycles se chevauchent.
+- Rebase S3 sur S2 : API et tests audio conservés, SoXR partagé, montage des
+  logs et dépendances des deux sessions préservés ; reprise depuis le repo
+  principal et conservation des corpus ignorés documentées.
 
 ## 0.1.0 — 2026-11-04
 

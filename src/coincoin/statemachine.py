@@ -20,6 +20,8 @@ class State:
     wake_enable_at: float | None = None
     followup_deadline: float | None = None
     followup_s: float = 420
+    response_active: bool = False
+    quack_active: bool = False
 
 
 EventKind = Literal[
@@ -79,6 +81,7 @@ def _sleep(state: State, *, stopped: bool = False, summary: str = "") -> tuple[S
     return State(
         mode=Mode.SLEEPING,
         speaking=True,
+        quack_active=True,
         wake_enabled=False,
         followup_s=state.followup_s,
     ), effects
@@ -112,14 +115,23 @@ def transition(state: State, event: Event, now: float) -> tuple[State, list[Effe
         return replace(state), [Effect("SetGate", state.mode.value)]
     if event.kind == "quack_started" and state.mode == Mode.SLEEPING:
         return (
-            replace(state, speaking=True, wake_enabled=False, wake_enable_at=None),
+            replace(
+                state, speaking=True, quack_active=True, wake_enabled=False, wake_enable_at=None
+            ),
             [Effect("SetWakeEnabled", False)],
         )
     if event.kind in ("response_started", "quack_started"):
         if state.mode == Mode.SLEEPING:
             return state, []
         return (
-            replace(state, speaking=True, wake_enabled=False, wake_enable_at=now + 0.5),
+            replace(
+                state,
+                speaking=True,
+                response_active=state.response_active or event.kind == "response_started",
+                quack_active=state.quack_active or event.kind == "quack_started",
+                wake_enabled=False,
+                wake_enable_at=None,
+            ),
             [Effect("SetWakeEnabled", False)],
         )
     if event.kind == "quack_done" and state.mode == Mode.SLEEPING:
@@ -129,6 +141,7 @@ def transition(state: State, event: Event, now: float) -> tuple[State, list[Effe
             replace(
                 state,
                 speaking=False,
+                quack_active=False,
                 wake_enabled=False,
                 wake_enable_at=now + 0.5,
             ),
@@ -138,8 +151,12 @@ def transition(state: State, event: Event, now: float) -> tuple[State, list[Effe
         if state.mode == Mode.SLEEPING:
             return state, []
         mode = Mode.FOLLOWUP if event.kind == "response_done" else state.mode
-        effects = [Effect("MouthClose")]
-        if event.kind == "response_done" and event.question:
+        response_active = state.response_active and event.kind != "response_done"
+        quack_active = state.quack_active and event.kind != "quack_done"
+        inquire = event.kind == "response_done" and event.question
+        speaking = response_active or quack_active or inquire
+        effects = [] if response_active or quack_active else [Effect("MouthClose")]
+        if inquire:
             effects.append(Effect("Quack", "inquire"))
         effects.extend(
             [
@@ -151,11 +168,13 @@ def transition(state: State, event: Event, now: float) -> tuple[State, list[Effe
             replace(
                 state,
                 mode=mode,
-                speaking=False,
+                speaking=speaking,
+                response_active=response_active,
+                quack_active=quack_active or inquire,
                 wake_enabled=False,
-                wake_enable_at=now + 0.5,
+                wake_enable_at=None if speaking else now + 0.5,
                 followup_deadline=now + state.followup_s
-                if mode == Mode.FOLLOWUP
+                if event.kind == "response_done"
                 else state.followup_deadline,
             ),
             effects,
@@ -166,6 +185,8 @@ def transition(state: State, event: Event, now: float) -> tuple[State, list[Effe
                 replace(
                     state,
                     speaking=False,
+                    response_active=False,
+                    quack_active=False,
                     wake_enabled=False,
                     wake_enable_at=now + 0.5,
                     followup_deadline=now + state.followup_s

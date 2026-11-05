@@ -16,6 +16,7 @@ assets/models/
 assets/wake/positives/
 assets/wake/negatives/
 assets/wake/downloads/
+assets/wake/vad/
 dist/
 build/
 *.egg-info/

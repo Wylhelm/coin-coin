@@ -107,6 +107,12 @@ node --test tests/js/play_worklet.test.mjs
 
 Node.js n'est pas requis pour exécuter le service.
 
+Après intégration et correction S3 : 108 tests réussis, dont deux tests Silero
+ONNX réels avec les assets locaux, couverture totale 92,58 %, machine d'états
+98 %, porte audio 96 %, aucun diagnostic ruff ou pyright. Les tests ONNX réels
+sont ignorés en CI sans assets ; leur commande obligatoire figure dans
+`assets/wake/README.md`.
+
 Pyright installe son runtime Node localement si Node manque dans WSL.
 Les tests ne lisent pas les vrais secrets de `.env` et ne contactent aucun
 service externe. Les essais unitaires de `net_spike.sh` remplacent Docker et
@@ -121,6 +127,7 @@ l'enregistrement de positifs réels et la constitution d'un corpus négatif lice
 Les modèles et corpus audio sont ignorés par Git. Après leur obtention :
 
 ```sh
+cd ~/projects/microduck/coin-coin
 scripts/download_wake_models.sh
 scripts/download_wake_negatives.sh
 uv run python scripts/import_quacks.py
@@ -133,9 +140,21 @@ un meilleur compromis provisoire, pas un seuil validé (le rappel synthétique e
 les faux réveils en contexte n'atteignent pas la cible). Les positifs synthétiques
 ne remplacent pas les enregistrements de user.
 `VoiceActivityDetector` consomme du PCM16 mono à 16 kHz par fenêtres de 512
-échantillons et produit le pré-roll/la fin de parole avec maintien. La fonction
+nouveaux échantillons, avec les 64 échantillons de contexte requis par Silero
+v5.1.2 (entrée ONNX de 576), et réinitialise contexte et état récurrent ensemble.
+Il produit le pré-roll/la fin de parole avec maintien. La fonction
 pure `transition()` pilote les états sans effectuer d'I/O ; `AudioGate` garantit
 qu'aucun octet n'est transmis en ENDORMI et tient le compteur par état.
+Les drapeaux `response_active` et `quack_active` conservent les deux lectures
+concurrentes ; `speaking` reste actif jusqu'à leur fin ou au barge-in, et le
+réveil reste coupé jusqu'à 500 ms après la dernière fin.
+
+Le test ONNX réel et les horodatages WAV sont rejouables selon
+`assets/wake/README.md`. Avant tout retrait du worktree S3, préserver dans le
+repo principal les dossiers ignorés `assets/models/`, `assets/wake/positives/`,
+`assets/wake/negatives/`, `assets/wake/downloads/` et `assets/wake/vad/` :
+ils ne sont pas transportés par une fusion Git. La procédure de copie sans
+écrasement est donnée dans ce même document ; ne pas supprimer ces données.
 
 Les futurs tests `@pytest.mark.sim` sont enregistrés mais S0 ne lance **aucune**
 simulation. `.env`, logs, caches, modèles et sons sont ignorés par Git et par

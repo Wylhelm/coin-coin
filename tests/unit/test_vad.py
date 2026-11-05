@@ -1,4 +1,7 @@
+from pathlib import Path
+
 import numpy as np
+import onnxruntime as ort
 import pytest
 
 from coincoin.wake.vad import WINDOW_BYTES, VoiceActivityDetector
@@ -57,3 +60,62 @@ def test_vad_rejects_invalid_configuration() -> None:
         VoiceActivityDetector(threshold=1)
     with pytest.raises(ValueError, match="durations"):
         VoiceActivityDetector(pre_roll_ms=-1)
+
+
+def test_onnx_context_and_recurrent_state_reset_together(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    feeds: list[dict[str, np.ndarray]] = []
+
+    class Session:
+        def run(self, names: object, feed: dict[str, np.ndarray]) -> list[np.ndarray]:
+            feeds.append({name: array.copy() for name, array in feed.items()})
+            return [np.array([[0.1]], dtype=np.float32), feed["state"] + 1]
+
+    monkeypatch.setattr(ort, "InferenceSession", lambda *args, **kwargs: Session())
+    model = tmp_path / "model.onnx"
+    model.touch()
+    detector = VoiceActivityDetector(model)
+    first = np.arange(512, dtype="<i2")
+    second = np.arange(512, 1024, dtype="<i2")
+    detector.feed(first.tobytes() + second.tobytes())
+    assert feeds[0]["input"].shape == (1, 576)
+    np.testing.assert_array_equal(feeds[0]["input"][0, :64], 0)
+    np.testing.assert_array_equal(feeds[0]["input"][0, 64:], first / 32768.0)
+    np.testing.assert_array_equal(feeds[1]["input"][0, :64], first[-64:] / 32768.0)
+    np.testing.assert_array_equal(feeds[1]["input"][0, 64:], second / 32768.0)
+    np.testing.assert_array_equal(feeds[0]["state"], 0)
+    np.testing.assert_array_equal(feeds[1]["state"], 1)
+    assert feeds[0]["sr"] == 16_000
+    detector.feed(b"\x00\x00")
+    detector.reset()
+    detector.feed(first.tobytes())
+    np.testing.assert_array_equal(feeds[2]["input"], feeds[0]["input"])
+    np.testing.assert_array_equal(feeds[2]["state"], feeds[0]["state"])
+
+
+def test_speech_end_resets_onnx_context_and_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    feeds: list[dict[str, np.ndarray]] = []
+
+    class Session:
+        def run(self, names: object, feed: dict[str, np.ndarray]) -> list[np.ndarray]:
+            feeds.append({name: array.copy() for name, array in feed.items()})
+            score = 0.9 if len(feeds) == 1 else 0.1
+            return [np.array([[score]], dtype=np.float32), feed["state"] + 1]
+
+    monkeypatch.setattr(ort, "InferenceSession", lambda *args, **kwargs: Session())
+    model = tmp_path / "model.onnx"
+    model.touch()
+    detector = VoiceActivityDetector(model)
+    events = detector.feed(pcm_frame(4000) * 23)
+    assert events[-1].kind == "speech_end"
+    detector.feed(pcm_frame(0))
+    np.testing.assert_array_equal(feeds[-1]["input"][0, :64], 0)
+    np.testing.assert_array_equal(feeds[-1]["state"], 0)
+
+
+def test_onnx_requires_a_model_file(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="Silero VAD model missing"):
+        VoiceActivityDetector(tmp_path / "missing.onnx")

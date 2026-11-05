@@ -61,3 +61,63 @@ Run `uv run python scripts/eval_wake.py`. The threshold sweep report includes
 recall by language, false activations per negative-hour, and detection offset
 from each WAV's start. The evaluation rejects missing corpora rather than
 reporting a false pass.
+
+## Preserve local assets before retiring S3
+
+The durable checkout is `~/projects/microduck/coin-coin`, not the temporary S3
+worktree. Before removing that worktree, preserve `assets/models/` and
+`assets/wake/{positives,negatives,downloads,vad}/` in the durable checkout.
+Git does not transfer these ignored directories. From WSL, copy without
+overwriting any recordings or models already present at the destination:
+
+```sh
+cd ~/projects/microduck/coin-coin
+mkdir -p assets/models assets/wake
+cp -a --update=none ../coin-coin-wt/S3/assets/models/. assets/models/
+for name in positives negatives downloads vad; do
+    mkdir -p "assets/wake/$name"
+    cp -a --update=none "../coin-coin-wt/S3/assets/wake/$name/." "assets/wake/$name/"
+done
+```
+
+Verify the copied WAVs and models before retiring the worktree. Do not remove
+the source assets as part of this procedure. Continue all recording/evaluation
+commands from `~/projects/microduck/coin-coin` after integration. The real
+recording command also needs `export PULSE_SERVER=unix:/mnt/wslg/PulseServer`
+on this WSLg setup.
+
+## Real Silero regression
+
+`tests/integration/test_vad_real.py` runs the actual ignored Silero v5.1.2 ONNX
+model, not an injected probability function. Its dedicated synthetic fixture
+is `assets/wake/vad/positives/fr/fr_near_01.wav`, kept apart from user's
+recordings. It is the first FR TTS positive used in the original measurement.
+The preserved fixture has SHA-256
+`6b2339ed5495e9a06f286da85c8099bb57cceae754292a1fb7eecd04f2744b2f`.
+If it has not been preserved, regenerate the dedicated corpus from Windows
+PowerShell in the durable checkout (same installed FR voice required):
+
+```powershell
+.\scripts\synthesize_wake_samples.ps1 -OutDir "$PWD\assets\wake\vad\positives" -Count 1
+```
+
+The model SHA-256 is
+`2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f`.
+From WSL in `~/projects/microduck/coin-coin`:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH" UV_CACHE_DIR="$PWD/.cache/uv" \
+    PYRIGHT_PYTHON_CACHE_DIR="$PWD/.cache/pyright"
+COINCOIN_REQUIRE_VAD_ASSETS=1 uv run pytest tests/integration/test_vad_real.py -s --no-cov
+```
+
+The flag makes missing assets an error; ordinary CI skips these two tests if
+the ignored files are absent. One test compares 51 windows with the official
+64-context + 512-new-sample ONNX contract and checks exact replay after reset.
+The other writes/reads a temporary PCM16 WAV containing one second of silence,
+the fixture, and two seconds of silence. Its speech envelope is approximately
+1.200–1.808 s after padding, independently of model output. At threshold 0.5,
+the real model emits `speech_start` at 1.248 s and `speech_end` at 2.496 s
+(expected end plus 700 ms hold: 2.508 s), both within 100 ms. Detector reset
+reproduces these timestamps. These are real-model checks on synthetic speech,
+not validation of user's real wake recordings.
