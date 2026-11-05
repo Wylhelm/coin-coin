@@ -32,6 +32,19 @@
   trois fichiers Python concernés verts. Qualité complète à sérialiser
   avec le coordonnateur, pas encore exécutée pour cette livraison.
 
+## Assemblage protocolaire hors réseau externe — 2026-11-05
+
+- Régression des trois features installées ensemble par `App.start()`, vraies
+  routes web, `BrowserAudio`, mixer et clients TCP/Realtime/OpenClaw contre
+  des pairs locaux sur ports éphémères, caméra injectée au niveau `Frame`.
+- Deux variantes : réveil contrôlé, outils/vision/mémoire/audio, interruption
+  avec troncature exacte hors cancanements, coucher par `sleep` ou STOP UI
+  pendant un mouvement factice, résumé et nettoyage des tâches/sockets.
+- WAV/JPEG synthétiques uniquement, isolation globale `FEATURES` conservée,
+  aucun changement production/gouverneur, sim, robot, Docker ou API réelle.
+  Portée et commande : [docs/offline-assembly.md](docs/offline-assembly.md).
+  Aucun critère acoustique/humain ni réserve S9 n'est déclaré validé.
+
 ## S9 — Intégration pré-réception autorisée sous réserves — 2026-11-05
 
 - Décision de user : « finissons d'intégrer s9 et tout le reste, tout

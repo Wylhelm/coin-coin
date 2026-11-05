@@ -866,3 +866,24 @@ Un état distant retardé mais reçu récemment n'a pas d'âge de production
 vérifiable ; aucun ID robot ne permet de prouver sa causalité. Ces limites
 ne sont pas une preuve de mouvement physique ni une validation du critère
 humain `< 1 s`. Transports et scénarios sim restent inchangés.
+
+## ADR-PRE-ASSEMBLY-001 — Tester l'assemblage aux frontières protocolaires locales
+
+Date : 2026-11-05. Statut : retenu pour la régression pré-réception.
+
+**Décision.** Le test restaure localement la composition ordonnée des trois
+features de production, avec de nouvelles instances et une banque WAV
+synthétique. `App.start()` les installe depuis le cycle de vie des vraies
+routes web ; `tests/conftest.py` continue d'isoler tous les autres tests.
+`BrowserAudio`, mixer, gouverneur, `TcpLink` et clients Realtime/OpenClaw
+restent réels ; les serveurs sont des faux loopback à ports éphémères.
+La caméra produit un JPEG synthétique au niveau `Frame`, sans nouvelle
+infrastructure de démo ni mode production.
+
+**Conséquences.** La régression vérifie les interactions entre features,
+le flush acquitté et l'horloge de voix distincte des cancanements, sans
+revendiquer l'acoustique, le JavaScript navigateur, la caméra binaire ou
+WebRTC. Le teardown ferme explicitement la mémoire via `aclose()` comme
+le harness mémoire existant ; il vérifie qu'aucune tâche nouvelle ne survit.
+Aucun hook de production ni critère humain/S9 n'est modifié.
+Commande, assertions et limites : [offline-assembly.md](offline-assembly.md).
