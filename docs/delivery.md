@@ -152,13 +152,18 @@ printf 'user-main\n' > "$HOME/.cache/coin-coin-locks/sim-camera/owner"
 ss -ltn '( sport = :7801 or sport = :7901 or sport = :7810 or sport = :7811 or sport = :8765 or sport = :8443 or sport = :8080 )'
 ```
 
-Après vérification qu'aucun listener n'occupe ces ports :
+Prérequis caméra sur cet hôte : le plugin local `webrtcsink` doit déjà être
+disponible dans `/opt/gst-plugins-rs/lib/gstreamer-1.0`, comme lors des
+validations S7/S9. Cette procédure ne l'installe pas ; s'il manque, signaler
+le blocage plutôt que lancer la sim caméra.
+Après vérification de ce prérequis et qu'aucun listener n'occupe ces ports :
 
 ```sh
 export DUCK_SIM_STATE="$HOME/.cache/duck-sim"
 export DUCK_SIM_PORT=7801 DUCK_SIM_FRAME_PORT=7901 DUCK_SIM_VIEWER=0
 export DUCK_SIM_CAMERAS=a DUCK_SIM_SCENE=backlash
 export DUCK_SIM_RL="$HOME/projects/microduck/microduck_rl"
+export GST_PLUGIN_PATH="/opt/gst-plugins-rs/lib/gstreamer-1.0${GST_PLUGIN_PATH:+:$GST_PLUGIN_PATH}"
 export GST_PLUGIN_FEATURE_RANK=nvh264enc:NONE
 setpriv --no-new-privs "$HOME/projects/microduck/microduck/scripts/duck-sim"
 ```
@@ -230,7 +235,8 @@ Ctrl+C dans le terminal 2 du relais. Ne pas tuer par nom. Arrêter ensuite
 uniquement la sim live **démarrée dans ce créneau par user** :
 
 ```sh
-setsid --wait timeout 45s env DUCK_SIM_STATE="$HOME/.cache/duck-sim" \
+setsid --wait timeout 45s setpriv --no-new-privs \
+  env DUCK_SIM_STATE="$HOME/.cache/duck-sim" \
   DUCK_SIM_PORT=7801 DUCK_SIM_FRAME_PORT=7901 \
   "$HOME/projects/microduck/microduck/scripts/duck-sim" down </dev/null
 ss -ltn '( sport = :7801 or sport = :7901 or sport = :7810 or sport = :7811 or sport = :8765 or sport = :8443 or sport = :8080 )'
