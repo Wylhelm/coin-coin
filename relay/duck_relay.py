@@ -11,27 +11,15 @@ import logging
 import math
 import os
 import signal
+import sys
 from pathlib import Path
 
-ROBOT_METHODS = frozenset(
-    {
-        "hello",
-        "robot.move",
-        "robot.stop",
-        "robot.head",
-        "robot.look",
-        "robot.pose",
-        "robot.mouth",
-        "robot.sound",
-        "robot.do",
-        "robot.enable",
-        "robot.subscribe",
-        "robot.health",
-        "robot.skills",
-        "robot.mode",
-        "robot.policies",
-    }
-)
+# Direct execution still works with system Python, without installing Coin-Coin.
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from coincoin.robot.methods import ROBOT_METHODS  # noqa: E402
+
 FRAME_METHODS = frozenset({"hello", "media.frame"})
 MAX_LINE = 64 * 1024
 LOGGER = logging.getLogger("duck-relay")

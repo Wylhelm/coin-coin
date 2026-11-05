@@ -373,6 +373,13 @@ les scénarios `move`, `turn`, `look` et les mesures de RTT/gigue passent par
 WebRTC. La signalisation LAN n'a pas d'authentification : ne pas exposer
 `mediad` au-delà du LAN.
 
+Le transport WebRTC applique avant tout envoi la même liste de méthodes S1
+que `duck-relay`, partagée dans `coincoin.robot.methods`. Cela couvre aussi
+`coincoin-cli raw` : une méthode interdite échoue localement avec le code
+JSON-RPC `-32601`, sans transmettre l'appel ou ses paramètres. Les méthodes
+permises gardent leurs contrats ; ce filtre ne remplace ni le gouverneur
+ni l'isolation réseau, et une CLI `raw` n'est pas une API sûre pour un modèle.
+
 **Acceptation S9 encore bloquée :** les scénarios de référence sont rétablis
 sans adaptation (marche 0,2 m/s pendant 2 s, seuil > 0,15 m ; regard maintenu
 1 s et contrôlé après 0,6 s). La commande complète a produit 6 réussites et

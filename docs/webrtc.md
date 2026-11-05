@@ -49,6 +49,25 @@ déclenchent un nettoyage puis une reconnexion exponentielle avec gigue, plafonn
 La signalisation LAN de `mediad` n'est pas authentifiée. N'exposer ni son port
 8443 ni la caméra hors du LAN.
 
+### Filtrage S1 avant transmission
+
+Depuis la correction du 2026-11-05, la datachannel applique la liste
+`ROBOT_METHODS` de S1 avant `send`, pour les appels et les notifications.
+La liste a une source unique stdlib dans `coincoin.robot.methods`, importée
+aussi par le relais autonome ; ses méthodes permises n'ont pas changé.
+`coincoin-cli raw robot.init` échoue avec `-32601` et
+`refusee par WebRtcLink (S1 method policy)` sans transmettre la requête.
+Le journal ne contient que le nom de méthode refusé, jamais ses paramètres.
+
+Les tests sur le pair local couvrent les familles interdites, les appels et
+notifications, la CLI utilisant réellement la fabrique WebRTC, toutes les
+méthodes permises et la réutilisation du lien après refus. Une régression
+CLI/TcpLink/relais vérifie le refus S1 historique et un appel permis. Le
+relais reste exécutable avec Python système sans dépendances (`-I -S`,
+`--help`). Aucun appel interdit n'a été envoyé à une sim ou un robot.
+Le filtre ne valide pas les paramètres des méthodes permises et ne remplace
+pas le gouverneur ; `raw` reste réservé au diagnostic manuel.
+
 ## Procédure de simulation S9
 
 Les ressources exclusives de cette session sont : état

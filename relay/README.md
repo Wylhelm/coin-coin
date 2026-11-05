@@ -49,6 +49,9 @@ Il n'y a pas de chiffrement TLS : réserver ce lien au réseau privé WSL.
 ## Filtrage et transport
 
 - Port robot → `STATE/duck-a.sock`, liste constante `ROBOT_METHODS`.
+- Cette liste est partagée avec WebRTC dans `src/coincoin/robot/methods.py`
+  (stdlib uniquement). L'exécution directe du relais reste possible sans
+  installer Coin-Coin ; conserver ce fichier source à sa place dans le dépôt.
 - Port images → `STATE/duck-a-frame.sock`, liste constante `FRAME_METHODS`
   limitée à `hello` et `media.frame`.
 - Client → Unix : une ligne JSON-RPC 2.0 par message, refus par défaut.

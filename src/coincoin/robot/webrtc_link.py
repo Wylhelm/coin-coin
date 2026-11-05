@@ -23,6 +23,7 @@ from coincoin.clock import Clock, SystemClock
 from coincoin.robot.frames import FrameError
 from coincoin.robot.jsonrpc import API_VERSION, JsonRpcConnection, JsonRpcError
 from coincoin.robot.link import Frame, LinkDown, RobotRefused
+from coincoin.robot.methods import ROBOT_METHODS
 
 LOGGER = logging.getLogger(__name__)
 LinkCallback = Callable[[], Awaitable[None] | None]
@@ -79,6 +80,9 @@ class _DataChannelStream:
             message = json.loads(text)
         except (json.JSONDecodeError, UnicodeDecodeError):
             message = None
+        if isinstance(message, dict) and message.get("method") not in ROBOT_METHODS:
+            LOGGER.warning("WebRTC method refused: %r", message.get("method"))
+            raise JsonRpcError(-32601, "refusee par WebRtcLink (S1 method policy)")
         if isinstance(message, dict) and message.get("method") == "robot.stop":
             # STOP is a barrier: never replay an earlier deferred move after it.
             self._latest_move = None

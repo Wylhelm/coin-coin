@@ -711,6 +711,16 @@ sont pas garantis en saturation. L'absence d'acquittement STOP dans les
 La réponse SDP aiortc est `passive`; l'`active` par défaut a atteint ICE mais a échoué au
 handshake DTLS contre le `webrtcsink` de la simulation.
 
+**Correction de frontière S1, 2026-11-05.** Contrairement au lien TCP,
+WebRTC ne traverse pas `duck-relay`. La datachannel applique donc désormais
+sa liste de méthodes avant transmission, y compris pour `coincoin-cli raw`
+et les notifications. La liste S1 inchangée est extraite dans un module
+stdlib partagé, livré dans le paquet Coin-Coin ; le relais conserve son
+exécution autonome dans le dépôt. Un refus est explicite (`-32601`) sans
+journaliser de paramètres. Tests intégrés sur faux pair pour les méthodes
+interdites et permises, et CLI/TCP/relais inchangés. Ce contrôle n'est pas un
+gouverneur de paramètres et ne sécurise pas les autres clients de `mediad`.
+
 **Mesures rectifiées après revue.** Base `main` `0597380`. La marche est
 revenue à 2 s pour les deux scénarios, sans modifier le seuil > 0,15 m ;
 regard maintenu 1 s et contrôlé après 0,6 s. Commande complète sim :

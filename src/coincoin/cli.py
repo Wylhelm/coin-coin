@@ -31,7 +31,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser("do").add_argument("name")
     for name in ("sit", "stand", "skills", "status", "stop"):
         commands.add_parser(name)
-    raw = commands.add_parser("raw", help="Diagnostic RPC through the filtering relay")
+    raw = commands.add_parser("raw", help="Diagnostic RPC with the S1 method filter")
     raw.add_argument("method")
     raw.add_argument("params", nargs="?", default="{}")
     return result

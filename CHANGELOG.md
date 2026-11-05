@@ -188,6 +188,15 @@
   générations périmées, remplacement de page et rejet d'audio ancien. Qualité
   complète et harness AudioWorklet validés sur la branche S2 avant intégration.
 
+## Correctif S9 — 2026-11-05
+
+- Fermeture du contournement du filtrage S1 par `coincoin-cli raw` WebRTC :
+  liste de méthodes S1 partagée avec le relais, refus local `-32601` avant
+  envoi des appels ou notifications, sans paramètres dans les journaux.
+- Régressions sur faux pair : familles interdites, toutes les méthodes
+  permises et contrats CLI ; CLI/TCP/relais et exécution stdlib autonome
+  préservés. Aucun appel interdit vers une simulation ou un robot.
+
 ## S9 — 2026-11-04
 
 - Ajout de `WebRtcLink` avec aiortc, signalisation LAN `mediad`, canal JSON-RPC

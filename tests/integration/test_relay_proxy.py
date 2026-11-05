@@ -6,11 +6,29 @@ import sys
 from pathlib import Path
 
 import pytest
+from pydantic import SecretStr
 
+from coincoin.cli import execute, parser
+from coincoin.config import Settings
 from relay.duck_relay import DuckRelay
 from tests.fakes.fake_robotd import FakeRobotd
 
 RELAY_SCRIPT = Path(__file__).resolve().parents[2] / "relay" / "duck_relay.py"
+
+
+async def test_standalone_relay_help_without_site_packages():
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-I",
+        "-S",
+        str(RELAY_SCRIPT),
+        "--help",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), 5)
+    assert process.returncode == 0, stderr.decode()
+    assert b"--state-dir" in stdout
 
 
 @pytest.fixture
@@ -60,6 +78,24 @@ async def test_refusal_and_oversized_recovery_keep_connection(proxy):
     assert [record.method for record in robot.records] == ["hello"]
     writer.close()
     await writer.wait_closed()
+
+
+async def test_cli_raw_tcp_keeps_relay_refusal_and_permitted_calls(
+    proxy, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    relay, robot = proxy
+    monkeypatch.chdir(tmp_path)
+    port = relay.servers[0].sockets[0].getsockname()[1]
+    settings = Settings(
+        robot_link=f"tcp://127.0.0.1:{port}", relay_token=SecretStr("test-relay-token")
+    )
+    output, code = await execute(parser().parse_args(["raw", "robot.init"]), settings)
+    assert code == 1
+    assert output == {"ok": False, "code": -32601, "reason": "refusee par duck-relay"}
+    assert not any(record.method == "robot.init" for record in robot.records)
+    output, code = await execute(parser().parse_args(["raw", "robot.health"]), settings)
+    assert code == 0 and output["ok"] and output["result"]["healthy"]
+    assert any(record.method == "robot.health" for record in robot.records)
 
 
 async def test_server_states_and_replies_share_connection(proxy):

@@ -15,13 +15,15 @@ from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription, V
 from av import VideoFrame
 from PIL import Image
 
+from coincoin.cli import execute, parser
 from coincoin.clock import SystemClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.robot import webrtc_link as webrtc_module
 from coincoin.robot.governor import Governor
-from coincoin.robot.jsonrpc import API_VERSION, JsonRpcConnection
+from coincoin.robot.jsonrpc import API_VERSION, JsonRpcConnection, JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
+from coincoin.robot.methods import ROBOT_METHODS
 from coincoin.robot.webrtc_link import (
     MAX_MOVE_BUFFERED_BYTES,
     WebRtcLink,
@@ -245,6 +247,97 @@ async def test_control_jsonrpc_video_and_api47_stop_request(mediad: LocalMediad)
     assert not link.connected
     with pytest.raises(LinkDown):
         await link.call("robot.health")
+
+
+async def test_s1_method_policy_blocks_calls_and_notifications_before_send(
+    mediad: LocalMediad, caplog: pytest.LogCaptureFixture
+) -> None:
+    link = WebRtcLink(mediad.url)
+    forbidden = (
+        "robot.init",
+        "robot.relax",
+        "robot.rest",
+        "robot.shutdown",
+        "robot.rebootMotors",
+        "robot.setMode",
+        "robot.setSkill",
+        "robot.removeSkill",
+        "robot.loadPolicy",
+        "robot.reloadPolicies",
+        "robot.theremin",
+        "robot.chorale",
+        "robot.flashlight",
+        "robot.vetbook.get",
+        "robot.state",
+        "media.frame",
+        "unknown",
+        *(
+            f"{family}.test"
+            for family in (
+                "policy",
+                "detector",
+                "account",
+                "os",
+                "telemetry",
+                "update",
+                "system",
+                "net",
+                "pad",
+            )
+        ),
+    )
+    try:
+        await link.connect()
+        for method in forbidden:
+            for send in (link.call, link.notify):
+                with pytest.raises(JsonRpcError, match="S1 method policy") as error:
+                    await send(method, {"private": "do-not-log-params"})
+                assert error.value.code == -32601
+        assert link.connected
+        assert await link.call("robot.health") == {"healthy": True}
+        assert all(record["method"] in ROBOT_METHODS for record in mediad.records)
+        assert not any(record["method"] in forbidden for record in mediad.records)
+        assert "WebRTC method refused" in caplog.text
+        assert "do-not-log-params" not in caplog.text
+        assert "private" not in caplog.text
+    finally:
+        await link.close()
+
+
+async def test_cli_raw_webrtc_refusal_and_all_permitted_methods(
+    mediad: LocalMediad, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    settings = Settings(robot_link=mediad.url)
+    output, code = await execute(parser().parse_args(["raw", "robot.init"]), settings)
+    assert code == 1
+    assert output == {
+        "ok": False,
+        "code": -32601,
+        "reason": "refusee par WebRtcLink (S1 method policy)",
+    }
+    assert not any(record["method"] == "robot.init" for record in mediad.records)
+    output, code = await execute(
+        parser().parse_args(["raw", "robot.health", '{"probe":true}']), settings
+    )
+    assert code == 0 and output == {"ok": True, "result": {"healthy": True}}
+    assert any(
+        record["method"] == "robot.health" and record["params"] == {"probe": True}
+        for record in mediad.records
+    )
+    link = WebRtcLink(mediad.url)
+    try:
+        await link.connect()
+        for method in sorted(ROBOT_METHODS - {"robot.move", "robot.do"}):
+            params = {"api_version": 47} if method == "hello" else {}
+            await link.call(method, params)
+        with pytest.raises(RobotRefused, match="test refusal"):
+            await link.call("robot.do", {"skill": "not-allowed"})
+        await link.notify("robot.move", {"vx": 0.1, "vy": 0, "vyaw": 0})
+        await until(lambda: any(record["method"] == "robot.move" for record in mediad.records))
+        assert {record["method"] for record in mediad.records} == ROBOT_METHODS
+    finally:
+        await link.close()
 
 
 async def test_backpressure_sends_only_the_latest_move() -> None:
