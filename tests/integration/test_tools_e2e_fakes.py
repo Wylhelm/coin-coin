@@ -11,7 +11,7 @@ from aiohttp import WSMsgType, web
 from coincoin.app import App
 from coincoin.config import Settings
 from coincoin.journal import Journal
-from coincoin.realtime.events import ResponseDone, ResponseStarted, ToolCall
+from coincoin.realtime.events import ResponseDone, ResponseStarted, SpeechStarted, ToolCall
 from coincoin.realtime.session import RealtimeConnectionError, RealtimeSession
 from coincoin.robot.feature import LINK_LOST, RobotFeature
 from coincoin.statemachine import Mode, State
@@ -271,13 +271,16 @@ class AnnouncementSession(RealtimeSession):
         self.results: list[tuple[str, str]] = []
         self.resumes = 0
         self.cancelled = False
+        self.continuations: list[tuple[str, str | None]] = []
 
     async def announce(self, message: str) -> None:
         self.notices.append(message)
         self.resumes += 1
+        self.continuations.append(("announce", message))
 
     async def create_response(self) -> None:
         self.resumes += 1
+        self.continuations.append(("create_response", None))
 
     async def send_tool_result(self, call_id: str, result: str) -> None:
         self.results.append((call_id, result))
@@ -502,3 +505,309 @@ async def test_notice_transport_failure_is_explicit_and_ends_speaking(rig) -> No
     assert not app.state.response_active
     assert not app.state.speaking
     assert any(e.get("operation") == "robot announcement" for e in _entries(app))
+
+
+@pytest.fixture
+async def announcement_app(tmp_path: Path):
+    """Exercise App scheduling without a robot, feature, or external service."""
+    app = App(_settings(), _Audio(), Journal(tmp_path), features=())
+    session = AnnouncementSession()
+    app._session = session
+    app.state = State(Mode.AWAKE, speaking=True, response_active=True)
+    try:
+        yield app, session
+    finally:
+        await app.stop()
+
+
+async def _drain_tool_tasks(app: App) -> None:
+    async with asyncio.timeout(1):
+        while pending := tuple(task for task in app._tool_tasks if not task.done()):
+            await asyncio.gather(*pending)
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+async def test_notice_racing_blocked_mouth_close_sends_only_one_continuation(
+    announcement_app, status: str
+) -> None:
+    app, session = announcement_app
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def close_mouth() -> None:
+        entered.set()
+        await release.wait()
+
+    app.on("mouth_close", close_mouth)
+    finishing = asyncio.create_task(
+        app._finish_response(ResponseDone(status="completed"), 0)
+        if status == "completed"
+        else app._handle_realtime_event(ResponseDone(status="failed"))
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        announcing = asyncio.create_task(app.announce(LINK_LOST))
+        release.set()
+        await asyncio.gather(finishing, announcing)
+        await _drain_tool_tasks(app)
+        assert session.continuations == [("announce", LINK_LOST)]
+        assert app._announcement is None
+        await app._handle_realtime_event(ResponseStarted(response_id="notice"))
+        await app._handle_realtime_event(ResponseDone(response_id="notice", status="completed"))
+        assert app._response_finish_task is not None
+        await app._response_finish_task
+        await app._resume_response(session)
+        assert session.continuations == [("announce", LINK_LOST)]
+    finally:
+        release.set()
+        await finishing
+
+
+async def test_stale_notice_task_defers_to_new_active_response(announcement_app) -> None:
+    app, session = announcement_app
+    await app.announce(LINK_LOST)
+    app.state = State(Mode.AWAKE)
+    queued = asyncio.create_task(app._resume_response(session))
+    await app._handle_realtime_event(ResponseStarted(response_id="new"))
+    await queued
+    assert session.continuations == []
+    assert app._announcement == LINK_LOST
+    await app._handle_realtime_event(ResponseDone(response_id="new", status="completed"))
+    assert app._response_finish_task is not None
+    await app._response_finish_task
+    await _drain_tool_tasks(app)
+    assert session.continuations == [("announce", LINK_LOST)]
+
+
+@pytest.mark.parametrize("replace_session", [False, True])
+async def test_notice_rechecks_response_and_session_after_status_await(
+    announcement_app, replace_session: bool
+) -> None:
+    app, old_session = announcement_app
+    app.state = State(Mode.AWAKE)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def control(message: dict) -> None:
+        if message.get("speaking") and not entered.is_set():
+            entered.set()
+            await release.wait()
+
+    app.control = control
+    announcing = asyncio.create_task(app.announce(LINK_LOST))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        session = AnnouncementSession() if replace_session else old_session
+        app._session = session
+        await app._handle_realtime_event(ResponseStarted(response_id="superseding"))
+        release.set()
+        await announcing
+        await _drain_tool_tasks(app)
+        assert old_session.continuations == session.continuations == []
+        assert app._announcement == LINK_LOST
+        await app._handle_realtime_event(
+            ResponseDone(response_id="superseding", status="completed")
+        )
+        assert app._response_finish_task is not None
+        await app._response_finish_task
+        await _drain_tool_tasks(app)
+        assert session.continuations == [("announce", LINK_LOST)]
+        if replace_session:
+            assert old_session.continuations == []
+        assert app._announcement is None
+    finally:
+        release.set()
+        await announcing
+
+
+@pytest.mark.parametrize("notice_before_parent_done", [False, True])
+async def test_notice_waits_for_ordered_batch_outputs_despite_stale_resume_task(
+    announcement_app, notice_before_parent_done: bool
+) -> None:
+    app, _ = announcement_app
+    sending = asyncio.Event()
+    release_output = asyncio.Event()
+    slow_started = asyncio.Event()
+    fast_finished = asyncio.Event()
+    release_slow = asyncio.Event()
+    events: list[str] = []
+
+    class OutputSession(AnnouncementSession):
+        async def send_tool_result(self, call_id: str, result: str) -> None:
+            if call_id == "slow":
+                sending.set()
+                await release_output.wait()
+            events.append(call_id)
+            await super().send_tool_result(call_id, result)
+
+        async def announce(self, message: str) -> None:
+            events.append("announcement")
+            await super().announce(message)
+
+    session = OutputSession()
+    app._session = session
+
+    async def delayed(_app: App, _args: dict) -> dict:
+        slow_started.set()
+        await release_slow.wait()
+        return {"ok": True}
+
+    async def immediate(_app: App, _args: dict) -> dict:
+        fast_finished.set()
+        return {"ok": True}
+
+    app.register_tool("slow", "Slow fake", {"type": "object"}, delayed)
+    app.register_tool("fast", "Fast fake", {"type": "object"}, immediate)
+    await app._handle_realtime_event(ResponseStarted(response_id="parent"))
+    for name in ("slow", "fast"):
+        await app._handle_realtime_event(
+            ToolCall(name=name, call_id=name, arguments="{}", response_id="parent")
+        )
+    try:
+        await asyncio.wait_for(slow_started.wait(), 1)
+        await asyncio.wait_for(fast_finished.wait(), 1)
+        if notice_before_parent_done:
+            await app.announce(LINK_LOST)
+        await app._handle_realtime_event(ResponseDone(response_id="parent", status="completed"))
+        release_slow.set()
+        await asyncio.wait_for(sending.wait(), 1)
+        if not notice_before_parent_done:
+            await app.announce(LINK_LOST)
+        # A deferred announcement callback is not the batch's continuation.
+        await app._resume_response(session)
+        assert session.continuations == []
+        assert session.results == []
+        release_output.set()
+        await _drain_tool_tasks(app)
+        assert events == ["slow", "fast", "announcement"]
+        assert session.continuations == [("announce", LINK_LOST)]
+        assert app._announcement is None
+    finally:
+        release_slow.set()
+        release_output.set()
+
+
+async def test_barge_in_retains_unsent_notice_for_next_response(announcement_app) -> None:
+    app, _ = announcement_app
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockedSession(AnnouncementSession):
+        async def announce(self, message: str) -> None:
+            entered.set()
+            await release.wait()
+            await super().announce(message)
+
+    session = BlockedSession()
+    app._session = session
+    await app._handle_realtime_event(ResponseStarted(response_id="old"))
+    await app.announce(LINK_LOST)
+    await app._handle_realtime_event(ResponseDone(response_id="old", status="completed"))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        pending = tuple(app._tool_tasks)
+        await app._handle_realtime_event(SpeechStarted())
+        await asyncio.gather(*pending, return_exceptions=True)
+        assert pending and all(task.cancelled() for task in pending)
+        assert app._announcement == LINK_LOST
+        assert session.cancelled
+        assert session.continuations == []
+        release.set()
+        await app._handle_realtime_event(ResponseDone(response_id="old", status="completed"))
+        assert session.continuations == []
+        await app._handle_realtime_event(ResponseStarted(response_id="fresh"))
+        await app._handle_realtime_event(ResponseDone(response_id="fresh", status="completed"))
+        assert app._response_finish_task is not None
+        await app._response_finish_task
+        await _drain_tool_tasks(app)
+        assert session.continuations == [("announce", LINK_LOST)]
+        assert app._announcement is None
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("fail_first_send", [False, True])
+async def test_new_notice_survives_older_inflight_send(
+    announcement_app, fail_first_send: bool
+) -> None:
+    app, _ = announcement_app
+    app.state = State(Mode.AWAKE)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class BlockedSession(AnnouncementSession):
+        attempts = 0
+
+        async def announce(self, message: str) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                entered.set()
+                await release.wait()
+                if fail_first_send:
+                    raise RealtimeConnectionError("first notice failed")
+            await super().announce(message)
+
+    session = BlockedSession()
+    app._session = session
+    first = asyncio.create_task(app.announce(LINK_LOST))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        # A second outage has the same text but is a distinct, legitimate notice.
+        await app.announce(LINK_LOST)
+        release.set()
+        await first
+        await _drain_tool_tasks(app)
+        if not fail_first_send:
+            assert session.continuations == [("announce", LINK_LOST)]
+            assert app._announcement == LINK_LOST
+            await app._handle_realtime_event(ResponseStarted(response_id="first-notice"))
+            await app._handle_realtime_event(
+                ResponseDone(response_id="first-notice", status="completed")
+            )
+            assert app._response_finish_task is not None
+            await app._response_finish_task
+            await _drain_tool_tasks(app)
+        expected = 1 if fail_first_send else 2
+        assert session.continuations == [("announce", LINK_LOST)] * expected
+        assert session.attempts == 2
+        assert app._announcement is None
+    finally:
+        release.set()
+        await first
+
+
+@pytest.mark.parametrize("status", ["completed", "failed"])
+async def test_stop_during_mouth_close_discards_racing_notice(
+    announcement_app, status: str
+) -> None:
+    app, session = announcement_app
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def close_mouth() -> None:
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+
+    app.on("mouth_close", close_mouth)
+    app.on("stop", stopped.set)
+    finishing = asyncio.create_task(
+        app._finish_response(ResponseDone(status="completed"), 0)
+        if status == "completed"
+        else app._handle_realtime_event(ResponseDone(status="failed"))
+    )
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        announcing = asyncio.create_task(app.announce(LINK_LOST))
+        await app.stop_pressed()
+        assert stopped.is_set()
+        release.set()
+        await asyncio.gather(finishing, announcing)
+        await _drain_tool_tasks(app)
+        assert app.state.mode == Mode.SLEEPING
+        assert app._announcement is None
+        assert session.continuations == []
+    finally:
+        release.set()
+        await finishing

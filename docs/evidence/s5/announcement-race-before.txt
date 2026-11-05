@@ -1,0 +1,78 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_ test_notice_racing_blocked_mouth_close_sends_only_one_continuation[completed] _
+
+announcement_app = (<coincoin.app.App object at 0x7bd9d838b620>, <test_tools_e2e_fakes.AnnouncementSession object at 0x7bd9d838b740>)
+status = 'completed'
+
+    @pytest.mark.parametrize("status", ["completed", "failed"])
+    async def test_notice_racing_blocked_mouth_close_sends_only_one_continuation(
+        announcement_app, status: str
+    ) -> None:
+        app, session = announcement_app
+        entered = asyncio.Event()
+        release = asyncio.Event()
+    
+        async def close_mouth() -> None:
+            entered.set()
+            await release.wait()
+    
+        app.on("mouth_close", close_mouth)
+        finishing = asyncio.create_task(
+            app._finish_response(ResponseDone(status="completed"), 0)
+            if status == "completed"
+            else app._handle_realtime_event(ResponseDone(status="failed"))
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            announcing = asyncio.create_task(app.announce(LINK_LOST))
+            release.set()
+            await asyncio.gather(finishing, announcing)
+            await _drain_tool_tasks(app)
+>           assert session.continuations == [("announce", LINK_LOST)]
+E           AssertionError: assert [('announce',...ponse', None)] == [('announce',... mes pattes')]
+E             
+E             Left contains one more item: ('create_response', None)
+E             Use -v to get more diff
+
+tests/integration/test_tools_e2e_fakes.py:553: AssertionError
+__ test_notice_racing_blocked_mouth_close_sends_only_one_continuation[failed] __
+
+announcement_app = (<coincoin.app.App object at 0x7bd9d838c4d0>, <test_tools_e2e_fakes.AnnouncementSession object at 0x7bd9d838c530>)
+status = 'failed'
+
+    @pytest.mark.parametrize("status", ["completed", "failed"])
+    async def test_notice_racing_blocked_mouth_close_sends_only_one_continuation(
+        announcement_app, status: str
+    ) -> None:
+        app, session = announcement_app
+        entered = asyncio.Event()
+        release = asyncio.Event()
+    
+        async def close_mouth() -> None:
+            entered.set()
+            await release.wait()
+    
+        app.on("mouth_close", close_mouth)
+        finishing = asyncio.create_task(
+            app._finish_response(ResponseDone(status="completed"), 0)
+            if status == "completed"
+            else app._handle_realtime_event(ResponseDone(status="failed"))
+        )
+        try:
+            await asyncio.wait_for(entered.wait(), 1)
+            announcing = asyncio.create_task(app.announce(LINK_LOST))
+            release.set()
+            await asyncio.gather(finishing, announcing)
+            await _drain_tool_tasks(app)
+>           assert session.continuations == [("announce", LINK_LOST)]
+E           AssertionError: assert [('announce',...ponse', None)] == [('announce',... mes pattes')]
+E             
+E             Left contains one more item: ('create_response', None)
+E             Use -v to get more diff
+
+tests/integration/test_tools_e2e_fakes.py:553: AssertionError
+=========================== short test summary info ============================
+FAILED tests/integration/test_tools_e2e_fakes.py::test_notice_racing_blocked_mouth_close_sends_only_one_continuation[completed]
+FAILED tests/integration/test_tools_e2e_fakes.py::test_notice_racing_blocked_mouth_close_sends_only_one_continuation[failed]
+2 failed, 30 deselected in 0.07s

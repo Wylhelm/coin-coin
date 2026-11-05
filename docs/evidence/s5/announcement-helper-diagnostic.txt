@@ -1,0 +1,53 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0 -- /home/user/projects/microduck/coin-coin-wt/S5/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /home/user/projects/microduck/coin-coin-wt/S5
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0, anyio-4.16.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collecting ... collected 40 items / 39 deselected / 1 selected
+
+Timeout (0:00:10)!
+Thread 0x0000721f7abe0080 (most recent call first):
+  File "/usr/lib/python3.12/asyncio/tasks.py", line 861 in gather
+  File "/home/user/projects/microduck/coin-coin-wt/S5/tests/integration/test_tools_e2e_fakes.py", line 526 in _drain_tool_tasks
+  File "/home/user/projects/microduck/coin-coin-wt/S5/tests/integration/test_tools_e2e_fakes.py", line 572 in test_stale_notice_task_defers_to_new_active_response
+  File "/usr/lib/python3.12/asyncio/events.py", line 88 in _run
+  File "/usr/lib/python3.12/asyncio/base_events.py", line 1987 in _run_once
+  File "/usr/lib/python3.12/asyncio/base_events.py", line 641 in run_forever
+  File "/usr/lib/python3.12/asyncio/base_events.py", line 674 in run_until_complete
+  File "/usr/lib/python3.12/asyncio/runners.py", line 118 in run
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pytest_asyncio/plugin.py", line 906 in inner
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/python.py", line 187 in pytest_pyfunc_call
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/python.py", line 1798 in runtest
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pytest_asyncio/plugin.py", line 570 in runtest
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/runner.py", line 184 in pytest_runtest_call
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/runner.py", line 250 in <lambda>
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/runner.py", line 361 in from_call
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/runner.py", line 249 in call_and_report
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/runner.py", line 139 in runtestprotocol
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/runner.py", line 118 in pytest_runtest_protocol
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/main.py", line 411 in pytest_runtestloop
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/main.py", line 387 in _main
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/main.py", line 333 in wrap_session
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/main.py", line 380 in pytest_cmdline_main
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_execution.py", line 147 in _multicall
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_manager.py", line 183 in _hookexec
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/pluggy/_caller.py", line 197 in __call__
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/config/__init__.py", line 262 in _main
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/lib/python3.12/site-packages/_pytest/config/__init__.py", line 286 in _console_main
+  File "/home/user/projects/microduck/coin-coin-wt/S5/.venv/bin/pytest", line 10 in <module>
+tests/integration/test_tools_e2e_fakes.py::test_stale_notice_task_defers_to_new_active_response
+<shellId: 1118 completed with exit code 124>

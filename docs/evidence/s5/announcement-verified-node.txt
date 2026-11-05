@@ -1,0 +1,14 @@
+✔ played reports retain exact samples for a sub-millisecond tail (0.725688ms)
+✔ flush sequence barrier drops delayed old packets, including repeated flushes (1.043604ms)
+✔ successive non-frame-aligned fragments and a short tail stay contiguous (0.820577ms)
+✔ linear interpolation stays sample-accurate across render blocks (2.205249ms)
+✔ fragment boundaries and recovery from underflow preserve resampling phase (4.704527ms)
+✔ played progress reports every 100 ms at the actual AudioContext rate (3.581444ms)
+ℹ tests 6
+ℹ suites 0
+ℹ pass 6
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 55.148405

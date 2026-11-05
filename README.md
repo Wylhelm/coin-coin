@@ -11,7 +11,31 @@ S5 installe `RobotFeature` : le serveur vocal maintient désormais une liaison
 robot et expose les actions via le gouverneur, sans contourner ses sécurités.
 Les modes `--echo` et `--tone` restent sans liaison robot.
 
-## S5 — outils robot, critères agent vérifiés après SIMWALK
+## S5 — correctif de reprise unique, en attente de contre-vérification
+
+La livraison `46bdee4` a été refusée pour une course entre fin de réponse
+(`mouth_close` en attente réseau) et annonce de perte robot : deux tâches
+pouvaient émettre une annonce puis une réponse normale concurrente.
+Une reprise sans annonce exige désormais un lot d'outils valide ; les tâches
+d'annonce obsolètes ne font rien et une réponse active conserve la priorité.
+L'annonce reste en attente jusqu'à son envoi réussi : une interruption avant
+envoi ne la perd pas, une nouvelle perte pendant l'envoi reste distincte,
+et STOP l'invalide et annule l'envoi comme auparavant.
+
+Les douze nouvelles régressions sont entièrement en mémoire, avec le vrai
+`App` : fin normale/échec avec bec bloqué, tâche obsolète, outputs ordonnés,
+barge-in, nouvelle perte pendant envoi réussi/échoué et STOP prioritaire.
+L'identité de session/réponse est revérifiée après l'attente de notification
+UI, pour ne pas envoyer une annonce devenue concurrente ou orpheline.
+Résultats : **80 tests ciblés réussis**, qualité complète **459 réussis,
+3 sim ignorés**, couverture **91,78 %**, ruff/format/Pyright verts, Node **6/6**.
+Les 42 cas S5 incluent toujours les vrais transports vers les faux.
+Les [preuves et commandes](docs/network.md#s5--correction-de-la-course-dannonce)
+conservent aussi la reproduction rouge avant correction.
+Aucun service S5 ni appel réel OpenAI n'a été lancé pour ce correctif.
+S5 reste non intégrée ; les essais humains restent ouverts.
+
+### Historique : validation sim après SIMWALK
 
 Après rebase sur `main=cc30372` (S8 et correctif test-only SIMWALK), la suite
 sim complète exécutée **une seule fois** passe : **3 réussis, 447 désélectionnés,
@@ -19,13 +43,14 @@ aucun saut**, avance stabilisée **0,162 m**, tour **89,222°**, regard **0,795 
 Le test commun attend une odométrie fraîche et stabilisée après STOP ;
 consigne **0,2 m/s pendant 2 s** et seuil strict **> 0,15 m** inchangés.
 Aucun test sim supplémentaire S5 ne reproduisait l'ancien délai fixe.
-Le blocage est levé côté critères agent ; l'intégration reste au coordonnateur.
+Le blocage de mesure sim a été levé ; la course d'annonce ci-dessus a ensuite
+rouvert la livraison. La sim n'est pas rejouée pour cette correction App/tests.
 Les anciens résultats (3/3 puis marche à 0,120359637 m) sont conservés dans
 [les preuves S5](docs/network.md#s5--revalidation-apres-simwalk) et expliqués
 par le protocole de mesure dans [SIMWALK](docs/simwalk-motion.md), sans
 prétendre mesurer une vérité terrain physique indépendante.
 
-La qualité hors sim passe : **447 réussis, 3 sim ignorés**, couverture
+La qualité hors sim de cette livraison précédente passait : **447 réussis, 3 sim ignorés**, couverture
 **91,72 %**, ruff/format/Pyright verts et vrai AudioWorklet **6/6**.
 Les deux tests Silero utilisent les assets locaux, sans saut. Les **30 cas S5**
 de `tests/integration/test_tools_e2e_fakes.py` couvrent les vrais transports

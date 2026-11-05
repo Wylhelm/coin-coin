@@ -1,5 +1,59 @@
 # Réseau Coin-Coin — relevés S0 / S1 du 2026-11-04
 
+## S5 — correction de la course d'annonce
+
+`46bdee4` a été refusé après reproduction d'une double continuation.
+Le correctif ne touche que l'ordonnancement App et ses régressions ;
+aucun lancement sim, relais ou Compose, aucun appel réel OpenAI.
+Les tests sim et leurs seuils restent inchangés, sans nouvelle campagne.
+S5 reste non intégrée, remise au coordonnateur pour contre-vérification.
+
+Depuis `~/projects/microduck/coin-coin-wt/S5`, environnement commun :
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+export UV_CACHE_DIR="$PWD/.cache/uv"
+export PYRIGHT_PYTHON_CACHE_DIR="$PWD/.cache/pyright"
+set -o pipefail
+```
+
+Commandes et sorties anonymisées :
+
+```sh
+# Avant correction : les deux ordonnancements échouent (double continuation).
+uv run pytest tests/integration/test_tools_e2e_fakes.py -k racing_blocked_mouth --no-cov -q \
+  2>&1 | tee docs/evidence/s5/announcement-race-before.txt
+# Après correction : fin/échec, outputs ordonnés, interruption et STOP.
+timeout 90s uv run pytest tests/integration/test_tools_e2e_fakes.py \
+  tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py \
+  --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-verified-targeted.txt
+(uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest) \
+  2>&1 | tee docs/evidence/s5/announcement-verified-quality.txt
+"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node" --test tests/js/play_worklet.test.mjs \
+  2>&1 | tee docs/evidence/s5/announcement-verified-node.txt
+```
+
+Résultats : **2 failed, 30 deselected** avant correction ; **80 passed**
+ciblés après ; qualité **459 passed, 3 skipped**, couverture **91,78 %**,
+96 fichiers déjà formatés, 0 diagnostic Pyright ; Node **6/6**.
+Les trois sauts sim hors opt-in ne sont pas une preuve sim supplémentaire.
+La preuve sim antérieure ci-dessous reste inchangée ; la contre-vérification
+indépendante rapportée par le coordonnateur donne aussi 3/3 (avance 0,162 m,
+tour 89,033°, regard 0,795 rad), avec son nettoyage vérifié.
+
+Un premier lancement ciblé a été interrompu : le nouveau helper de test
+bouclait sur des tâches déjà terminées avant leurs callbacks de retrait.
+Le helper attend désormais uniquement les tâches encore pendantes ; ce
+diagnostic n'a nécessité aucune autre modification de production.
+Les captures de diagnostic et les premiers passages verts sont conservés
+en plus des captures finales. Le manifeste `evidence/s5/announcement-captures.json`
+référence les commandes exactes, codes et SHA-256. Le contrôle final est dans
+`evidence/s5/announcement-cleanup.txt` : aucune ressource S5 restante,
+Pollen et toutes les anciennes preuves inchangés ; confirmation après la
+dernière vérification dans `evidence/s5/announcement-verified-cleanup.txt`.
+Les captures `announcement-final-*` précèdent les deux régressions
+additionnelles d'attente UI ; les résultats définitifs sont `announcement-verified-*`.
+
 ## S5 — revalidation après SIMWALK
 
 Rebase autorisé de `session/S5` sur `main=cc30372` : S8 et le helper stabilisé

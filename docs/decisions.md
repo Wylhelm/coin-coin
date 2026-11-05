@@ -515,7 +515,7 @@ corps physique.
 
 ## ADR-S5-001 — Outils gouvernés et annonces dans la reprise unique
 
-Date : 2026-11-05. Statut : implémenté ; critères agent vérifiés après rebase SIMWALK.
+Date : 2026-11-05. Statut : implémenté ; correctif de course vérifié, contre-vérification requise.
 
 **Décision.** `RobotFeature` installe un runtime propre à chaque application,
 avec `TcpLink`, le gouverneur existant et ses tâches. Les onze outils S5
@@ -579,6 +579,36 @@ Qualité complète : **447 passed, 3 skipped**, couverture **91,72 %** ;
 ruff/format/Pyright verts, worklet 6/6, deux tests Silero réels exécutés.
 Les deux features S8/S5 sont conservées et les ADR-007/008 restent intacts.
 Les preuves initiales et la revalidation sont dans `docs/evidence/s5/`.
+
+**Correction après refus de `46bdee4`.** La transition de fin de réponse rend
+`response_active=False` avant d'attendre `mouth_close`. Pendant cette attente,
+`announce()` et la fin normale/échouée pouvaient programmer deux reprises ;
+la seconde, après consommation de l'annonce, émettait une réponse normale.
+La reprise sans annonce est désormais réservée à un `_ToolTurn` valide.
+Une tâche d'annonce sans message ou avec une réponse déjà active ne fait rien.
+Le changement d'état `response_started` réserve la réponse avant son premier
+`await`, sans verrou qui retarderait STOP.
+Après l'attente UI de cette transition, l'identité de session, sa génération
+et l'identité de réponse sont revérifiées avant l'envoi : une nouvelle
+réponse/session garde l'annonce en attente au lieu de créer une réponse
+concurrente ou d'envoyer sur l'ancienne session.
+
+Le message n'est acquitté qu'après l'envoi réussi. Une annulation par barge-in
+avant cet envoi le conserve pour la prochaine réponse ; STOP le supprime et
+annule toujours la tâche. Un numéro de version empêche un ancien envoi,
+réussi ou échoué, d'effacer une nouvelle perte portant le même texte.
+Une erreur de transport efface uniquement sa propre annonce et reste
+journalisée : pas de nouvelle boucle de réessai. Le lot conserve son ordre,
+son unique continuation et les annulations S4 ; ni `send_tool_result`, ni
+`audio_out`, ni les tests/seuils sim ne changent.
+
+Douze régressions supplémentaires sans réseau robot/OpenAI, dont l'ordonnancement
+exact du bec bloqué : reproduction rouge **2 échecs** avant correction ;
+**80 tests ciblés réussis** après correction. Qualité complète : **459 passed,
+3 skipped**, couverture **91,78 %**, ruff/format/Pyright verts et Node **6/6**.
+Pas de nouvelle sim : preuve 3/3 SIMWALK conservée, contre-vérification sim
+du coordonnateur également rapportée (0,162 m, 89,033°, 0,795 rad).
+S5 reste non intégrée et les essais humains ouverts.
 Ressources S5 arrêtées, aucun nouvel appel OpenAI, Pollen inchangé.
 Cette mesure reste odométrique et inclut la décélération ; intégration et
 validation vocale humaine ne sont pas revendiquées.

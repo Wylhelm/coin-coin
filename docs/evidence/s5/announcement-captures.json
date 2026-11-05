@@ -1,0 +1,123 @@
+[
+  {
+    "file": "announcement-targeted-aborted.txt",
+    "tool_call_id": "call_Aj9ZYlmU8ZMAlfzjZ2VNnOHJ",
+    "output_tool_call_id": "call_Aj9ZYlmU8ZMAlfzjZ2VNnOHJ",
+    "timestamp_utc": "2026-11-05T18:03:24.581Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && uv run pytest tests/integration/test_tools_e2e_fakes.py tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-targeted.txt'",
+    "exit_code": null,
+    "status": "Interrupted after 120s; busy-loop in new test helper; verified PIDs 79542/79546 later terminated",
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "a75020c6e0f04b41208fc2a28ed8bb2b123a0f0265a8311560f80789f8a256af"
+  },
+  {
+    "file": "announcement-helper-diagnostic.txt",
+    "tool_call_id": "call_USK5ztACDhmCOiSWxrhQR6CB",
+    "output_tool_call_id": "5d63e836-9289-4134-b7e2-c7eb58b70a13",
+    "timestamp_utc": "2026-11-05T18:05:44.327Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && timeout 30s uv run pytest tests/integration/test_tools_e2e_fakes.py -k \"stale_notice_task_defers\" --no-cov -vv -o faulthandler_timeout=10'",
+    "exit_code": 124,
+    "status": "Timeout confirming helper blocked on already-completed tasks; fixed by filtering pending tasks",
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "ede679c6dc71b049833c80a96a6b7f79e462233a0616cf87dd062ff44190b2c6"
+  },
+  {
+    "file": "announcement-race-before.txt",
+    "tool_call_id": "call_giVYIX919V4C6bO08ar9302p",
+    "timestamp_utc": "2026-11-05T18:02:01.03Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && uv run pytest tests/integration/test_tools_e2e_fakes.py -k racing_blocked_mouth --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-race-before.txt'",
+    "exit_code": 1,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "267ed955ee6116aba13e08d87e2c85350de0d6a24005af8e272ef594153cc6e6"
+  },
+  {
+    "file": "announcement-targeted.txt",
+    "tool_call_id": "call_7Outrrj7I0C0FKldaQfX1YgV",
+    "timestamp_utc": "2026-11-05T18:06:34.518Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && timeout 90s uv run pytest tests/integration/test_tools_e2e_fakes.py tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-targeted.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "fedd8d6d430cd610ca00748015f82fa2b94ba04af8d5addf87d1e884a5e01400"
+  },
+  {
+    "file": "announcement-quality.txt",
+    "tool_call_id": "call_m0KZDWfJEseKhpP4JLO5N7Kw",
+    "timestamp_utc": "2026-11-05T18:06:58.105Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && (uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest) 2>&1 | tee docs/evidence/s5/announcement-quality.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "f3f6c0c3cb628436aa0183429c900915dd84388fda145173088afe441bec3a19"
+  },
+  {
+    "file": "announcement-node.txt",
+    "tool_call_id": "call_7x93eqb8pCIAWHgqmXxc2pAO",
+    "timestamp_utc": "2026-11-05T18:06:58.106Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && \"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node\" --test tests/js/play_worklet.test.mjs 2>&1 | tee docs/evidence/s5/announcement-node.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "ad9bf74d3af77e922adf14562319c8418200b02699f4fe12a2a8afe01995aa9c"
+  },
+  {
+    "file": "announcement-final-targeted.txt",
+    "tool_call_id": "call_Gn3P12IY8yhOVJBvsbAjkKKS",
+    "timestamp_utc": "2026-11-05T18:09:43.622Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && timeout 90s uv run pytest tests/integration/test_tools_e2e_fakes.py tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-final-targeted.txt && (uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest) 2>&1 | tee docs/evidence/s5/announcement-final-quality.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "4862619ea5bf09b2810e3e3c717154e9d10455204e98cae557a3e322566ede70"
+  },
+  {
+    "file": "announcement-final-quality.txt",
+    "tool_call_id": "call_Gn3P12IY8yhOVJBvsbAjkKKS",
+    "timestamp_utc": "2026-11-05T18:09:43.622Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && timeout 90s uv run pytest tests/integration/test_tools_e2e_fakes.py tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-final-targeted.txt && (uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest) 2>&1 | tee docs/evidence/s5/announcement-final-quality.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "8fca56f61a4c5f324c178391e6b0f329ffaa4856b12cecfae48c092c56d1e9de"
+  },
+  {
+    "file": "announcement-cleanup.txt",
+    "tool_call_id": "call_ooz8WabvLbXIqG8QeTopkU7K",
+    "timestamp_utc": "2026-11-05T18:11:26.544Z",
+    "command": "@'\nimport hashlib\nimport json\nimport pathlib\nimport stat\nimport subprocess\nfrom dotenv import dotenv_values\nroot = pathlib.Path.cwd()\nfor p in pathlib.Path('/proc').iterdir():\n    if not p.name.isdigit():\n        continue\n    try:\n        if (p / 'cwd').resolve() != root:\n            continue\n        args = (p / 'cmdline').read_bytes().split(bytes([0]))\n        assert not any(b'/bin/pytest' in a for a in args), f'Unfinished S5 pytest PID {p.name}'\n    except (OSError, RuntimeError):\n        pass\nprint('No S5 pytest process remains (interrupted PIDs 79542/79546 terminated).')\nfor manifest in ('captures.json', 'rebased-captures.json'):\n    for entry in json.loads((root / 'docs/evidence/s5' / manifest).read_text()):\n        path = root / 'docs/evidence/s5' / entry['file']\n        assert hashlib.sha256(path.read_bytes()).hexdigest() == entry['sha256'], path.name\nprint('All historical S5 captures match their recorded SHA-256.')\nassert not subprocess.check_output(['git', 'diff', 'HEAD', '--', 'tests/sim', 'docs/evidence/s5/captures.json', 'docs/evidence/s5/rebased-captures.json'])\nprint('Sim tests, thresholds and historical manifests unchanged.')\nblob = subprocess.check_output(['git', 'hash-object', str(root.parents[1] / 'microduck/scripts/duck-sim')], text=True).strip()\nassert blob == 'b95192ba23fa78c91ef3c0db8cc250c4a00fd774'\nprint('Pollen pre-existing blob unchanged:', blob)\nassert stat.S_IMODE((root / '.env').stat().st_mode) == 0o600\nsecrets = [v.encode() for k, v in dotenv_values('.env').items() if k in ('RELAY_TOKEN', 'OPENAI_API_KEY', 'OPENCLAW_TOKEN') and v and len(v) >= 8]\npaths = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z']).decode().split('\\0')\nleaks = [p for p in paths if p and pathlib.Path(p).is_file() and any(s in pathlib.Path(p).read_bytes() for s in secrets)]\nassert not leaks, f'Secret matches: {len(leaks)}'\nprint('.env mode 600; secret matches in tracked/deliverable files: 0 (values never printed).')\nfor cmd in (\n    ['ss', '-H', '-ltn', '( sport = :7841 or sport = :7941 or sport = :7850 or sport = :7851 or sport = :8775 )'],\n    ['docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.project=coincoin-s5'],\n    ['docker', 'network', 'ls', '-q', '--filter', 'label=com.docker.compose.project=coincoin-s5'],\n):\n    assert not subprocess.check_output(cmd).strip(), f'Remaining S5 resources: {cmd[0]}'\nassert not list((pathlib.Path.home() / '.cache/ds-s5').glob('*.pid'))\nprint('No S5 listener on 7841/7941/7850/7851/8775; no Compose S5 container/network; no ds-s5 pidfile.')\nprint('No simulator, relay, Compose or real OpenAI call launched for this corrective task.')\n'@ | wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" && set -o pipefail && uv run python - 2>&1 | tee docs/evidence/s5/announcement-cleanup.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "297911fab45d6c1591f03034089bb44e1a10fcdfc0fcfc7e265381ea3ebb619c"
+  },
+  {
+    "file": "announcement-verified-targeted.txt",
+    "tool_call_id": "call_imFbF6TNxQ7M5MGRFzbQwZ0G",
+    "timestamp_utc": "2026-11-05T18:13:15.087Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && timeout 90s uv run pytest tests/integration/test_tools_e2e_fakes.py tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-verified-targeted.txt && (uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest) 2>&1 | tee docs/evidence/s5/announcement-verified-quality.txt && \"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node\" --test tests/js/play_worklet.test.mjs 2>&1 | tee docs/evidence/s5/announcement-verified-node.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "0b0457a0642437835f4af33a959a2db4b56ef9eaab2f27a849ba5994c27e4cc2"
+  },
+  {
+    "file": "announcement-verified-quality.txt",
+    "tool_call_id": "call_imFbF6TNxQ7M5MGRFzbQwZ0G",
+    "timestamp_utc": "2026-11-05T18:13:15.087Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && timeout 90s uv run pytest tests/integration/test_tools_e2e_fakes.py tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-verified-targeted.txt && (uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest) 2>&1 | tee docs/evidence/s5/announcement-verified-quality.txt && \"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node\" --test tests/js/play_worklet.test.mjs 2>&1 | tee docs/evidence/s5/announcement-verified-node.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "92b52e0c7b4b3d864a886ea60873425513782a805c80aae837ea65ce33cd0238"
+  },
+  {
+    "file": "announcement-verified-node.txt",
+    "tool_call_id": "call_imFbF6TNxQ7M5MGRFzbQwZ0G",
+    "timestamp_utc": "2026-11-05T18:13:15.087Z",
+    "command": "wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" PYRIGHT_PYTHON_CACHE_DIR=\"$PWD/.cache/pyright\" && set -o pipefail && timeout 90s uv run pytest tests/integration/test_tools_e2e_fakes.py tests/integration/test_s4_regressions.py tests/integration/test_s4_followup.py --no-cov -q 2>&1 | tee docs/evidence/s5/announcement-verified-targeted.txt && (uv run ruff check . && uv run ruff format --check . && uv run pyright && uv run pytest) 2>&1 | tee docs/evidence/s5/announcement-verified-quality.txt && \"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node\" --test tests/js/play_worklet.test.mjs 2>&1 | tee docs/evidence/s5/announcement-verified-node.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "1c3c4491258387ff6062583d25f563f7d4fa786008c1c1df26dc0f627af0a996"
+  },
+  {
+    "file": "announcement-verified-cleanup.txt",
+    "tool_call_id": "call_n3Qf2XY5n87qw0gyaEYpRku9",
+    "timestamp_utc": "2026-11-05T18:14:32.784Z",
+    "command": "@'\nimport hashlib\nimport json\nimport pathlib\nimport stat\nimport subprocess\nfrom dotenv import dotenv_values\nroot = pathlib.Path.cwd()\nfor p in pathlib.Path('/proc').iterdir():\n    if not p.name.isdigit():\n        continue\n    try:\n        if (p / 'cwd').resolve() == root:\n            args = (p / 'cmdline').read_bytes().split(bytes([0]))\n            assert not any(b'/bin/pytest' in a for a in args), f'Unfinished S5 pytest PID {p.name}'\n    except (OSError, RuntimeError):\n        pass\nfor manifest in ('captures.json', 'rebased-captures.json', 'announcement-captures.json'):\n    for entry in json.loads((root / 'docs/evidence/s5' / manifest).read_text()):\n        assert hashlib.sha256((root / 'docs/evidence/s5' / entry['file']).read_bytes()).hexdigest() == entry['sha256']\nfor cmd in (\n    ['ss', '-H', '-ltn', '( sport = :7841 or sport = :7941 or sport = :7850 or sport = :7851 or sport = :8775 )'],\n    ['docker', 'ps', '-aq', '--filter', 'label=com.docker.compose.project=coincoin-s5'],\n    ['docker', 'network', 'ls', '-q', '--filter', 'label=com.docker.compose.project=coincoin-s5'],\n):\n    assert not subprocess.check_output(cmd).strip()\nassert not list((pathlib.Path.home() / '.cache/ds-s5').glob('*.pid'))\nblob = subprocess.check_output(['git', 'hash-object', str(root.parents[1] / 'microduck/scripts/duck-sim')], text=True).strip()\nassert blob == 'b95192ba23fa78c91ef3c0db8cc250c4a00fd774'\nassert not subprocess.check_output(['git', 'diff', 'HEAD', '--', 'tests/sim', 'docs/evidence/s5/captures.json', 'docs/evidence/s5/rebased-captures.json'])\nassert stat.S_IMODE((root / '.env').stat().st_mode) == 0o600\nsecrets = [v.encode() for k, v in dotenv_values('.env').items() if k in ('RELAY_TOKEN', 'OPENAI_API_KEY', 'OPENCLAW_TOKEN') and v and len(v) >= 8]\npaths = subprocess.check_output(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z']).decode().split('\\0')\nassert not [p for p in paths if p and pathlib.Path(p).is_file() and any(s in pathlib.Path(p).read_bytes() for s in secrets)]\nprint('Final code verified: targeted 80 passed; quality 459 passed/3 sim skipped, coverage 91.78%; Node 6/6.')\nprint('No S5 pytest process; no listener 7841/7941/7850/7851/8775; no Compose S5 container/network; no ds-s5 pidfile.')\nprint('All recorded capture hashes verified; historical evidence, sim tests and thresholds unchanged.')\nprint('Pollen pre-existing blob unchanged:', blob)\nprint('.env mode 600; secret matches in tracked/deliverable files: 0 (values never printed).')\nprint('No simulator, relay, Compose or real OpenAI call launched; S5 not merged.')\n'@ | wsl.exe -d Ubuntu -e bash -lc 'cd \"$HOME/projects/microduck/coin-coin-wt/S5\" && export PATH=\"$HOME/.local/bin:$PATH\" UV_CACHE_DIR=\"$PWD/.cache/uv\" && set -o pipefail && uv run python - 2>&1 | tee docs/evidence/s5/announcement-verified-cleanup.txt'",
+    "exit_code": 0,
+    "capture_method": "Public capture with identifying details anonymized",
+    "sha256": "767ded2e4d616999a4a1d7b06d990746e1234db97717a78eb15e92f3d6f3e670"
+  }
+]

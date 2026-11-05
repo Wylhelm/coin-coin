@@ -107,6 +107,7 @@ class App:
         self._context_providers: dict[str, Callable[[], str | Awaitable[str]]] = {}
         self._features = tuple(FEATURES if features is None else features)
         self._announcement: str | None = None
+        self._announcement_version = 0
         self._session: RealtimeSession | None = None
         self._session_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
@@ -229,25 +230,51 @@ class App:
         if self._stopping or self._session is None or not self.active:
             return
         self._announcement = message
+        self._announcement_version += 1
         if not self.state.response_active:
             task = self._spawn(self._resume_response(self._session))
             self._tool_tasks.add(task)
             task.add_done_callback(self._tool_tasks.discard)
             await task
 
-    async def _resume_response(self, session: RealtimeSession) -> None:
+    async def _resume_response(
+        self, session: RealtimeSession, *, tool_turn: _ToolTurn | None = None
+    ) -> None:
         if self._stopping or self._session is not session or not self.active:
             return
-        notice, self._announcement = self._announcement, None
+        if tool_turn is None:
+            # Deferred notice tasks may race; only a tool turn can resume without a notice.
+            if self._announcement is None or self.state.response_active:
+                return
+        elif not self._tool_turn_valid(tool_turn):
+            return
+        notice = self._announcement
+        version = self._announcement_version
         if notice is None:
             await session.create_response()
         else:
+            generation = self._session_generation
+            response_id = self._active_response_id
             await self._apply(Event("response_started"))
+            if (
+                self._stopping
+                or self._session is not session
+                or self._session_generation != generation
+                or self._active_response_id != response_id
+                or not self.state.response_active
+            ):
+                return
             try:
                 await session.announce(notice)
             except RealtimeConnectionError as exc:
+                if self._announcement_version == version:
+                    self._announcement = None
                 self._report_error("robot announcement", exc)
                 await self._apply(Event("response_failed"))
+            else:
+                # Cancellation retains an unsent notice; a newer outage must survive this send.
+                if self._announcement_version == version:
+                    self._announcement = None
 
     def _start_robot_stop(self) -> None:
         if self._stop_tasks:
@@ -848,7 +875,7 @@ class App:
                     return
                 await session.send_tool_result(call.call_id, turn.results[call.call_id])
             if self._tool_turn_valid(turn):
-                await self._resume_response(session)
+                await self._resume_response(session, tool_turn=turn)
         except RealtimeConnectionError as exc:
             self._report_error("tool result send", exc)
             if self._tool_turn_valid(turn):

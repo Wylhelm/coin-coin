@@ -1,5 +1,24 @@
 # Changelog
 
+## S5 — Correction de la course d'annonce — 2026-11-05
+
+- Livraison `46bdee4` non acceptée : reproduction déterministe de deux
+  continuations après `mouth_close` bloqué, en fin normale comme en échec.
+  Une tâche d'annonce ne peut plus lancer de réponse normale ; cette reprise
+  est réservée à un lot valide après ses outputs ordonnés. Une nouvelle
+  réponse active diffère une annonce sans la perdre ; session et réponse
+  sont aussi revérifiées après l'attente de notification UI.
+- Une annonce non envoyée survit au barge-in ; une version distingue une
+  nouvelle perte pendant l'envoi, même avec le même texte. Une erreur
+  d'envoi est explicite et ne crée pas de boucle de réessai. STOP conserve
+  sa priorité et invalide les annonces et tâches périmées.
+- Douze régressions sans robot/OpenAI : **80 tests ciblés réussis** ;
+  ruff/format/Pyright verts, **459 passed, 3 skipped**, couverture **91,78 %** ;
+  AudioWorklet **6/6**. Contrats `audio_out` et `send_tool_result` inchangés.
+- Preuves brutes ajoutées dans `docs/evidence/s5/`, historique conservé.
+  Aucun nouveau passage sim ni démarrage sim/relais/Compose, aucun changement
+  des tests sim, seuils ou sources Pollen. S5 reste non intégrée.
+
 ## S5 — Revalidation après S8 et SIMWALK — 2026-11-05
 
 - Rebase sur `main=cc30372`, conservation de `BrainFeature` et `RobotFeature`
