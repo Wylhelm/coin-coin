@@ -107,8 +107,9 @@ node --test tests/js/play_worklet.test.mjs
 
 Node.js n'est pas requis pour exécuter le service.
 
-Après intégration et correction S3 : 108 tests réussis, dont deux tests Silero
-ONNX réels avec les assets locaux, couverture totale 92,58 %, machine d'états
+Après intégration et correction S3 sur S2 corrigée (`81a4e0d`) :
+110 tests réussis, dont deux tests Silero ONNX réels avec les assets locaux,
+couverture totale 92,91 %, machine d'états
 98 %, porte audio 96 %, aucun diagnostic ruff ou pyright. Les tests ONNX réels
 sont ignorés en CI sans assets ; leur commande obligatoire figure dans
 `assets/wake/README.md`.

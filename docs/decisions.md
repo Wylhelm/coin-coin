@@ -168,7 +168,8 @@ dans `assets/wake/README.md`. Les critères FR/EN et faux réveils totaux resten
 ouverts tant que les positifs réels ne sont pas enregistrés et le compromis
 réévalué.
 
-**Correctifs et intégration après revue.** S3 est rebasée sur S2 et réutilise
+**Correctifs et intégration après revue.** S3 est rebasée sur S2 corrigée
+(`81a4e0d`, flush et continuité audio) et réutilise
 son module `audio/resample.py` sans changement de son API ; ses tests audio et
 WebSocket, le montage `.cache/logs` et ses dépendances sont conservés.
 Le wrapper Silero v5.1.2 suit désormais
