@@ -1,6 +1,14 @@
 # WebRTC LAN : S9
 
-**Blocage d'acceptation, actualisé le 2026-11-05 :** après revue de
+**Intégration pré-réception autorisée sous réserves, 2026-11-05 :**
+user demande « finissons d'intégrer s9 et tout le reste, tout ce qu'on
+peut avant d'avoir le robot ». Le coordonnateur prépare l'intégration ;
+aucune fusion n'est revendiquée ici. TCP reste le transport par défaut.
+Cette décision ne vaut ni validation du critère sim ni `agent-done` strict.
+Résultats et nettoyage ont été contre-vérifiés ; les deux échecs de marche
+restent ouverts sans cause imputée au transport.
+
+Après revue de
 `2fc23f9` sur `main=8de5e3e`, l'unique suite réelle autorisée avec SIMWALK
 fait **6 réussites, 2 échecs, zéro saut** (8 tests, code retour 1).
 Les marches S1/S9 échouent à **0,13731089587383769 m** et

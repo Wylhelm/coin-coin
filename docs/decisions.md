@@ -689,7 +689,17 @@ Le journal ne reçoit jamais les octets ni l'URL de données de l'image :
 ## ADR-S9-001 — WebRTC LAN pour le robot, TCP relay inchangé
 
 Date : 2026-11-04, actualisée le 2026-11-05. Statut : Q10 acceptée ;
-acceptation S9 bloquée sur les scénarios sim stricts.
+intégration pré-réception autorisée sous réserves, critère sim non satisfait.
+
+**Décision d'intégration de user, 2026-11-05.** « finissons d'intégrer
+s9 et tout le reste, tout ce qu'on peut avant d'avoir le robot ».
+Le coordonnateur prépare l'intégration avec les deux échecs de marche connus ;
+la présente livraison ne revendique aucune fusion déjà exécutée. Le résultat
+**6 passed, 2 failed, zéro skip, exit 1** reste inchangé et contre-vérifié,
+comme le nettoyage. Le critère sim reste décoché et le statut `agent-done`
+strict n'est pas atteint. Aucune cause n'est imputée au transport ; TCP reste
+le défaut. Historique intégral conservé, sans nouvelle campagne ou changement
+code/tests au titre de cette décision.
 
 L'ancienne référence S9 « ADR-006 » est renommée ADR-S9-001 après intégration
 pour ne pas confondre cette décision avec l'ADR-006 Realtime de S4 ; son
@@ -767,7 +777,8 @@ cadence observée 19,44 Hz (50 updates/2,520 s), gigue absolue p95
 de cause racine ; aucun rerun ni correctif transport. Aucun danger détecté,
 PID S9 arrêtés après inspection, pidfiles/ports libérés et verrou S9 retiré.
 Pollen inchangé ; Q10 historique non rejouée, Docker non lancé.
-Le critère sim reste ouvert en attente de contre-vérification.
+Le critère sim reste ouvert ; résultats et nettoyage ont été
+contre-vérifiés, sans que la décision d'intégration ne les transforme en passe.
 [Preuves complètes](evidence/s9-final-sim-20261105/README.md).
 
 **Mesures rectifiées après revue.** Base `main` `0597380`. La marche est

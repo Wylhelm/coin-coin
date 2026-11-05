@@ -1,5 +1,17 @@
 # Changelog
 
+## S9 — Intégration pré-réception autorisée sous réserves — 2026-11-05
+
+- Décision de user : « finissons d'intégrer s9 et tout le reste, tout
+  ce qu'on peut avant d'avoir le robot ». Le coordonnateur prépare
+  l'intégration ; cette livraison documentaire ne prétend pas une fusion.
+- Les deux échecs de marche connus restent ouverts : suite complète
+  **6 passed, 2 failed, zéro skip, exit 1**, mesures et seuils inchangés.
+  Autoriser l'intégration ne signifie ni critère sim passé ni `agent-done`
+  strict. Aucune cause imputée au transport ; TCP reste le défaut.
+- Résultats et nettoyage contre-vérifiés ; historique et preuves conservés.
+  Aucun changement code/tests, nouvel essai, service, Docker ou appel externe.
+
 ## S9 — Revalidation réelle unique après SIMWALK — 2026-11-05
 
 - Suite complète sur `2fc23f9`, base `8de5e3e` : **6 passed, 2 failed,

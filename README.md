@@ -393,7 +393,13 @@ JSON-RPC `-32601`, sans transmettre l'appel ou ses paramètres. Les méthodes
 permises gardent leurs contrats ; ce filtre ne remplace ni le gouverneur
 ni l'isolation réseau, et une CLI `raw` n'est pas une API sûre pour un modèle.
 
-**Acceptation S9 encore bloquée :** après revue de `2fc23f9` sur `8de5e3e`,
+**Intégration pré-réception autorisée sous réserves :** le 2026-11-05,
+user demande « finissons d'intégrer s9 et tout le reste, tout ce qu'on
+peut avant d'avoir le robot ». Le coordonnateur prépare l'intégration ;
+aucune fusion n'est revendiquée par cette livraison documentaire.
+TCP reste le transport par défaut. Cette décision ne valide ni le critère
+sim ni le statut strict `agent-done`, qui restent ouverts.
+Après revue de `2fc23f9` sur `8de5e3e`,
 l'unique suite réelle autorisée avec SIMWALK donne **6 réussites, 2 échecs,
 zéro saut** (8 tests, code retour 1). Marches S1/S9 : **0,137311/0,145489 m**,
 en dessous du seuil strict > 0,15 m, commande de 2 s inchangée. Tours, regards,
@@ -401,7 +407,8 @@ caméra et métriques passent. Aucun rerun ni correctif spéculatif ; ressources
 S9 arrêtées, ports libres et verrou retiré. Les preuves antérieures sont
 conservées, sans sélection de réussite ni acceptation des anciennes marches
 à 3 s. [Sortie complète et nettoyage](docs/evidence/s9-final-sim-20261105/README.md),
-mesures et limites dans `docs/webrtc.md`. Attente de contre-vérification.
+mesures et limites dans `docs/webrtc.md`. Résultats et nettoyage
+contre-vérifiés par le coordonnateur ; aucune cause imputée au transport.
 
 ## Piloter la simulation S1 depuis le conteneur
 
