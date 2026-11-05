@@ -1,5 +1,19 @@
 # Changelog
 
+## Pré-réception — procédure assemblée et actifs locaux — 2026-11-05
+
+- Procédure actuelle depuis `main=e7cb24f` : modèles, sons, configuration
+  locale sans secrets, contrôles hors réseau et futur lancement/arrêt autorisé.
+  Les anciens comptes rendus restent identifiés comme historiques.
+- S5/S8 intégrées côté agent, S6/S7 présentes ; `quack` n'est plus un stub
+  dans la livraison assemblée. S9 intégrée sous réserves, TCP reste le défaut,
+  6 réussites/2 échecs de marche conservés ; critères humains et S10 ouverts.
+- Banque S6 copiée sans écrasement vers le clone durable et PRE-DELIVERY :
+  83 fichiers dont 82 WAV PCM16, correspondance chemin/SHA-256 complète.
+  Modèles et sons restent ignorés par Git ; aucun secret lu ou affiché.
+- Aucun changement fonctionnel, service, Docker/Compose, nouvel essai sim
+  ou appel externe. Les commandes documentées ne sont pas des essais exécutés.
+
 ## S9 — Intégration pré-réception autorisée sous réserves — 2026-11-05
 
 - Décision de user : « finissons d'intégrer s9 et tout le reste, tout

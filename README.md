@@ -13,6 +13,27 @@ S6 ajoute l'animation du bec et les cancanements : en simulation, `QUACK_SINK=st
 mixe les WAV dans l'audio navigateur ; `QUACK_SINK=robot` utilise `robot.sound`.
 Les modes `--echo` et `--tone` restent sans liaison robot.
 
+## Livraison actuelle depuis main
+
+**S0–S8 intégrées côté agent ; S9 intégrée sous réserves à `e7cb24f`.**
+Les validations humaines restent ouvertes et S10 n'est pas commencée.
+TCP reste le défaut ; le dernier passage sim S9 conserve **6 réussites,
+2 échecs de marche, zéro saut**, sans nouveau test ni seuil assoupli.
+
+La [procédure assemblée actuelle](docs/delivery.md) rassemble les modèles,
+la banque locale restaurée et ses empreintes, la configuration sans secrets,
+les contrôles hors réseau, puis les commandes exactes de lancement/arrêt
+**pour un futur créneau autorisé depuis le clone principal**.
+Docker reste arrêté pendant cette préparation.
+
+## Historique des sessions et procédures spécialisées
+
+Les sections S1–S8 ci-dessous conservent les anciennes ressources, preuves
+et étapes de livraison. Elles ne constituent pas une procédure assemblée :
+ne pas reprendre leurs IP mesurées ou leurs worktrees pour lancer `main`.
+Les mentions de refus concernent les livraisons historiques citées, pas
+l'état actuel intégré. Les observations humaines restent à effectuer.
+
 ## S6 — bec et cancanements
 
 `VoiceFeature` s'installe après `RobotFeature` et crée un runtime indépendant par
@@ -180,7 +201,7 @@ DUCK_SIM_STATE="$HOME/.cache/ds-s7" DUCK_SIM_PORT=7881 DUCK_SIM_FRAME_PORT=7981 
 
 Libérer ensuite uniquement le verrou S7 (`rm -r ~/.cache/coin-coin-locks/sim-camera`).
 
-## S5 — correctif de reprise unique, en attente de contre-vérification
+## S5 — historique du correctif de reprise unique
 
 La livraison `46bdee4` a été refusée pour une course entre fin de réponse
 (`mouth_close` en attente réseau) et annonce de perte robot : deux tâches
@@ -202,7 +223,9 @@ Les 42 cas S5 incluent toujours les vrais transports vers les faux.
 Les [preuves et commandes](docs/network.md#s5--correction-de-la-course-dannonce)
 conservent aussi la reproduction rouge avant correction.
 Aucun service S5 ni appel réel OpenAI n'a été lancé pour ce correctif.
-S5 reste non intégrée ; les essais humains restent ouverts.
+Cette remise précédait l'intégration de S5 : le correctif `cacac70` est
+maintenant dans la base `e7cb24f`, ainsi que S6/S7. Les essais humains
+restent ouverts ; les résultats ci-dessus sont historiques, non rejoués.
 
 ### Historique : validation sim après SIMWALK
 
@@ -314,9 +337,11 @@ Ne cocher les critères humains de S5 qu'après observation et écoute réelles.
    et le mouvement observé ; ne pas substituer cette métrique de transport
    à cette observation. Les journaux sont des données personnelles locales.
 
-`quack` est un **stub explicitement journalisé**, sans son jusqu'à S6 ;
-aucun `robot.sound` n'est utilisé en simulation. Vision/S7 et mémoire/S8 ne
-sont pas implémentées par S5. Le réveil reste provisoire selon ADR-003.
+Dans la livraison S5 isolée, `quack` était un stub journalisé. Dans `main`,
+S6 joue la banque via `QUACK_SINK=stream` dans le navigateur, S7 fournit
+la vision et S8 la mémoire (sans jeton : indisponible explicitement).
+Le mode stream n'utilise pas `robot.sound`. Le réveil reste provisoire
+selon ADR-003.
 
 ### Qualité et arrêt S5
 
@@ -395,8 +420,8 @@ ni l'isolation réseau, et une CLI `raw` n'est pas une API sûre pour un modèle
 
 **Intégration pré-réception autorisée sous réserves :** le 2026-11-05,
 user demande « finissons d'intégrer s9 et tout le reste, tout ce qu'on
-peut avant d'avoir le robot ». Le coordonnateur prépare l'intégration ;
-aucune fusion n'est revendiquée par cette livraison documentaire.
+peut avant d'avoir le robot ». S9 est désormais dans la base intégrée
+`e7cb24f` ; l'autorisation documentaire historique précédait cette intégration.
 TCP reste le transport par défaut. Cette décision ne valide ni le critère
 sim ni le statut strict `agent-done`, qui restent ouverts.
 Après revue de `2fc23f9` sur `8de5e3e`,

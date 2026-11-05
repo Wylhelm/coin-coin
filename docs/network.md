@@ -1,4 +1,18 @@
-# Réseau Coin-Coin — relevés S0 / S1 du 2026-11-04
+# Réseau Coin-Coin — état actuel et relevés historiques
+
+## État assemblé au 2026-11-05
+
+Base intégrée `main=e7cb24f` : S0–S8 intégrées côté agent, validations humaines
+ouvertes ; S9 intégrée sous réserves, TCP conservé par défaut ; S10 non commencée.
+La [procédure actuelle depuis main](delivery.md) remplace les anciens lancements
+par worktree ci-dessous : IP `eth0` redécouverte, relais TCP authentifié,
+modèles et sons locaux hors Git, lancement et arrêt réservés à user.
+La dernière suite sim S9 conserve **6 réussites, 2 échecs de marche, zéro saut**,
+sans nouvel essai. Docker reste arrêté pour cette préparation documentaire.
+
+Les sections suivantes sont des **relevés historiques** : dates, commandes,
+sorties, incidents et preuves sont conservés sans les présenter comme une
+revalidation de la livraison assemblée.
 
 ## S5 — correction de la course d'annonce
 
@@ -6,7 +20,9 @@
 Le correctif ne touche que l'ordonnancement App et ses régressions ;
 aucun lancement sim, relais ou Compose, aucun appel réel OpenAI.
 Les tests sim et leurs seuils restent inchangés, sans nouvelle campagne.
-S5 reste non intégrée, remise au coordonnateur pour contre-vérification.
+À cette remise, S5 attendait la contre-vérification. Le correctif `cacac70`
+est maintenant intégré dans la base `e7cb24f`, avec S6/S7 ; les essais
+humains restent ouverts.
 
 Depuis `~/projects/microduck/coin-coin-wt/S5`, environnement commun :
 

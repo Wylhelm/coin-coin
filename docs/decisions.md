@@ -810,3 +810,21 @@ Le mapping `127.0.0.1:8779->8765/tcp` n'ouvre pas le port hôte 8765.
 
 Le détail de signalisation, l'échec NVENC et le rangage logiciel requis sur
 cet hôte, les commandes et le nettoyage sont dans [docs/webrtc.md](webrtc.md).
+
+## ADR-PRE-001 — Une procédure assemblée, des preuves historiques conservées
+
+Date : 2026-11-05. Statut : documentaire, sans changement fonctionnel.
+
+**Contexte.** Après intégration de S0–S8 et de S9 sous réserves dans la base
+`e7cb24f`, les anciens lancements par worktree et statuts S5/S8 ne décrivent
+plus la livraison assemblée. Les modèles et sons ignorés ne suivent pas Git.
+
+**Décision.** `docs/delivery.md` devient le point d'entrée depuis le clone
+durable `main`, lié depuis le README et les relevés réseau. Les historiques,
+mesures et preuves restent conservés, sans transformation en validation
+actuelle. La banque S6 est préservée dans le clone durable et PRE-DELIVERY
+sans écrasement, avec comparaison exhaustive des chemins/SHA-256.
+
+**Limites.** TCP reste le défaut ; les deux échecs sim S9 et tous les critères
+humains restent ouverts. S10 attend le matériel et la solution audio.
+Cette préparation n'exécute aucun service, Docker, simulation ou appel externe.

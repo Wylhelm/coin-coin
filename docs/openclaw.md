@@ -2,6 +2,12 @@
 
 ## État de cette livraison
 
+S8 est désormais intégrée côté agent dans la base assemblée `main=e7cb24f`.
+Pour le démarrage actuel depuis le clone durable, suivre
+[la procédure assemblée](delivery.md). Les ports/worktrees S8 ci-dessous
+décrivent les essais spécialisés historiques, pas le lancement de `main`.
+L'observation de l'API réelle et les validations humaines restent ouvertes.
+
 S8 est raccordé à l'App S4 intégrée (`main=051eb33`) par `BrainFeature`, inscrit
 dans `FEATURES` : chargement de mémoire au réveil, injection dans
 `{memory_context}`, outils Realtime `ask_openclaw` et `remember`, résumé local
@@ -9,7 +15,7 @@ envoyé en tâche de fond au coucher. Tout est vérifié contre un faux HTTP li�
 loopback (`tests/fakes/fake_openclaw.py`) et des doubles Realtime locaux.
 
 **Aucune API réelle n'a été observée.** Aucune gateway OpenClaw n'était
-configurée (`OPENCLAW_*` absent du `.env`) : pas de `/v1/models`, pas de
+configurée lors de la livraison S8 initiale : pas de `/v1/models`, pas de
 complétion « ping », aucune réponse ni code d'erreur réel. Les formes décrites
 ci-dessous proviennent de la documentation publique ; le critère « décrit l'API
 observée » reste donc à compléter après la procédure de user (§ Validation
