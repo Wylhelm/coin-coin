@@ -1,5 +1,17 @@
 # Changelog
 
+## S2 — Flush borné — 2026-11-05
+
+- Après la borne initiale d'attente de l'acquittement, l'échéance totale de
+  `BrowserAudio.flush()` couvre aussi les verrous et l'envoi UI ; le contrôle
+  n'attend pas l'envoi audio en cours. Timeout, erreur d'envoi et annulation
+  sont explicites, et la lecture reste refusée jusqu'à resynchronisation par
+  un flush acquitté. Cela ne garantit pas le silence physique d'un navigateur
+  injoignable.
+- Régressions déterministes pour envois bloqués, flushs simultanés, annulation,
+  générations périmées, remplacement de page et rejet d'audio ancien. Qualité
+  complète et harness AudioWorklet validés sur la branche S2 avant intégration.
+
 ## Correctif S3 H-POSITIFS — 2026-11-04
 
 - Sessions humaines isolées sous `assets/wake/recorded/`, capture temporaire et

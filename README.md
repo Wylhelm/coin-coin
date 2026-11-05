@@ -252,11 +252,19 @@ implémentations livrées de 100 %, aucun diagnostic pyright. Les résultats
 courants de S2 et les preuves du harness AudioWorklet sont consignés dans
 l'ADR-002. La mesure live de l'AEC reste en attente dans l'ADR-002.
 
-Le harness du vrai AudioWorklet est un test séparé, à lancer dans un
-environnement où Node.js est disponible :
+`BrowserAudio.flush()` applique une échéance totale de 100 ms, incluant
+l'attente des verrous, l'envoi du contrôle UI et l'acquittement. Un timeout,
+un échec d'envoi ou une annulation est signalé par exception. Si le flush n'est
+pas acquitté, la lecture est considérée désynchronisée et les nouveaux appels
+`play()` échouent jusqu'à un flush acquitté. Cette garantie côté serveur ne
+peut pas assurer le silence physique d'un navigateur injoignable.
+
+Le harness du vrai AudioWorklet est séparé des tests Python. Après
+`uv run pyright`, utiliser le runtime Node local que Pyright place dans le
+cache indiqué ci-dessus (aucun Node global n'est requis) :
 
 ```sh
-node --test tests/js/play_worklet.test.mjs
+"$PYRIGHT_PYTHON_CACHE_DIR/nodeenv/bin/node" --test tests/js/play_worklet.test.mjs
 ```
 
 Node.js n'est pas requis pour exécuter le service.
