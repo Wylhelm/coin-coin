@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -14,8 +15,12 @@ from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription, V
 from av import VideoFrame
 from PIL import Image
 
+from coincoin.clock import SystemClock
+from coincoin.config import Settings
+from coincoin.journal import Journal
 from coincoin.robot import webrtc_link as webrtc_module
-from coincoin.robot.jsonrpc import API_VERSION
+from coincoin.robot.governor import Governor
+from coincoin.robot.jsonrpc import API_VERSION, JsonRpcConnection
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.webrtc_link import (
     MAX_MOVE_BUFFERED_BYTES,
@@ -106,6 +111,10 @@ class LocalMediad:
                                 result = {"api_version": API_VERSION}
                             elif method == "robot.health":
                                 result = {"healthy": True}
+                            elif method == "robot.mode":
+                                result = {"mode": "walk"}
+                            elif method == "robot.policies":
+                                result = {"enabled": True, "homed": True}
                             elif method in ("robot.subscribe", "robot.stop"):
                                 result = {"accepted": True}
                             elif method == "robot.do":
@@ -262,6 +271,191 @@ async def test_backpressure_sends_only_the_latest_move() -> None:
     await until(lambda: len(channel.sent) == 1)
     assert json.loads(channel.sent[0])["params"]["vx"] == 0.2
     stream.close()
+
+
+@pytest.mark.parametrize("resume_before_drain", [False, True])
+async def test_backpressure_stop_invalidates_earlier_moves(resume_before_drain: bool) -> None:
+    class Channel:
+        readyState = "open"
+        bufferedAmount = MAX_MOVE_BUFFERED_BYTES + 1
+
+        def __init__(self) -> None:
+            self.sent: list[dict[str, Any]] = []
+
+        def send(self, message: str) -> None:
+            self.sent.append(json.loads(message))
+
+        def close(self) -> None:
+            self.readyState = "closed"
+
+    channel = Channel()
+    stream = _DataChannelStream(channel)
+    try:
+        stream.write(b'{"method":"robot.move","params":{"vx":0.1}}\n')
+        stream.write(b'{"method":"robot.move","params":{"vx":0.2}}\n')
+        pending = stream._move_task
+        assert pending is not None
+        stream.write(b'{"jsonrpc":"2.0","method":"robot.stop","id":1}\n')
+        assert stream._latest_move is None
+        assert [item["method"] for item in channel.sent] == ["robot.stop"]
+        if resume_before_drain:
+            stream.write(b'{"method":"robot.move","params":{"vx":-0.1}}\n')
+            stream.write(b'{"method":"robot.move","params":{"vx":-0.2}}\n')
+        channel.bufferedAmount = 0
+        await pending
+        if not resume_before_drain:
+            assert [item["method"] for item in channel.sent] == ["robot.stop"]
+            stream.write(b'{"method":"robot.move","params":{"vx":-0.2}}\n')
+        assert [item["method"] for item in channel.sent] == ["robot.stop", "robot.move"]
+        assert channel.sent[-1]["params"]["vx"] == -0.2
+    finally:
+        stream.close()
+
+
+async def test_datachannel_buffer_cannot_accumulate_moves_before_stop() -> None:
+    class Channel:
+        readyState = "open"
+
+        def __init__(self) -> None:
+            self.bufferedAmount = 0
+            self.queued: list[dict[str, Any]] = []
+
+        def send(self, message: str) -> None:
+            self.bufferedAmount += len(message.encode())
+            self.queued.append(json.loads(message))
+
+        def close(self) -> None:
+            self.readyState = "closed"
+
+    channel = Channel()
+    stream = _DataChannelStream(channel)
+    connection = JsonRpcConnection(stream, stream)
+    try:
+        for index in range(300):
+            await connection.notify("robot.move", {"vx": index / 1000, "vy": 0, "vyaw": 0})
+        assert len(channel.queued) == 1
+        assert stream._latest_move is not None
+        pending = stream._move_task
+        assert pending is not None
+        # A reliable channel cannot retract the first admitted message or bypass it.
+        with pytest.raises(TimeoutError):
+            await connection.call("robot.stop", timeout=0.01)
+        assert stream._latest_move is None
+        assert [item["method"] for item in channel.queued] == ["robot.move", "robot.stop"]
+        channel.bufferedAmount = 0
+        await pending
+        assert len(channel.queued) == 2
+        await connection.notify("robot.move", {"vx": -0.1})
+        assert channel.queued[-1]["params"]["vx"] == -0.1
+    finally:
+        await connection.close()
+
+
+@pytest.mark.parametrize("resume_before_drain", [False, True])
+async def test_governor_stop_barrier_through_jsonrpc_and_datachannel(
+    mediad: LocalMediad, tmp_path: Path, resume_before_drain: bool
+) -> None:
+    link = WebRtcLink(mediad.url)
+    governor = Governor(link, Settings(), SystemClock(), Journal(tmp_path))
+    try:
+        await link.connect()
+        await until(lambda: link.state() is not None)
+        stream = link._stream
+        assert stream is not None
+        actual_channel = stream.channel
+
+        class SaturatedChannel:
+            bufferedAmount = MAX_MOVE_BUFFERED_BYTES + 1
+
+            @property
+            def readyState(self) -> str:
+                return actual_channel.readyState
+
+            def send(self, message: str) -> None:
+                actual_channel.send(message)
+
+            def close(self) -> None:
+                actual_channel.close()
+
+        channel = SaturatedChannel()
+        stream.channel = channel
+        assert (await governor.move(0.2, 0, 0, 2)).ok
+        await until(lambda: stream._latest_move is not None)
+        pending = stream._move_task
+        assert pending is not None
+        assert (await governor.stop("saturated STOP")).ok
+        assert stream._latest_move is None
+        assert not governor.moving
+        stop = next(item for item in mediad.records if item.get("method") == "robot.stop")
+        assert isinstance(stop["id"], int)
+        assert not any(item.get("method") == "robot.move" for item in mediad.records)
+        if resume_before_drain:
+            assert (await governor.move(-0.1, 0, 0, 2)).ok
+            await until(lambda: stream._latest_move is not None)
+        channel.bufferedAmount = 0
+        await pending
+        if not resume_before_drain:
+            assert not any(item.get("method") == "robot.move" for item in mediad.records)
+            assert (await governor.move(-0.1, 0, 0, 2)).ok
+        await until(lambda: any(item.get("method") == "robot.move" for item in mediad.records))
+        assert (await governor.stop("resumed STOP")).ok
+        moves = [item for item in mediad.records if item.get("method") == "robot.move"]
+        assert moves and all(item["params"]["vx"] == -0.1 for item in moves)
+    finally:
+        await governor.close()
+        await link.close()
+
+
+async def test_governor_reports_stop_timeout_on_blocked_reliable_channel(
+    mediad: LocalMediad, tmp_path: Path
+) -> None:
+    link = WebRtcLink(mediad.url)
+    governor = Governor(link, Settings(), SystemClock(), Journal(tmp_path))
+    stream = None
+    actual_channel = None
+    try:
+        await link.connect()
+        await until(lambda: link.state() is not None)
+        assert (await governor.move(0.2, 0, 0, 2)).ok
+        await until(lambda: any(item.get("method") == "robot.move" for item in mediad.records))
+        stream = link._stream
+        assert stream is not None
+        actual_channel = stream.channel
+
+        class BlockedChannel:
+            bufferedAmount = 1
+            readyState = "open"
+
+            def __init__(self) -> None:
+                self.queued: list[dict[str, Any]] = []
+
+            def send(self, message: str) -> None:
+                self.bufferedAmount += len(message.encode())
+                self.queued.append(json.loads(message))
+
+            def close(self) -> None:
+                if actual_channel is not None:
+                    actual_channel.close()
+
+        channel = BlockedChannel()
+        stream.channel = channel
+        await until(lambda: stream._latest_move is not None)
+        pending = stream._move_task
+        assert pending is not None
+        result = await governor.stop("blocked reliable channel")
+        assert not result.ok and result.reason == "robot request timed out"
+        assert not governor.moving
+        assert stream._latest_move is None
+        assert channel.queued[0]["method"] == "robot.stop"
+        assert not any(item["method"] == "robot.move" for item in channel.queued)
+        channel.bufferedAmount = 0
+        await pending
+        assert not any(item["method"] == "robot.move" for item in channel.queued)
+    finally:
+        if stream is not None and actual_channel is not None:
+            stream.channel = actual_channel
+        await governor.close()
+        await link.close()
 
 
 async def test_reconnects_when_peer_datachannel_fails(mediad: LocalMediad) -> None:

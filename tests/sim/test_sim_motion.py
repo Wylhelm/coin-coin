@@ -7,14 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic_settings import DotEnvSettingsSource
 
 from coincoin.clock import SystemClock
-from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import Governor
 from coincoin.robot.link import LinkDown, RobotLink
+from tests.conftest import load_sim_settings
 
 pytestmark = pytest.mark.sim
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -57,8 +56,7 @@ def sim_state(link: RobotLink) -> dict[str, Any]:
 async def sim(tmp_path: Path):
     if os.environ.get("COINCOIN_TEST_SIM") != "1":
         pytest.skip("Set COINCOIN_TEST_SIM=1 with the assigned simulator configured in .env")
-    source = DotEnvSettingsSource(Settings, env_file=ENV_FILE)
-    settings = Settings.model_validate(source())
+    settings = load_sim_settings(ENV_FILE)
     clock = SystemClock()
     link = create_robot_link(
         settings.robot_link,
@@ -121,10 +119,8 @@ async def test_turn_ninety_degrees_within_fifteen(sim):
 
 async def test_look_left_has_positive_yaw(sim):
     governor, link, clock = sim
-    assert (await governor.look("gauche", hold_s=2)).ok
-    async with asyncio.timeout(1.5):
-        while sim_state(link)["head"][2] <= 0.2:
-            await clock.sleep(0.05)
+    assert (await governor.look("gauche", hold_s=1)).ok
+    await clock.sleep(0.6)
     yaw = sim_state(link)["head"][2]
     print(f"look gauche: head_yaw={yaw:.3f}")
     assert yaw > 0.2

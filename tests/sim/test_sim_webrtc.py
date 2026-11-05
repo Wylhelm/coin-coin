@@ -7,13 +7,12 @@ import statistics
 from pathlib import Path
 
 import pytest
-from pydantic_settings import DotEnvSettingsSource
 
 from coincoin.clock import SystemClock
-from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.robot.governor import Governor
 from coincoin.robot.webrtc_link import WebRtcLink
+from tests.conftest import load_sim_settings
 
 pytestmark = pytest.mark.sim
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -23,8 +22,7 @@ ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 async def sim(tmp_path: Path):
     if os.environ.get("COINCOIN_TEST_SIM") != "1":
         pytest.skip("Set COINCOIN_TEST_SIM=1 with the assigned camera-enabled simulator")
-    source = DotEnvSettingsSource(Settings, env_file=ENV_FILE)
-    settings = Settings.model_validate(source())
+    settings = load_sim_settings(ENV_FILE)
     clock = SystemClock()
     link = WebRtcLink(settings.robot_link, clock=clock)
     governor = Governor(link, settings, clock, Journal(tmp_path))
@@ -45,7 +43,7 @@ async def sim(tmp_path: Path):
 async def test_webrtc_move_advances_more_than_fifteen_cm(sim):
     governor, link, clock = sim
     before = link.state()["odom"]
-    assert (await governor.move(0.2, 0, 0, 3)).ok
+    assert (await governor.move(0.2, 0, 0, 2)).ok
     completed = await governor.wait_motion()
     assert completed is not None and completed.ok, completed
     await clock.sleep(0.3)
@@ -75,10 +73,8 @@ async def test_webrtc_turn_ninety_degrees_within_fifteen(sim):
 
 async def test_webrtc_look_left_has_positive_yaw(sim):
     governor, link, clock = sim
-    assert (await governor.look("gauche", hold_s=2)).ok
-    async with asyncio.timeout(1.5):
-        while link.state()["head"][2] <= 0.2:
-            await clock.sleep(0.05)
+    assert (await governor.look("gauche", hold_s=1)).ok
+    await clock.sleep(0.6)
     yaw = link.state()["head"][2]
     print(f"WebRTC look gauche: head_yaw={yaw:.3f}")
     assert yaw > 0.2
@@ -114,7 +110,8 @@ async def test_webrtc_health_rtt_and_twenty_hz_move_jitter(sim):
 
     async def observe_state():
         nonlocal deadman
-        last_requested = None
+        state = link.state()
+        last_requested = tuple(state.get("move", {}).get("requested", [])) if state else None
         while not done.is_set():
             state = link.state()
             if state is not None:
@@ -139,10 +136,14 @@ async def test_webrtc_health_rtt_and_twenty_hz_move_jitter(sim):
     jitter_p95 = sorted(abs(interval - 50) for interval in intervals_ms)[
         math.ceil(0.95 * len(intervals_ms)) - 1
     ]
+    observed_duration = transitions[-1] - transitions[0]
+    observed_hz = (len(transitions) - 1) / observed_duration
     print(
         "WebRTC metrics: "
         f"robot.health_rtt_ms_p50={statistics.median(rtts):.2f} "
-        f"p95={p95_rtt:.2f}; robot.move_observed_hz=20 "
+        f"p95={p95_rtt:.2f}; robot.move_nominal_hz=20 "
+        f"robot.move_observed_hz={observed_hz:.2f} "
+        f"observed_updates={len(transitions)} observed_duration_s={observed_duration:.3f} "
         f"interval_ms_p50={statistics.median(intervals_ms):.2f} "
         f"jitter_abs_ms_p95={jitter_p95:.2f}; deadman_during_move={deadman}"
     )

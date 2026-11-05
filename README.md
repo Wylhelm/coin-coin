@@ -363,14 +363,23 @@ COINCOIN_TEST_SIM=1 uv run pytest --no-cov -m sim -s -rs
 
 Sur cet hôte WSL, `nvh264enc` est détecté mais son preset matériel échoue ;
 le rang `NONE` laisse `x264enc` logiciel traiter la vidéo.
-Le fixture sim lit explicitement le `.env` du worktree après que le fixture
-global a isolé les variables d'environnement ; `ROBOT_LINK` choisit donc bien
-le transport vérifié, y compris pour les scénarios S1 existants.
+Les fixtures sim lisent le `.env` du worktree et donnent priorité au
+`ROBOT_LINK` explicite de la commande. Seule cette variable non secrète est
+préservée pour les tests marqués `sim` avec opt-in ; les autres tests restent
+isolés de l'environnement.
 
 Le test choisit le transport depuis `ROBOT_LINK`; avec le schéma `webrtc://`,
 les scénarios `move`, `turn`, `look` et les mesures de RTT/gigue passent par
 WebRTC. La signalisation LAN n'a pas d'authentification : ne pas exposer
 `mediad` au-delà du LAN.
+
+**Acceptation S9 encore bloquée :** les scénarios de référence sont rétablis
+sans adaptation (marche 0,2 m/s pendant 2 s, seuil > 0,15 m ; regard maintenu
+1 s et contrôlé après 0,6 s). La commande complète a produit 6 réussites et
+1 échec de distance ; dix marches comparatives donnent 2 réussites et
+8 échecs malgré une durée/cadence d'envoi correcte. Ne pas considérer les
+anciennes mesures à 3 s comme preuve d'acceptation. Détails et toutes les
+mesures dans `docs/webrtc.md`.
 
 ## Piloter la simulation S1 depuis le conteneur
 

@@ -194,15 +194,25 @@
   `control`, piste vidéo, reconnexion et sélection par URL `webrtc://`.
 - Les tests de mouvement sim sélectionnent le transport configuré ; tests du
   pair WebRTC local et scénarios opt-in de mouvement, RTT et gigue.
-- Revalidé après rebase sur `main` `0597380` : ruff, format, pyright verts ;
-  suite complète 342 réussis, 7 tests sim sautés hors opt-in, couverture 91,30 %.
-- Avec `ROBOT_LINK=webrtc://192.0.2.1:8443`, `COINCOIN_TEST_SIM=1 uv run
-  pytest --no-cov -m sim -s -rs` : **7 passed, aucun saut**. S1 avance 0,289 m,
-  tour 92,556°, regard 0,208 rad ; S9 avance 0,254 m, tour 92,340°, regard
-  0,353 rad. RTT `robot.health` p50/p95 0,58/0,99 ms ; gigue absolue p95
-  `robot.move` 29,76 ms à 20 Hz, aucun deadman.
+- Correction après revue : STOP invalide le mouvement différé ; aucun nouveau
+  mouvement n'est admis tant que `bufferedAmount` n'est pas nul. Régressions
+  transport/JSON-RPC/gouverneur, 300 updates bloqués, STOP, reprise et timeout
+  explicite d'un STOP non livré. Un message déjà admis sur le canal fiable
+  ne peut pas être retiré ni dépassé par STOP.
+- Les scénarios S1/S9 retrouvent strictement les 2 s et le seuil > 0,15 m ;
+  regard maintenu 1 s, contrôle après 0,6 s. Cible `ROBOT_LINK` explicite
+  respectée pour la sim opt-in, avec régressions hors réseau.
+- Qualité finale sur `main` `0597380` : ruff, format, pyright verts ;
+  **351 passed, 7 skipped** hors opt-in, couverture **91,35 %**.
+- **Acceptation sim non acquise** : commande complète **6 passed, 1 failed,
+  zéro saut** (marche S9 0,143831 m). Dix comparaisons supplémentaires,
+  toutes consignées : 2 réussites, 8 échecs, 40 envois par essai et STOP
+  après 2,000–2,001 s. Les anciennes preuves à 3 s ne valent pas acceptation.
+- Cadence observée calculée, non constante : **19,77 Hz**, 50 updates sur
+  2,479 s ; cadence d'émission nominale 20 Hz. RTT p50/p95 0,51/0,65 ms,
+  intervalle p50 42,17 ms, gigue absolue p95 29,30 ms ; aucun deadman.
 - Q10 validée depuis WSL et le bridge Docker par défaut : health HTTP 200 sur
-  8779, CLI robot healthy et mouvement Docker de 3 s sur 0,228 m ; aucune
+  8779, CLI robot healthy et mouvement Docker de 2 s sur 0,128 m ; aucune
   ouverture du port hôte 8765 ni besoin de `network_mode: host`.
 - Mesures détaillées et décision : `docs/webrtc.md` et ADR-006.
 

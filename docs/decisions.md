@@ -688,7 +688,8 @@ Le journal ne reçoit jamais les octets ni l'URL de données de l'image :
 
 ## ADR-006 — WebRTC LAN pour le robot, TCP relay inchangé
 
-Date : 2026-11-04. Statut : accepté, mesures sim et Q10 vérifiées.
+Date : 2026-11-04. Statut : Q10 acceptée ; acceptation S9 bloquée sur la
+distance de marche stricte de 2 s (après correction de revue).
 
 **Contexte.** S9 doit piloter le `mediad` réel avant la réception du robot,
 réutiliser les contrats JSON-RPC de S1 et vérifier l'accessibilité ICE depuis
@@ -700,16 +701,31 @@ d'authentification ; le relais TCP S1, lui, exige son jeton.
 `TcpLink`, le relais et le jeton. L'adaptation WebRTC alimente le
 `JsonRpcConnection` de S1, conserve `robot.stop` comme requête à ID et n'ajoute
 pas de file d'attente historique pour les `robot.move` : un seul envoi récent
-est conservé pendant que `bufferedAmount` dépasse 16 KiB. La réponse SDP
-aiortc est `passive`; l'`active` par défaut a atteint ICE mais a échoué au
+est conservé tant que `bufferedAmount` n'est pas nul. STOP invalide cet envoi
+avant son propre envoi ; les demandes explicites postérieures restent
+possibles. Le seuil antérieur de 16 KiB est retiré car il permettait
+l'accumulation dans le tampon aiortc lui-même. Un message déjà admis ne peut
+pas être rétracté sur le canal fiable ; la livraison ou l'arrêt physique ne
+sont pas garantis en saturation. L'absence d'acquittement STOP dans les
+100 ms produit un échec explicite du gouverneur, jamais une réussite.
+La réponse SDP aiortc est `passive`; l'`active` par défaut a atteint ICE mais a échoué au
 handshake DTLS contre le `webrtcsink` de la simulation.
 
-**Mesures.** Après rebase sur `main` `0597380`, les 7 tests sim (S1 et S9)
-réussissent sans saut via WebRTC : avance 0,254–0,289 m, tour 92,340–92,556°,
-regard gauche 0,208–0,353 rad. RTT `robot.health` p50/p95 0,58/0,99 ms ;
-`robot.move` à 20 Hz, intervalle p50 42,72 ms et gigue absolue p95 29,76 ms,
-aucun `deadman` pendant l'action. WSL et le bridge Docker par défaut ont
-réussi `status`; le déplacement Docker de 3 s a avancé de 0,228 m. HTTP
+**Mesures rectifiées après revue.** Base `main` `0597380`. La marche est
+revenue à 2 s pour les deux scénarios, sans modifier le seuil > 0,15 m ;
+regard maintenu 1 s et contrôlé après 0,6 s. Commande complète sim :
+**6 passed, 1 failed, aucun saut** ; S1 avance 0,160 m, S9 0,143831 m
+(échec), tours 89,645°/89,536°, regards 0,352/0,610 rad. Les dix marches
+comparatives supplémentaires donnent 2 réussites et 8 échecs malgré
+40 envois par essai et STOP après 2,000–2,001 s, sans backlog observé ;
+aucune cause logicielle n'est démontrée. La preuve antérieure à 3 s est
+retirée comme critère d'acceptation.
+
+RTT `robot.health` p50/p95 0,51/0,65 ms ; nominal 20 Hz, cadence observée
+**19,77 Hz** calculée sur 50 changements de consigne pendant 2,479 s ;
+intervalle p50 42,17 ms et gigue absolue p95 29,30 ms, aucun `deadman`.
+WSL et le bridge Docker par défaut ont réussi `status`; le déplacement
+Docker de 2 s a avancé de 0,128 m (contrôle réseau, pas acceptation distance). HTTP
 /healthz répond 200 sur 8779. `network_mode: host` n'a pas été nécessaire.
 Le mapping `127.0.0.1:8779->8765/tcp` n'ouvre pas le port hôte 8765.
 

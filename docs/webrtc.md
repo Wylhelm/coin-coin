@@ -1,5 +1,11 @@
 # WebRTC LAN : S9
 
+**Blocage d'acceptation après correction de revue :** la marche stricte
+`move(0.2, 0, 0, 2)` n'atteint pas fiablement > 0,15 m. La commande complète
+fait 6 réussites et 1 échec sans saut ; dix répétitions contrôlées montrent
+2 réussites et 8 échecs. Les preuves antérieures à 3 s sont retirées comme
+preuves d'acceptation. Durées et seuils ne sont pas assouplis.
+
 ## Signalisation et transport
 
 `WebRtcLink` traduit `webrtc://host:8443` en WebSocket `ws://host:8443` et
@@ -14,7 +20,26 @@ datachannel fiable et ordonnée `control`. Chaque message JSON-RPC reçu sur
 cette channel devient une ligne de flux pour le `JsonRpcConnection` de S1 ;
 les appels, notifications, identifiants, erreurs et `robot.state` gardent donc
 les contrats existants. `robot.stop` demeure une requête avec identifiant.
-`robot.move` n'est pas mis en file si le tampon de la channel dépasse 16 KiB.
+Un `robot.move` n'est admis que si `bufferedAmount == 0`. Dès qu'un message
+est tamponné, les mouvements suivants remplacent un unique mouvement différé,
+envoyé au retour à zéro. Un seuil de 16 KiB admettait auparavant des centaines
+de messages obsolètes dans aiortc : ce seuil est supprimé.
+
+STOP invalide synchroniquement le différé avant son envoi. Un mouvement
+explicitement demandé après STOP reste autorisé et conserve la politique du
+plus récent. Les tests reproduisent les deux ordres reprise/vidage du tampon,
+y compris via `Governor` et `JsonRpcConnection`.
+
+**Limite du canal fiable ordonné :** un message déjà admis dans aiortc/SCTP
+ne peut être ni retiré ni dépassé. La nouvelle politique n'admet plus de
+mouvement tant que le tampon visible par `bufferedAmount` n'est pas vide ;
+elle ne borne pas les messages déjà transmis à SCTP ou en vol et ne garantit
+pas la livraison de STOP sur un canal bloqué. Le gouverneur exige son
+acquittement en 100 ms et renvoie
+un échec explicite (`robot request timed out`) sinon ; ce n'est pas une
+garantie d'arrêt physique. Le deadman robot reste le filet de sécurité en cas
+de perte du transport. Les régressions vérifient l'absence de reprise différée
+après STOP et le résultat d'échec si le tampon ne se vide pas.
 
 La piste vidéo conserve la dernière trame décodée et son heure de réception ;
 `frame()` l'encode en JPEG qualité 80 à la demande. Les pertes de peer/datachannel
@@ -89,39 +114,99 @@ ROBOT_LINK=webrtc://192.0.2.1:8443 COINCOIN_TEST_SIM=1 \
   uv run pytest --no-cov -m sim -s -rs
 ```
 
-Résultat : **7 passed, 342 deselected, aucun saut**. Les trois tests S1 et les
-quatre tests S9 ont tous utilisé WebRTC, y compris les anciens scénarios de
-mouvement du fichier `test_sim_motion.py`. Le fixture global efface les
-variables de configuration et désactive la source `.env` de `Settings` ; les
-fixtures sim reconstruisent toutefois explicitement `Settings` à partir du
-`.env` du worktree, puis passent `robot_link` à la fabrique. Le réglage
-`webrtc://` a donc été exercé par les anciens tests S1, sans modification de
-leur marqueur ni saut de connexion.
+Résultat après correction : **6 passed, 1 failed, 350 deselected, aucun
+saut** (53,41 s). L'échec est le test de marche S9 : **0,143831 m**, en
+dessous de > 0,15 m. Les trois scénarios S1 et leurs équivalents S9 gardent
+strictement les mêmes paramètres : marche de 2 s ; tour 90° ±15° ; regard
+maintenu 1 s avec yaw > 0,2 rad contrôlé après 0,6 s.
+
+Le fixture global ne préserve `ROBOT_LINK` que pour un test marqué `sim`
+avec `COINCOIN_TEST_SIM=1`. Les fixtures partagées chargent le `.env`, puis
+appliquent cet override non secret. Trois régressions sans réseau vérifient
+une cible `webrtc://override.invalid:8443` différente du `.env`, l'absence
+d'opt-in et les tests hors marqueur ; les secrets restent effacés.
 
 | Mesure réelle | Résultat |
 |---|---:|
-| `robot.health` RTT | p50 **0,58 ms**, p95 **0,99 ms** |
-| `robot.move` observé par `robotd` | **20 Hz** ; intervalle p50 **42,72 ms** |
-| Gigue absolue des intervalles `robot.move` | p95 **29,76 ms** |
+| `robot.health` RTT | p50 **0,51 ms**, p95 **0,65 ms** |
+| Cadence d'émission nominale `robot.move` | **20 Hz** |
+| Changements de consigne observés dans `robot.state` | **50 updates** en **2,479 s** |
+| Cadence observée `(updates - 1) / (dernier - premier)` | **19,77 Hz** |
+| Intervalle observé médian | **42,17 ms** |
+| Gigue absolue des intervalles `robot.move` | p95 **29,30 ms** |
 | `limited_by` pendant les mouvements | aucun `deadman` |
-| S1/WebRTC, avance 3 s | **0,289 m** |
-| S1/WebRTC, tour | **92,556°** |
-| S1/WebRTC, regard gauche | yaw **0,208 rad** |
-| S9/WebRTC, avance 3 s | **0,254 m** |
-| S9/WebRTC, tour | **92,340°** |
-| S9/WebRTC, regard gauche | yaw **0,353 rad** |
+| S1/WebRTC, avance 2 s | **0,160 m**, réussite |
+| S1/WebRTC, tour | **89,645°** |
+| S1/WebRTC, regard gauche | yaw **0,352 rad** |
+| S9/WebRTC, avance 2 s | **0,143831 m**, échec |
+| S9/WebRTC, tour | **89,536°** |
+| S9/WebRTC, regard gauche | yaw **0,610 rad** |
+
+La mesure de cadence utilise des consignes variant à chaque émission et
+observe leurs transitions dans l'état poussé par `robotd` à 50 Hz, sondé
+toutes les 5 ms. C'est une cadence observée via les états reçus, pas un
+horodatage interne de réception des RPC. La durée va de la première à la
+dernière transition et couvre donc 49 intervalles pour 50 updates. La gigue
+est l'écart absolu à la période nominale de 50 ms.
+
+### Investigation de la marche : toutes les répétitions
+
+Dix essais supplémentaires alternent l'appel des deux fonctions de test
+existantes, sans changer leurs paramètres/assertions. Même simulation caméra
+sur le sol libre `backlash`, Compose arrêté, transport WebRTC dans les deux
+cas, connexion/gouverneur recréés à chaque essai. Avant chaque préparation
+de fixture (STOP puis 0,3 s), un STOP et 2 s de stabilisation vérifient
+`applied < 0,01`, `enabled`, `homed`, mode `walk`, et l'absence de chute ou
+prise en main. Le robot reste debout ; la hauteur initiale est de
+0,1174–0,1176 m, gravité z de -0,99990 à -0,99965. Position/yaw ne sont pas
+réinitialisés : le yaw initial varie de 2,654 à 3,035 rad, la distance est
+projetée sur l'orientation initiale de chaque essai. Ce sont des conditions
+comparables au repos, pas des états physiques identiques.
+
+| Essai | Distance du scénario à +0,3 s (m) | Résultat > 0,15 m | Envois move | Premier move → STOP (s) | Cadence envoyée (Hz) |
+|---|---:|---|---:|---:|---:|
+| S1-1 | 0,151 | réussite | 40 | 2,000516 | 19,996 |
+| S9-1 | 0,141 | échec | 40 | 2,000809 | 19,996 |
+| S1-2 | 0,145 | échec | 40 | 2,000265 | 19,997 |
+| S9-2 | 0,145 | échec | 40 | 2,000838 | 19,992 |
+| S1-3 | 0,140 | échec | 40 | 2,000548 | 19,993 |
+| S9-3 | 0,133 | échec | 40 | 2,000358 | 19,995 |
+| S1-4 | 0,135 | échec | 40 | 2,000642 | 19,992 |
+| S9-4 | 0,158 | réussite | 40 | 2,000581 | 19,998 |
+| S1-5 | 0,121 | échec | 40 | 2,000897 | 19,991 |
+| S9-5 | 0,141 | échec | 40 | 2,000070 | 19,996 |
+
+Instrumentation au véritable `RTCDataChannel.send` : 40 messages par essai,
+premier→dernier envoi 1,9502–1,9509 s, intervalle maximal 51,143 ms,
+`bufferedAmount` nul avant chaque envoi. Le STOP est envoyé après 2,000–2,001 s.
+La boucle robot reste à 49,959–50,029 Hz, son compteur `missed` reste à 1.
+Les quatre derniers essais observent aussi les transitions de consigne dans
+`robot.state` (abonnement de fixture inchangé à 10 Hz) : durée active
+**1,982 / 2,020 / 2,040 / 1,980 s**, résolution liée à l'abonnement ; aucun
+deadman. Les consignes finales sont nulles, aucun état dangereux observé.
+
+**Conclusion bornée :** pas de troncature de durée, perte d'émission,
+backlog client ou arrêt watchdog mis en évidence dans ces essais. Le même
+scénario échoue aussi sous le nom S1 et peut réussir sous le nom S9.
+Les observations sont compatibles avec une variabilité de locomotion/phase
+de la simulation ; elles ne prouvent pas son mécanisme ni n'excluent toute
+cause de transport. Aucune cause logicielle corrigeable n'est démontrée ;
+le seuil reste non fiable. Aucun changement de firmware, politique, durée,
+seuil ou attente de mesure pour obtenir une passe favorable.
 
 Une commande `coincoin-cli status` depuis WSL a aussi renvoyé un état debout,
 mode `walk`, activé et healthy.
 
 ### Q10 : WSL et Docker Desktop
 
-Depuis WSL, `coincoin-cli status` a établi la session WebRTC et reçu
-`robot.health`. Docker Engine **29.8.2**, Compose **5.6.0**. Le bridge Docker
+Après les corrections de revue, `coincoin-cli status` depuis WSL a établi
+la session WebRTC et reçu `robot.health`. Docker Engine **29.8.2**,
+Compose **5.6.0**. Le bridge Docker
 par défaut a joint `192.0.2.1:8443`, établi WebRTC, puis exécuté avec
-succès `coincoin-cli status` et `coincoin-cli move 0.1 0 0 1`. `/healthz`
-répond HTTP **200** sur le port affecté **8779**. Après le rebase, une commande
-Docker de 3 secondes `move 0.2 0 0 3` a avancé de **0,228 m**.
+succès `coincoin-cli status` et `coincoin-cli move 0.2 0 0 2`. `/healthz`
+répond HTTP **200** sur le port affecté **8779**. Le mouvement de 2 secondes
+avance de **0,128 m** : réussite du contrôle réseau, mais pas preuve du
+critère de distance > 0,15 m.
 
 Le premier démarrage Compose échouait parce que le montage local `.cache/logs`
 était `root:root`; le répertoire de ce worktree S9 seulement a été corrigé en

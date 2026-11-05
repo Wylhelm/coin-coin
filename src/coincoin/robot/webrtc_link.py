@@ -26,7 +26,7 @@ from coincoin.robot.link import Frame, LinkDown, RobotRefused
 
 LOGGER = logging.getLogger(__name__)
 LinkCallback = Callable[[], Awaitable[None] | None]
-MAX_MOVE_BUFFERED_BYTES = 16 * 1024
+MAX_MOVE_BUFFERED_BYTES = 0
 
 
 def _encode_video_frame(video_frame: VideoFrame, captured_at: float) -> Frame:
@@ -79,6 +79,9 @@ class _DataChannelStream:
             message = json.loads(text)
         except (json.JSONDecodeError, UnicodeDecodeError):
             message = None
+        if isinstance(message, dict) and message.get("method") == "robot.stop":
+            # STOP is a barrier: never replay an earlier deferred move after it.
+            self._latest_move = None
         is_move = isinstance(message, dict) and message.get("method") == "robot.move"
         if is_move and (
             self._latest_move is not None or self.channel.bufferedAmount > MAX_MOVE_BUFFERED_BYTES
