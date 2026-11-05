@@ -118,8 +118,11 @@ défaut ; aucune correction Pollen/GStreamer n'a été effectuée.
 Suite sim complète pré-rebase : **3 réussis, 1 échec** (marche 0,137 m,
 seuil partagé > 0,15 m inchangé ; tour 91,007°, regard 0,796 rad).
 Après rebase sur `2298ffb` : ruff/format/Pyright verts, **508 réussis,
-6 ignorés**, couverture **91,88 %**, Node **6/6**. Aucun nouvel essai sim
-post-rebase ; contre-vérification confiée au coordonnateur.
+6 ignorés**, couverture **91,88 %**, Node **6/6**. Contre-vérification du
+coordonnateur sur `f333ee6` : **4 tests sim réussis, 510 désélectionnés**,
+JPEG 360x640 de 12 244 octets vérifié puis dossier temporaire supprimé,
+marche 0,156 m (> 0,15 m), tour 87,055°, regard 0,796 rad.
+Le précédent échec de marche à 0,137 m reste consigné ; seuil et test inchangés.
 Compose et essai vocal humain restent non validés.
 
 Depuis WSL, réserver d'abord le verrou caméra partagé (ne jamais effacer celui
@@ -167,8 +170,14 @@ avec `COINCOIN_PORT=8777 COMPOSE_PROJECT_NAME=coincoin-s7`. Ouvrir
 `http://localhost:8777` et demander « Coin-Coin, qu'est-ce que tu vois ? ».
 
 Après usage : arrêter le relais avec son PID exact, le Compose S7 si lancé,
-puis `DUCK_SIM_STATE="$HOME/.cache/ds-s7" setsid --wait timeout 45s setpriv
---no-new-privs ~/projects/microduck/microduck/scripts/duck-sim down`.
+puis :
+
+```sh
+DUCK_SIM_STATE="$HOME/.cache/ds-s7" DUCK_SIM_PORT=7881 DUCK_SIM_FRAME_PORT=7981 \
+  setsid --wait timeout 45s setpriv --no-new-privs \
+  "$HOME/projects/microduck/microduck/scripts/duck-sim" down
+```
+
 Libérer ensuite uniquement le verrou S7 (`rm -r ~/.cache/coin-coin-locks/sim-camera`).
 
 ## S5 — correctif de reprise unique, en attente de contre-vérification
