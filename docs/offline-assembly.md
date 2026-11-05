@@ -77,4 +77,52 @@ Ruff/format verts, Pyright **0 erreur**, **86 tests réussis**. Le premier
 Pyright utilisant Node v20.20.1 avec JIT a rencontré un crash natif V8
 (`unreachable code`, sortie 251) ; l'option locale `--jitless` permet la
 vérification ciblée sans modifier le runtime partagé ni la configuration.
-La qualité complète reste à exécuter au créneau attribué par la coordination.
+À cette étape initiale, la qualité complète attendait le créneau de coordination.
+La campagne de revue autorisée ci-dessous la remplace comme preuve actuelle.
+
+## Correctif de revue : fin des effets et réception TCP
+
+Base assignée : `f799586`, après rebase par la coordination sur `cee02a2`.
+L'assertion « dernier `robot.mouth` reçu = 0 au coucher » était exécutée trop
+tôt : le passage à `speaking=False` précède les effets `MouthClose` de
+`quack_done`. La session Realtime est déjà fermée pendant le `coo` de coucher ;
+ni sa fermeture ni la fin des tâches d'arrêt robot ne garantit donc la fin
+du cancanement et de ses effets. De plus, `robot.mouth` est une notification :
+le retour de l'envoi ne vaut pas acquittement de réception.
+
+La reproduction est désormais déterministe dans la variante `sleep`, sans
+temporisation arbitraire ni nouvelle tentative :
+
+1. Le pair navigateur retient le dernier `played` du `coo` jusqu'à réception
+   d'une ouverture de bec non nulle sur le faux robot.
+2. Après libération de `played`, le faux robot retient la première fermeture
+   finale à zéro avant de l'enregistrer. À cette barrière, le test prouve que
+   l'ancien prédicat (`speaking=False`, tâches d'arrêt vides) est vrai, que
+   la dernière ouverture reçue est encore non nulle, et que le hook final
+   n'est pas terminé. C'est l'ordre d'observation fautif, pas une ouverture
+   tardive après la fermeture finale.
+3. Le test libère la notification. Un témoin `mouth_close`, enregistré après
+   les handlers réels des features, attend une réponse `robot.health` sur le
+   même flux TCP : les notifications précédentes ont alors été traitées.
+   L'assertion stricte « dernier `mouth` reçu = 0 » reste inchangée.
+4. Après le réarmement effectif du réveil (temporisation de production
+   existante), une seconde barrière RPC vérifie de nouveau le dernier zéro :
+   aucune animation restante ne doit rouvrir le bec.
+
+Les barrières sont bornées et libérées aussi en teardown d'échec. STOP utilise
+le même témoin de fin et la même barrière TCP. Aucun fichier de production,
+seuil, comportement de coucher ou gouverneur n'est modifié.
+
+**Preuve de stabilité autorisée.** Vingt exécutions consécutives de
+`uv run pytest`, sans `--no-cov`, relance sur échec ni sélection de tests :
+**20/20 vertes**, chacune **582 passed, 10 skipped**, soit 11 640 tests
+réussis et aucun échec. Couverture totale **91,72–91,78 %** (seuil 80 %),
+durée **33,59–36,05 s** par suite. Les sauts existants concernent les tests
+sim hors opt-in et les assets Silero réels absents de ce worktree.
+
+Contrôles complets `uv run ruff check .`, `uv run ruff format --check .`,
+`NODE_OPTIONS=--jitless uv run pyright` : verts, **120 fichiers formatés**,
+**0 erreur Pyright**. Aucun simulateur ni API réelle lancé. Les assertions
+de fin des deux variantes vérifient toujours les tâches, clients et listeners.
+Les 20 journaux complets sont conservés dans le dossier d'artefacts de la
+session, `files/pre-assembly-review-1/pytest-1.log` à `pytest-20.log`.

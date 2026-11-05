@@ -5,6 +5,7 @@ import base64
 import json
 import struct
 import time
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from io import BytesIO
 from pathlib import Path
@@ -39,6 +40,27 @@ from tests.integration.test_s4_regressions import _RecordingVad, _settings
 from tests.integration.test_see_tool import CameraLink
 from tests.integration.test_tools_e2e_fakes import _entries, _until
 from tests.integration.test_voice_feature import _sound_bank
+
+
+class _RobotPeer(FakeRobotd):
+    def __init__(self) -> None:
+        super().__init__()
+        self.final_close: Callable[[], bool] = lambda: False
+        self.close_pending = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self.hold_close = False
+
+    async def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        if (
+            self.hold_close
+            and method == "robot.mouth"
+            and params == {"open": 0.0}
+            and self.final_close()
+        ):
+            self.hold_close = False
+            self.close_pending.set()
+            await self.release_close.wait()
+        await super().notify(method, params)
 
 
 class _ControlledWake:
@@ -121,6 +143,9 @@ class _BrowserPeer:
         self.samples = 0
         self.discard_through = 0
         self.ack_playback = True
+        self.hold_samples: int | None = None
+        self.playback_pending = asyncio.Event()
+        self.release_playback = asyncio.Event()
         self.tasks = [asyncio.create_task(self._audio()), asyncio.create_task(self._ui())]
 
     async def _audio(self) -> None:
@@ -132,6 +157,9 @@ class _BrowserPeer:
                 continue
             self.samples += (len(packet) - 8) // 2
             if self.ack_playback:
+                if self.samples == self.hold_samples:
+                    self.playback_pending.set()
+                    await self.release_playback.wait()
                 await self.ui.send_json(
                     {
                         "type": "played",
@@ -164,7 +192,7 @@ async def test_joint_features_browser_protocol_and_shutdown(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ending: str
 ) -> None:
     baseline = asyncio.all_tasks()
-    robot = FakeRobotd()
+    robot = _RobotPeer()
     realtime = _RealtimePeer()
     memory = FakeOpenClaw(content="Offline memory context.")
     camera = CameraLink([0])
@@ -215,6 +243,18 @@ async def test_joint_features_browser_protocol_and_shutdown(
         stack.push_async_callback(app.stop)
         runtime = robot_feature.runtime
         assert runtime is not None
+        final_mouth_closed = asyncio.Event()
+
+        async def mouth_closed() -> None:
+            if app.mode == Mode.SLEEPING and not app.state.speaking:
+                # Notifications are unacknowledged. Fence them on the same TCP stream.
+                await runtime.link.call("robot.health")
+                final_mouth_closed.set()
+
+        app.on("mouth_close", mouth_closed)
+        robot.final_close = lambda: app.mode == Mode.SLEEPING and not app.state.speaking
+        stack.callback(robot.release_close.set)
+        stack.callback(browser.release_playback.set)
         await _until(lambda: runtime.link.connected and runtime.link.state() is not None)
         assert isinstance(runtime.link, TcpLink)
         assert isinstance(runtime.quack, StreamQuack)
@@ -336,8 +376,30 @@ async def test_joint_features_browser_protocol_and_shutdown(
         if ending == "stop":
             await browser.ui.send_json({"type": "stop"})
         else:
+            browser.hold_samples = 4_800
+            robot.hold_close = True
             await realtime.tools("sleeping", [("sleep", {})])
         await _until(lambda: app.mode == Mode.SLEEPING and app._session is None)
+        if ending == "sleep":
+            async with asyncio.timeout(3):
+                await browser.playback_pending.wait()
+                await _until(
+                    lambda: any(
+                        c.method == "robot.mouth" and c.params and c.params["open"] > 0
+                        for c in robot.records[stop_at:]
+                    )
+                )
+                browser.release_playback.set()
+                await robot.close_pending.wait()
+            # The old readiness predicate is true while the final close is still in flight.
+            assert not app.state.speaking and not app._stop_tasks
+            assert [c for c in robot.records if c.method == "robot.mouth"][-1].params != {
+                "open": 0.0
+            }
+            assert not final_mouth_closed.is_set()
+            robot.release_close.set()
+        async with asyncio.timeout(3):
+            await final_mouth_closed.wait()
         await _until(lambda: not app.state.speaking and not app._stop_tasks)
         await brain.drain()
         await _until(lambda: realtime.disconnected.is_set())
@@ -358,6 +420,8 @@ async def test_joint_features_browser_protocol_and_shutdown(
         audio_before = len(realtime.audio_input)
         awake_frames = len(wake.frames)
         await _until(lambda: app.state.wake_enabled)
+        await runtime.link.call("robot.health")
+        assert [c for c in robot.records if c.method == "robot.mouth"][-1].params == {"open": 0.0}
         await browser.audio.send_bytes(bytes(960))
         await _until(lambda: len(wake.frames) > awake_frames)
         assert len(realtime.audio_input) == audio_before

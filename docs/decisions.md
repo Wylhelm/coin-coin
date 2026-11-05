@@ -887,3 +887,17 @@ WebRTC. Le teardown ferme explicitement la mémoire via `aclose()` comme
 le harness mémoire existant ; il vérifie qu'aucune tâche nouvelle ne survit.
 Aucun hook de production ni critère humain/S9 n'est modifié.
 Commande, assertions et limites : [offline-assembly.md](offline-assembly.md).
+
+**Correctif de revue sur `f799586`.** Les états de conversation précèdent leurs
+effets asynchrones ; `speaking=False` n'est pas un acquittement de fermeture du
+bec, et une notification TCP envoyée n'est pas encore forcément reçue. Le test
+reproduit explicitement cette fenêtre en retenant le dernier `played` du `coo`
+puis la réception de sa fermeture finale. Il attend ensuite la fin du hook
+`mouth_close` et une réponse RPC sur le même flux avant de contrôler le dernier
+zéro reçu, puis renouvelle ce contrôle après réarmement du réveil. Pas de
+temporisation arbitraire ni d'assouplissement de l'assertion ; la production
+reste inchangée.
+Vérification : vingt suites complètes consécutives avec couverture, toutes
+vertes (**582 passed, 10 skipped** chacune, **91,72–91,78 %**), et
+Ruff/format/Pyright complets verts. Les journaux sont conservés en artefacts
+de session ; les réserves acoustiques, humaines et S9 restent ouvertes.

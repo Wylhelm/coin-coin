@@ -34,6 +34,14 @@
 
 ## Assemblage protocolaire hors réseau externe — 2026-11-05
 
+- Correctif de revue : reproduction déterministe de l'observation prématurée
+  du bec pendant la fin du `coo`. Le test attend désormais la fin des hooks
+  et une barrière RPC sur le même TCP avant l'assertion stricte du dernier
+  zéro, puis la répète après réarmement du réveil ; aucune modification
+  production ni temporisation arbitraire.
+- Campagne de stabilité autorisée : **20 suites complètes consécutives**
+  avec couverture, chacune **582 réussis, 10 sauts, zéro échec** ;
+  couverture **91,72–91,78 %**, Ruff/format/Pyright complets verts.
 - Régression des trois features installées ensemble par `App.start()`, vraies
   routes web, `BrowserAudio`, mixer et clients TCP/Realtime/OpenClaw contre
   des pairs locaux sur ports éphémères, caméra injectée au niveau `Frame`.
