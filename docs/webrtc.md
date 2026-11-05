@@ -1,10 +1,12 @@
 # WebRTC LAN : S9
 
-**Blocage d'acceptation après correction de revue :** la marche stricte
-`move(0.2, 0, 0, 2)` n'atteint pas fiablement > 0,15 m. La commande complète
-fait 6 réussites et 1 échec sans saut ; dix répétitions contrôlées montrent
-2 réussites et 8 échecs. Les preuves antérieures à 3 s sont retirées comme
-preuves d'acceptation. Durées et seuils ne sont pas assouplis.
+**Blocage d'acceptation, actualisé le 2026-11-05 :** la marche stricte
+`move(0.2, 0, 0, 2)` n'atteint pas fiablement > 0,15 m. La dernière commande
+complète fait **4 réussites et 3 échecs sans saut** : les deux marches et
+le regard S9. Le filtrage S1 WebRTC est corrigé séparément ; aucune cause
+logicielle corrigeable dans S9 n'est démontrée pour la simulation.
+Toutes les campagnes antérieures restent ci-dessous. Les preuves à 3 s
+ne valent pas acceptation ; durées et seuils ne sont pas assouplis.
 
 ## Signalisation et transport
 
@@ -109,6 +111,100 @@ La configuration `.env` de cette session choisit `ROBOT_LINK=webrtc://<eth0>:844
 n'est ni requis ni utilisé par le transport WebRTC.
 
 ## Mesures et Q10
+
+### Reprise autorisée du 2026-11-05
+
+Correctif de filtrage livré séparément dans `f61ac1a`, sur
+`session/S9`, base inchangée `main=0597380`. Qualité complète :
+`uv run ruff check . && uv run ruff format --check . && uv run pyright &&
+uv run pytest -q` : **355 passed, 7 skipped hors opt-in**, couverture
+**91,52 %**, Ruff/format/Pyright verts. Le ciblage WebRTC/relais/CLI
+donne **108 passed** ; 18 cas WebRTC locaux passent dans la suite complète.
+TCP et JSON-RPC S1 sont inchangés.
+
+Une nouvelle campagne bornée à quatre marches, ordre fixé TCP / WebRTC /
+WebRTC / TCP, appelle la fonction S1 existante sans modification, avec
+`move(0.2,0,0,2)` et mesure après 0,3 s. Même sim caméra S9, scène
+`backlash`, aucun Compose pendant les marches, préparation STOP + 2 s
+puis STOP + 0,3 s, enabled/homed/walk/applied<0,01/sécurité saine.
+Le diagnostic ajoute uniquement des lectures `{"op":"read"}` du corps sur
+7911 ; aucune écriture de cible, gain ou torque par l'observateur. Il conserve
+le `sim_time`, le vrai `trunk` MuJoCo, l'état robot et les envois RPC.
+
+| Ordre | Transport | Odométrie au contrôle (m) | > 0,15 m | Déplacement physique projeté (m) | Moves | Premier move → STOP (s) | Cadence envoyée (Hz) | Temps simulé / temps réel |
+|---|---|---:|---|---:|---:|---:|---:|---:|
+| 1 | TCP | 0,161 (arrondi) | réussite | indisponible | indisponible | indisponible | indisponible | indisponible |
+| 2 | WebRTC | 0,120182 | échec | 0,145790 | 40 | 2,000919 | 19,9918 | 1,0036 |
+| 3 | WebRTC | 0,134663 | échec | 0,173432 | 40 | 2,000901 | 19,9982 | 0,9909 |
+| 4 | TCP | 0,144034 | échec | 0,164727 | 40 | 2,000626 | 19,9877 | 0,9956 |
+
+L'essai 1 a passé l'assertion, puis le post-traitement diagnostique a
+échoué sur `KeyError: limited_by` : ce champ est omis quand il est vide
+par le contrat de sérialisation Pollen. Seuls la sortie de test arrondie
+et cet incident sont conservés ; la télémétrie de cet essai a été perdue.
+Le diagnostic a été corrigé puis a exécuté **uniquement les trois essais
+restants**, sans rejouer le premier ni ajouter d'essai favorable.
+
+Sur les trois essais instrumentés, la consigne active observée dure
+2,002 / 1,939 / 2,021 s à la résolution de l'abonnement 10 Hz ; l'intégrale
+trapézoïdale de `applied.vx` sur les états vaut 0,3979 / 0,3988 / 0,4000 m.
+Cette intégrale est une **consigne filtrée**, pas une vitesse physique.
+Les intervalles d'émission maximaux sont 50,96 / 50,93 / 50,82 ms,
+aucun deadman actif ni danger observé. Boucle finale 49,998–50,049 Hz,
+compteur missed stable à 1. Hauteur physique initiale 0,11548–0,11563 m,
+gravité z -0,99995 à -0,99980 ; yaw initial 0,050 / -0,210 / -0,366 rad.
+Les positions, phases et graines ne sont pas réinitialisées.
+
+**Limites et conclusion.** Le temps simulé avance approximativement au
+temps réel (2,28–2,30 s physiques pour 2,29–2,30 s réelles entre lectures).
+Les échecs ne montrent donc pas de ralentissement massif de la physique
+ou de raccourcissement des 2 s de commande. Les écarts physique/odométrie
+observés valent environ 2–4 cm ; l'essai 2 reste aussi sous le seuil physique.
+Ce n'est pas une preuve d'erreur d'odométrie isolée : les snapshots ne sont
+pas synchrones. L'âge de réception des états aux contrôles vaut
+53 / 68 / 96 ms, celui des lectures physiques 12 / 3 / 12 ms ; les RTT de
+lecture sont < 0,70 ms. Un rapprochement temporel approximatif hors ligne,
+par l'offset monotone minimal état/réception puis le capteur le plus proche,
+donne 0,144810 / 0,173107 / 0,161372 m physiques. L'alignement initial
+n'est pas exact, et les latences ne sont pas des horodatages internes.
+L'odométrie Pollen est un estimateur de contact (pas le `trunk` MuJoCo) ;
+aucune cause racine de locomotion/estimation ni correction S9 légitime
+n'est démontrée. Aucun changement de Pollen, de paramètres de politique,
+de fixture, de durée, de seuil ou d'attente de mesure.
+
+La campagne est suivie d'une **unique** commande complète, sans sélection :
+
+```sh
+ROBOT_LINK=webrtc://192.0.2.1:8443 COINCOIN_TEST_SIM=1 \
+  uv run pytest --no-cov -m sim -s -rs
+```
+
+Résultat : **4 passed, 3 failed, 354 deselected, zéro saut, 53,22 s**
+(avant l'ajout de la dernière régression CLI/TCP hors sim).
+S1 : marche **0,128577 m** (échec), tour **89,584°**, regard **0,310 rad**.
+S9 : marche **0,125208 m** (échec), tour **94,625°**, regard
+**0,145847 rad** (échec au seuil inchangé > 0,2 après 0,6 s).
+Ce nouvel échec de regard est conservé, sans nouvelle tentative ciblée
+ni conclusion causale. RTT health p50/p95 **0,90/1,72 ms** ; cadence
+observée **19,75 Hz**, **50 updates / 2,481 s**, nominal 20 Hz,
+intervalle médian **57,02 ms**, gigue absolue p95 **31,63 ms**, aucun
+deadman pendant les mouvements mesurés. Critère sim toujours ouvert.
+
+Q10 revalidée avec le correctif : `coincoin-cli raw robot.health` permis
+depuis WSL et le bridge Docker reconstruit renvoie `ok:true`, robot healthy.
+HTTP `/healthz` répond 200 sur 8779, seul mapping `127.0.0.1:8779->8765/tcp`,
+sans host networking ni nouveau mouvement Docker. Aucun appel interdit
+n'a été envoyé à la simulation ; les refus restent testés sur faux pair.
+
+Nettoyage : relais fermé dans `finally`, Compose `coincoin-s9` supprimé,
+PID S9 74367/74458/74465/74472/74477/74621 inspectés individuellement
+avant `setsid --wait timeout 45s setpriv --no-new-privs ... duck-sim down
+</dev/null`. Tous disparus ; ports 7911/8001/7930/7931/8443/8080/8779 libres,
+aucun conteneur S9 restant. Verrou créé atomiquement, propriétaire S9 daté,
+libéré après vérification ; aucune ressource étrangère touchée. Scripts,
+JSON anonymisés des essais 2–4, incident de l'essai 1 et journaux pytest sont
+préservés dans les artefacts de session `s9-groundtruth-*` et
+`s9-resume-{sim,quality}.log`.
 
 ### Simulation WSL
 

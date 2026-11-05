@@ -688,8 +688,8 @@ Le journal ne reçoit jamais les octets ni l'URL de données de l'image :
 
 ## ADR-006 — WebRTC LAN pour le robot, TCP relay inchangé
 
-Date : 2026-11-04. Statut : Q10 acceptée ; acceptation S9 bloquée sur la
-distance de marche stricte de 2 s (après correction de revue).
+Date : 2026-11-04, actualisée le 2026-11-05. Statut : Q10 acceptée ;
+acceptation S9 bloquée sur les scénarios sim stricts.
 
 **Contexte.** S9 doit piloter le `mediad` réel avant la réception du robot,
 réutiliser les contrats JSON-RPC de S1 et vérifier l'accessibilité ICE depuis
@@ -720,6 +720,20 @@ exécution autonome dans le dépôt. Un refus est explicite (`-32601`) sans
 journaliser de paramètres. Tests intégrés sur faux pair pour les méthodes
 interdites et permises, et CLI/TCP/relais inchangés. Ce contrôle n'est pas un
 gouverneur de paramètres et ne sécurise pas les autres clients de `mediad`.
+
+**Dernière revalidation, 2026-11-05.** Qualité complète verte :
+355 passed, 7 skips hors opt-in, 91,52 %. Commande sim complète stricte :
+4 passed, 3 failed, aucun saut ; marches S1/S9 0,128577/0,125208 m
+et regard S9 0,145847 rad en échec. Quatre marches supplémentaires
+préétablies donnent une réussite et trois échecs ; la télémétrie du
+premier essai est perdue après erreur de post-traitement, sans répétition.
+Les trois autres associent odométrie et lectures physiques MuJoCo :
+temps simulé proche du temps réel et écarts de déplacement de 2–4 cm,
+avec limites explicites de synchronisation. Aucune cause racine ni
+correction S9 démontrée ; seuils, durées et Pollen inchangés. Le critère
+sim reste ouvert, sans effacer les preuves précédentes. Q10 revalidée par
+un RPC permis depuis WSL et le bridge Docker ; aucun appel interdit sur
+sim/robot. Toutes les mesures et le nettoyage sont dans `webrtc.md`.
 
 **Mesures rectifiées après revue.** Base `main` `0597380`. La marche est
 revenue à 2 s pour les deux scénarios, sans modifier le seuil > 0,15 m ;

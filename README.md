@@ -382,9 +382,11 @@ ni l'isolation réseau, et une CLI `raw` n'est pas une API sûre pour un modèle
 
 **Acceptation S9 encore bloquée :** les scénarios de référence sont rétablis
 sans adaptation (marche 0,2 m/s pendant 2 s, seuil > 0,15 m ; regard maintenu
-1 s et contrôlé après 0,6 s). La commande complète a produit 6 réussites et
-1 échec de distance ; dix marches comparatives donnent 2 réussites et
-8 échecs malgré une durée/cadence d'envoi correcte. Ne pas considérer les
+1 s et contrôlé après 0,6 s). La dernière commande complète (2026-11-05)
+a produit **4 réussites et 3 échecs sans saut** : marches S1/S9
+0,128577/0,125208 m et regard S9 0,145847 rad. Les campagnes comparatives
+et lectures physiques/odométriques restent consignées, sans cause S9
+corrigeable démontrée ni sélection de réussite. Ne pas considérer les
 anciennes mesures à 3 s comme preuve d'acceptation. Détails et toutes les
 mesures dans `docs/webrtc.md`.
 

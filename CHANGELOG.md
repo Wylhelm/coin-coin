@@ -196,6 +196,17 @@
 - Régressions sur faux pair : familles interdites, toutes les méthodes
   permises et contrats CLI ; CLI/TCP/relais et exécution stdlib autonome
   préservés. Aucun appel interdit vers une simulation ou un robot.
+- Qualité complète verte : **355 passed, 7 skipped hors opt-in**, couverture
+  **91,52 %**, Ruff/format/Pyright verts. Q10 WSL et bridge Docker revalidée.
+- **Simulation toujours bloquée** : dernière commande complète **4 passed,
+  3 failed, zéro saut**, marches S1/S9 0,128577/0,125208 m et regard S9
+  0,145847 rad. Nouvelle campagne bornée avec lectures physiques MuJoCo :
+  trois échecs sur quatre marches ; télémétrie du premier essai perdue
+  après erreur de post-traitement, résultat arrondi conservé sans répétition.
+  Temps physique proche du temps réel et écarts physique/odométrie mesurés,
+  sans cause racine ni correction légitime S9 démontrée. Tous paramètres
+  et critères conservés, mesures et limites dans `docs/webrtc.md`.
+- Nettoyage vérifié des seuls processus S9, relais, Compose et verrou caméra.
 
 ## S9 — 2026-11-04
 
