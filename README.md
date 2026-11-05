@@ -109,12 +109,18 @@ Le stockage d'images est désactivé (politique `LOG_IMAGES=false`, sans opt-in)
 
 ### Caméra sur les ressources S7
 
-Validation réelle encore bloquée : lors de l'essai du 2026-11-05,
-`webrtcsink` a signalé un échec de découverte codec (`nvh264enc`,
-`Selected preset not supported`). La sim a été arrêtée sans modifier Pollen ;
-aucune image réelle ni validation Compose n'est revendiquée.
-Attention : le wrapper `duck-sim ctl frame` de cet essai visait le socket
-par défaut `/run/mediad/media.sock`, pas celui de l'instance S7.
+Caméra réelle validée avant rebase le 2026-11-05 : snapshot explicite sur le
+socket S7 sous délai de 2 s, puis test via le relais S7 : JPEG 360x640,
+12 218 octets, vérifié dans un dossier temporaire puis supprimé.
+L'erreur de découverte codec `webrtcsink` concernait le streaming, pas le
+snapshot. Le wrapper `duck-sim ctl frame` visait à tort le socket `/run` par
+défaut ; aucune correction Pollen/GStreamer n'a été effectuée.
+Suite sim complète pré-rebase : **3 réussis, 1 échec** (marche 0,137 m,
+seuil partagé > 0,15 m inchangé ; tour 91,007°, regard 0,796 rad).
+Après rebase sur `2298ffb` : ruff/format/Pyright verts, **508 réussis,
+6 ignorés**, couverture **91,88 %**, Node **6/6**. Aucun nouvel essai sim
+post-rebase ; contre-vérification confiée au coordonnateur.
+Compose et essai vocal humain restent non validés.
 
 Depuis WSL, réserver d'abord le verrou caméra partagé (ne jamais effacer celui
 d'une autre session ; attendre 60 s entre tentatives, maximum 2 h) :
@@ -133,7 +139,16 @@ export GST_PLUGIN_PATH="/opt/gst-plugins-rs/lib/gstreamer-1.0${GST_PLUGIN_PATH:+
 setpriv --no-new-privs "$HOME/projects/microduck/microduck/scripts/duck-sim"
 ```
 
-Vérifier `duck-sim ctl frame` avant de continuer. En cas d'échec de `mediad`,
+Vérifier le snapshot sur le socket de l'instance, sans utiliser le défaut `/run` :
+
+```sh
+timeout 2s "$HOME/projects/microduck/microduck/target/debug/robotctl" \
+  --media-socket "$DUCK_SIM_STATE/duck-a-frame.sock" frame \
+  --output "$DUCK_SIM_STATE/frame-check.uyvy"
+rm "$DUCK_SIM_STATE/frame-check.uyvy"
+```
+
+En cas d'échec du snapshot ou d'arrêt de `mediad`,
 arrêter et signaler le blocage, sans changer Pollen.
 Dans un autre terminal S7, charger `.env` sans l'afficher (`set -a; source .env;
 set +a`), redécouvrir `ip -4 -o addr show dev eth0`, puis lancer :

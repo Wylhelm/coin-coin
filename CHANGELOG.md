@@ -40,8 +40,12 @@
   Test sim caméra opt-in avec sauvegarde temporaire puis suppression.
 - Régression vrai `App` du tour remplacé : 3 échecs avant correction,
   6 cas verts après (capture, préparation et verrou d'envoi, avec témoins).
-- Qualité : 486 tests réussis, 6 ignorés ; caméra réelle non validée.
-  Essai S7 arrêté sur erreur codec mediad/webrtcsink ; ressources nettoyées.
+- Après rebase S6 (`2298ffb`) : ruff/format/Pyright verts, 508 tests réussis,
+  6 ignorés, couverture 91,88 %, Node 6/6.
+- Caméra réelle pré-rebase validée : JPEG 360x640, 12 218 octets, sauvegarde
+  temporaire vérifiée puis supprimée. Échec streaming distinct du snapshot.
+  Suite sim : 3 réussis, 1 échec (marche 0,137 m sous le seuil partagé de
+  0,15 m, inchangé). Ressources nettoyées ; contre-vérification sim en attente.
 
 ## S5 — Correction de la course d'annonce — 2026-11-05
 
