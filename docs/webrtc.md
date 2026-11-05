@@ -194,6 +194,70 @@ cause de transport. Aucune cause logicielle corrigeable n'est démontrée ;
 le seuil reste non fiable. Aucun changement de firmware, politique, durée,
 seuil ou attente de mesure pour obtenir une passe favorable.
 
+### Seconde investigation : transports TCP et WebRTC réels
+
+Comparaison supplémentaire autorisée, sans changement logiciel, sur le
+commit `d0a6643` et la base `0597380`. Une nouvelle simulation caméra S9
+utilise les mêmes scène `backlash`, ports 7911/8001, `mediad` 8443/8080,
+rang logiciel et verrou exclusif. Aucun Compose n'est lancé. Un relais
+`DuckRelay` de S1 est lancé dans le processus du diagnostic sur
+`192.0.2.1:7930/7931`, pointant uniquement sur les sockets de `ds-s9`.
+Le jeton vient du `.env`, sans affichage ni argument de processus.
+`TcpLink` joint ce relais ; `WebRtcLink` joint réellement `mediad` sur 8443.
+Les dix essais précédents comparaient les fonctions S1/S9 **toutes deux
+sur WebRTC** ; seuls les huit essais ci-dessous comparent les transports.
+
+Ordre préétabli équilibré : TCP, WebRTC, WebRTC, TCP, TCP, WebRTC, WebRTC,
+TCP. Chaque essai recrée connexion et gouverneur, exécute STOP + 2 s de
+repos, vérifie `enabled`, `homed`, mode `walk`, `applied < 0,01`, sécurité
+saine, puis la préparation de fixture STOP + 0,3 s. La fonction de test S1
+existante est appelée **sans modification**, avec le tuple
+`(governor, link, clock)` : `move(0.2,0,0,2)`, attente de fin, attente 0,3 s,
+distance projetée > 0,15 m et consigne nulle. Le clock diagnostique capture
+l'état exactement au retour de cette attente de 0,3 s : contrairement aux
+premiers diagnostics, les distances brutes ci-dessous ne sont pas relues
+après l'attente supplémentaire d'amortissement.
+
+| Ordre | Transport | Distance au contrôle (m) | > 0,15 m | Moves | Premier move → STOP (s) | Cadence envoyée (Hz) | Consigne active observée (s) |
+|---|---|---:|---|---:|---:|---:|---:|
+| 1 | TCP | 0,150465 | réussite | 40 | 2,000930 | 19,990 | 2,003 |
+| 2 | WebRTC | 0,150838 | réussite | 40 | 2,000309 | 19,988 | 1,959 |
+| 3 | WebRTC | 0,143790 | échec | 40 | 2,001096 | 19,993 | 2,001 |
+| 4 | TCP | 0,151537 | réussite | 40 | 2,000201 | 19,991 | 1,997 |
+| 5 | TCP | 0,170451 | réussite | 40 | 2,000389 | 19,989 | 1,997 |
+| 6 | WebRTC | 0,159113 | réussite | 40 | 2,000627 | 19,997 | 2,077 |
+| 7 | WebRTC | 0,161683 | réussite | 40 | 2,000307 | 19,992 | 2,022 |
+| 8 | TCP | 0,143836 | échec | 40 | 2,000369 | 19,991 | 2,078 |
+
+Instrumentation identique au niveau de `JsonRpcConnection` : horodatage de
+`writer.write` pour les notifications `move` et la requête STOP. C'est une
+cadence d'émission au transport, pas une mesure d'arrivée réseau. L'intervalle
+maximal d'émission est de 50,863–50,968 ms en TCP, de 50,896–70,400 ms en
+WebRTC (le maximum de 70,400 ms concerne l'essai 7, qui passe). Les états
+`robot.state` sont conservés sans changement de fréquence de fixture
+(10 Hz), avec leur horodatage robot, la consigne et l'EMA appliquée. Les
+durées actives observées ont cette résolution d'abonnement ; elles ne
+mesurent pas la durée interne d'application avec précision milliseconde.
+Le pic de `applied.vx` atteint environ 0,2 pour chaque essai, aucun
+`deadman` pendant la consigne active, consigne finale nulle. Aucun état de
+chute/prise en main ou risque de collision observé.
+
+Conditions initiales comparables au repos, mais **non identiques** : hauteur
+0,11707–0,11783 m, gravité z -0,99989 à -0,99967, yaw de 0,299 à -0,893 rad ;
+pas de reset de position, phase de politique ou graine physique entre essais.
+Le coût de connexion WebRTC allonge aussi le temps entre deux essais.
+La boucle robot en fin d'essai varie de 48,985 à 50,051 Hz, compteur
+`missed` à zéro sur les huit essais. Pas de changement de code Pollen ou TCP.
+
+**Résultat :** TCP **3/4 réussites**, plage 0,143836–0,170451 m ; WebRTC
+**3/4 réussites**, plage 0,143790–0,161683 m. Le critère strict échoue dans
+les deux transports malgré les durées/cadences correctes ; cette petite
+série ne démontre ni une régression propre à WebRTC ni l'équivalence
+statistique des transports. Aucune cause logicielle démontrée à corriger
+dans S9. Le critère d'acceptation reste ouvert, sans nouvelle tentative
+sélectionnée ou dérogation. Les huit mesures, états et script diagnostique
+sont préservés dans les artefacts de session.
+
 Une commande `coincoin-cli status` depuis WSL a aussi renvoyé un état debout,
 mode `walk`, activé et healthy.
 
@@ -227,3 +291,8 @@ Compose `coincoin-s9` a été arrêté; la simulation est arrêtée avec le scri
 Pollen en mode sans TTY et `setpriv --no-new-privs`. Les PID de chaque daemon
 ont été vérifiés dans leur état S9 et les ports 7911, 8001, 8443, 8080 et 8779
 libérés. Seul le verrou caméra possédé par S9 a été supprimé.
+Après la comparaison TCP/WebRTC, les six PID de la nouvelle simulation
+(52648, 52727, 52734, 52743, 52757, 52977) ont été inspectés puis arrêtés
+par le même `down` protégé. Le relais du diagnostic a été fermé dans son
+`finally` ; absence de listeners 7930/7931 et de tous les ports S9 vérifiée.
+Le verrou portant le propriétaire S9 a ensuite été libéré.

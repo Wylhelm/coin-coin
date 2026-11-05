@@ -721,6 +721,15 @@ comparatives supplémentaires donnent 2 réussites et 8 échecs malgré
 aucune cause logicielle n'est démontrée. La preuve antérieure à 3 s est
 retirée comme critère d'acceptation.
 
+La comparaison finale des transports réels sur la même sim caméra, avec
+ordre équilibré et scénario inchangé, donne TCP 3/4 réussites
+(0,143836–0,170451 m) et WebRTC 3/4 (0,143790–0,161683 m). Chaque essai
+émet 40 moves avec STOP après 2,000–2,001 s, sans deadman. Le seuil reste
+non fiable dans les deux transports. Conditions au repos comparables,
+sans reset physique ou de phase ; cette petite série ne prouve pas une
+équivalence statistique ni une cause, et ne justifie aucun changement
+logiciel spéculatif. Le diagnostic et ses limites sont dans `webrtc.md`.
+
 RTT `robot.health` p50/p95 0,51/0,65 ms ; nominal 20 Hz, cadence observée
 **19,77 Hz** calculée sur 50 changements de consigne pendant 2,479 s ;
 intervalle p50 42,17 ms et gigue absolue p95 29,30 ms, aucun `deadman`.

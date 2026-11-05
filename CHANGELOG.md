@@ -208,6 +208,12 @@
   zéro saut** (marche S9 0,143831 m). Dix comparaisons supplémentaires,
   toutes consignées : 2 réussites, 8 échecs, 40 envois par essai et STOP
   après 2,000–2,001 s. Les anciennes preuves à 3 s ne valent pas acceptation.
+- Diagnostic final TCP/WebRTC sur la même sim caméra, scénario strict
+  inchangé et ordre équilibré préétabli : TCP 3/4 réussites
+  (0,143836–0,170451 m), WebRTC 3/4 (0,143790–0,161683 m). 40 moves par
+  essai, STOP après 2,000–2,001 s, aucun deadman. Les huit observations
+  sont conservées ; aucune cause logicielle ni régression propre à WebRTC
+  démontrée, critère toujours bloqué. Relais 7930/7931 et sim S9 nettoyés.
 - Cadence observée calculée, non constante : **19,77 Hz**, 50 updates sur
   2,479 s ; cadence d'émission nominale 20 Hz. RTT p50/p95 0,51/0,65 ms,
   intervalle p50 42,17 ms, gigue absolue p95 29,30 ms ; aucun deadman.
