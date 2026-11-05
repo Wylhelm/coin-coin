@@ -3,7 +3,7 @@
 import asyncio
 import base64
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from urllib.parse import quote
 
 import aiohttp
@@ -289,8 +289,14 @@ class RealtimeSession:
             }
         )
 
-    async def add_image(self, jpeg: bytes, question: str | None = None) -> None:
-        """Append a user image; the tool-turn owner schedules the response."""
+    async def add_image(
+        self,
+        jpeg: bytes,
+        question: str | None = None,
+        *,
+        is_current: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Append a current user image; the tool-turn owner schedules the response."""
         content = [
             {
                 "type": "input_image",
@@ -299,12 +305,23 @@ class RealtimeSession:
         ]
         if question:
             content.append({"type": "input_text", "text": question})
-        await self._send(
-            {
+        async with self._send_lock:
+            if is_current is not None and not is_current():
+                return False
+            socket = self._socket
+            if socket is None or socket.closed:
+                raise RealtimeConnectionError("Realtime WebSocket is not connected")
+            event = {
                 "type": "conversation.item.create",
                 "item": {"type": "message", "role": "user", "content": content},
             }
-        )
+            try:
+                await socket.send_json(event)
+            except (aiohttp.ClientError, RuntimeError) as exc:
+                raise RealtimeConnectionError(
+                    f"Realtime send failed: {type(exc).__name__}"
+                ) from None
+        return True
 
     async def close(self) -> None:
         await self._close_transport()

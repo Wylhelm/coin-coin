@@ -12,6 +12,7 @@ from PIL import Image
 
 from coincoin.app import App
 from coincoin.journal import Journal
+from coincoin.realtime.events import ResponseStarted, ToolCall
 from coincoin.realtime.session import RealtimeSession
 from coincoin.realtime.tools.vision import NO_CAMERA, install_tools
 from coincoin.robot.frames import FrameError, fetch_frame
@@ -176,7 +177,7 @@ def offline(tmp_path):
 async def test_camera_freshness_and_missing(offline, monkeypatch, ages, ok, calls):
     images = []
 
-    async def add_image(self, jpeg, question=None):
+    async def add_image(self, jpeg, question=None, *, is_current=None):
         images.append(jpeg)
 
     monkeypatch.setattr(RealtimeSession, "add_image", add_image)
@@ -203,7 +204,7 @@ async def test_invalid_arguments_do_not_capture(offline, arguments):
 async def test_no_late_image_after_interruption(offline, change, monkeypatch):
     images = []
 
-    async def add_image(self, jpeg, question=None):
+    async def add_image(self, jpeg, question=None, *, is_current=None):
         images.append(jpeg)
 
     monkeypatch.setattr(RealtimeSession, "add_image", add_image)
@@ -229,3 +230,69 @@ async def test_no_late_image_after_interruption(offline, change, monkeypatch):
         if change == "timeout":
             assert result["reason"] == NO_CAMERA
     assert not images
+
+
+@pytest.mark.parametrize("stage", ["capture", "prepare", "send"])
+@pytest.mark.parametrize("replace_response", [False, True])
+async def test_real_app_rejects_superseded_vision_turn(
+    offline, monkeypatch, stage, replace_response
+):
+    app = offline
+    app.state = State(Mode.AWAKE, speaking=True, response_active=True)
+    app._active_response_id = "old-response"
+    session = app._session
+    assert session is not None
+    sent = []
+
+    class Socket:
+        closed = False
+
+        async def send_json(self, event):
+            sent.append(event)
+
+        async def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(session, "_socket", Socket())
+    link = CameraLink([0])
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    if stage == "capture":
+        link.wait = True
+        entered, release = link.blocked, link.release
+    elif stage == "prepare":
+        original = asyncio.to_thread
+
+        async def prepare(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(asyncio, "to_thread", prepare)
+    else:
+        await session._send_lock.acquire()
+    install_tools(app, link)
+    try:
+        await app._handle_realtime_event(
+            ToolCall(call_id="capture-old", name="see", arguments="{}", response_id="old-response")
+        )
+        if stage == "send":
+            await _until(lambda: bool(session._send_lock._waiters))
+        else:
+            await asyncio.wait_for(entered.wait(), 2)
+        if replace_response:
+            await app._handle_realtime_event(ResponseStarted(response_id="new-response"))
+        if stage == "send":
+            session._send_lock.release()
+        else:
+            release.set()
+        await asyncio.wait_for(asyncio.gather(*tuple(app._tool_tasks)), 3)
+        assert app._tool_turn_valid(app._tool_turns["old-response"]) is not replace_response
+        assert len(sent) == (0 if replace_response else 1)
+        if sent:
+            assert sent[0]["item"]["content"][0]["type"] == "input_image"
+    finally:
+        if session._send_lock.locked():
+            session._send_lock.release()
+        release.set()
+        await app.stop()

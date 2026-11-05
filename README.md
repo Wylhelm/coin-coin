@@ -101,7 +101,9 @@ JPEG de largeur au plus 640 px et taille au plus 150 000 octets.
 Sans caméra, l'outil répond « je n'ai pas d'yeux en ce moment ».
 L'image et la question éventuelle forment un message utilisateur Realtime ;
 le résultat d'outil précède l'unique continuation du lot S5. L'annulation,
-le sommeil et le remplacement de session empêchent l'envoi d'une capture orpheline.
+le sommeil et le remplacement de session ou de réponse empêchent l'envoi d'une
+capture orpheline. Le tour est revérifié après préparation et sous le verrou
+d'envoi, juste avant de transmettre le message au WebSocket.
 Le journal garde l'appel, la taille et la latence, jamais le JPEG ni sa base64.
 Le stockage d'images est désactivé (politique `LOG_IMAGES=false`, sans opt-in).
 

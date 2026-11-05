@@ -33,10 +33,13 @@
 - Message utilisateur Realtime GA `input_image` JPEG + `input_text` facultatif ;
   résultat d'outil et continuation unique conservés dans le lot S5.
 - JPEG borné à 640 px de large et 150 000 octets, journal sans pixels/base64,
-  interruption et remplacement de session protégés.
+  interruption, remplacement de session et remplacement de réponse protégés,
+  y compris après préparation et attente du verrou d'envoi.
 - Tests de barres UYVY et rotations, compression d'images bruitées, vrai relais
   vers faux socket caméra, faux Realtime, caméra absente/périmée et annulation.
   Test sim caméra opt-in avec sauvegarde temporaire puis suppression.
+- Régression vrai `App` du tour remplacé : 3 échecs avant correction,
+  6 cas verts après (capture, préparation et verrou d'envoi, avec témoins).
 
 ## S5 — Correction de la course d'annonce — 2026-11-05
 

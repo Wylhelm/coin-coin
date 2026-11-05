@@ -46,6 +46,23 @@ def install_tools(app: App, link: RobotLink) -> None:
         session = app._session
         if session is None or not app.active:
             return {"ok": False, "reason": "La conversation est fermee"}
+        response_id = app._active_response_id
+        generation = app._session_generation
+        turn = app._tool_turns.get(response_id)
+
+        def is_current() -> bool:
+            return (
+                app._session is session
+                and app.active
+                and app._session_generation == generation
+                and app._active_response_id == response_id
+                and (turn is None or app._tool_turn_valid(turn))
+            )
+
+        def superseded() -> dict[str, Any]:
+            app.journal.write("vision", operation="discarded", reason="superseded_turn")
+            return {"ok": False, "reason": "La conversation a change pendant la capture"}
+
         started = time.monotonic()
         try:
             for attempt in range(2):
@@ -60,9 +77,10 @@ def install_tools(app: App, link: RobotLink) -> None:
         except (FrameError, LinkDown, JsonRpcError, OSError, TimeoutError, ValueError) as exc:
             app.journal.write("error", operation="see", error_type=type(exc).__name__)
             return {"ok": False, "reason": NO_CAMERA}
-        if app._session is not session or not app.active:
-            return {"ok": False, "reason": "La conversation a change pendant la capture"}
-        await session.add_image(jpeg, question)
+        if not is_current():
+            return superseded()
+        if await session.add_image(jpeg, question, is_current=is_current) is False:
+            return superseded()
         app.journal.write(
             "vision",
             image_bytes=len(jpeg),

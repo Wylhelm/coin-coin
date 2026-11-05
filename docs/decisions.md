@@ -675,5 +675,13 @@ une seule nouvelle capture. La compression travaille hors de la boucle asyncio,
 réduit la largeur puis la qualité et, si nécessaire, les dimensions pour garantir
 150 000 octets même sur une image bruitée très haute. L'identité de session et
 l'état actif sont revérifiés après ces attentes ; l'annulation est propagée.
+Le correctif de revue lie aussi la capture à la génération de session et au
+tour S5 d'origine : une nouvelle réponse dans la même session invalide l'image.
+`add_image` accepte un garde facultatif, évalué sous son verrou d'envoi avant
+`send_json`, et signale explicitement un rejet à l'outil. Les contrats App/S5
+restent inchangés. Une fois le message remis au transport, il n'est pas rétractable.
+Six régressions avec le vrai App couvrent capture, préparation et attente du
+verrou, chacune avec remplacement de réponse et témoin inchangé :
+3 échecs/3 succès avant correction, puis 6 succès.
 Le journal ne reçoit jamais les octets ni l'URL de données de l'image :
 `LOG_IMAGES=false` est la politique de cette version, sans stockage opt-in.
