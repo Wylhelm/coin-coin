@@ -486,3 +486,29 @@ fourni, et un résumé vide n'est pas envoyé. Un arrêt du service pendant la
 tâche de fond peut perdre ce résumé. L'API réelle reste non observée : la forme
 réelle de `/v1/models` et d'une complétion doit être consignée dans
 [`docs/openclaw.md`](openclaw.md) après la procédure de user.
+
+## ADR-008 — Mesurer la marche après stabilisation de l'odométrie
+
+**Statut : accepté.** `governor.wait_motion()` attend l'acquittement de
+`robot.stop`, pas la fin de l'amortissement de la vitesse appliquée. Le test
+de marche lisait l'odométrie après un délai fixe de 300 ms, puis vérifiait
+seulement ensuite `applied < 0,01`. Une trace instrumentée a observé
+`applied=0,2 m/s` au retour de `wait_motion()`, puis une décroissance jusqu'à
+moins de `0,01` environ 0,4 s plus tard, pendant que l'odométrie avançait et
+se stabilisait.
+
+**Décision.** Avant et après la commande inchangée `move(0.2, 0, 0, 2)`,
+attendre un état reçu depuis moins de 200 ms, une vitesse appliquée sous
+`0,01` sur chaque axe et deux écarts consécutifs entre mises à jour XY d'au
+plus 5 mm. La limite d'attente reste bornée à 1 s. Le test conserve le seuil strict
+`> 0,15 m`; il n'ajoute ni relance ni sélection d'essai.
+
+**Conséquences et limites.** Le test rapporte le déplacement odométrique
+stabilisé après une commande de 2 s, ce qui inclut la décélération après STOP ;
+il ne prétend pas interpoler la pose à l'instant exact `t=2,000 s`. Les
+lectures de corps MuJoCo et l'odométrie ne sont pas horodatées de façon
+synchronisée par le protocole actuel. Aucun changement de code Pollen, de
+politique, de vitesse, de durée ou de seuil n'est autorisé par cette décision.
+La campagne documentée a réussi 10 exécutions sur 10 (0,159–0,175 m) ; cela
+fiabilise ce contrôle odométrique sans constituer une mesure indépendante du
+corps physique.

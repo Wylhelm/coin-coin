@@ -130,6 +130,30 @@ Cela prive `sudo` de terminal de saisie ; ses vérifications privilégiées
 échouent, puis les PID utilisateur de S1 sont arrêtés normalement. Ne jamais
 tuer un processus par son nom. Tous les services S1 sont arrêtés à la livraison.
 
+## Test de marche simulée (SIMWALK)
+
+Le test `tests/sim/test_sim_motion.py::test_move_advances_more_than_fifteen_cm`
+garde sa consigne `move(0.2, 0, 0, 2)` et son seuil strict `> 0,15 m`.
+Il mesure maintenant l'odométrie après un état frais, `applied < 0,01` et
+deux écarts consécutifs entre mises à jour XY d'au plus 5 mm. Le retour de
+`wait_motion()` acquitte l'arrêt, mais ne signifie pas que l'EMA a déjà
+ramené la vitesse appliquée à zéro. Cette attente ne prolonge ni la consigne
+ni sa durée ; elle attend seulement la fin de la décélération et la
+stabilisation de la mesure. Aucun nouvel essai automatique n'est fait.
+
+Après avoir démarré la simulation et son relais comme ci-dessus, sans lancer
+Compose, lancer une exécution isolée avec :
+
+```sh
+COINCOIN_TEST_SIM=1 uv run pytest \
+  tests/sim/test_sim_motion.py::test_move_advances_more_than_fifteen_cm \
+  -s --no-cov
+```
+
+Le diagnostic, les dix exécutions consécutives consignées et leurs limites
+sont dans [docs/simwalk-motion.md](docs/simwalk-motion.md) et
+[docs/evidence/simwalk/final-motion-runs.txt](docs/evidence/simwalk/final-motion-runs.txt).
+
 ## Contrats robot pour S5 / S7 / S9
 
 - `TcpLink(url, frame_url=..., token=..., clock=..., on_up=..., on_down=...)`

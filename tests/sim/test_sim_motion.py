@@ -4,6 +4,7 @@ import asyncio
 import math
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic_settings import DotEnvSettingsSource
@@ -17,6 +18,33 @@ from coincoin.robot.tcp_link import TcpLink
 
 pytestmark = pytest.mark.sim
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+
+async def _wait_for_settled_odom(link: TcpLink, clock: SystemClock) -> dict[str, Any]:
+    previous_state: dict[str, Any] | None = None
+    previous_position: list[float] | None = None
+    stable_updates = 0
+    async with asyncio.timeout(1):
+        while stable_updates < 2:
+            state = link.state()
+            if state is not None and state is not previous_state:
+                previous_state = state
+                position = state["odom"]["position"]
+                applied = state["move"]["applied"]
+                if link.state_age() <= 0.2 and all(abs(value) < 0.01 for value in applied):
+                    if previous_position is not None:
+                        displacement = math.hypot(
+                            position[0] - previous_position[0],
+                            position[1] - previous_position[1],
+                        )
+                        stable_updates = stable_updates + 1 if displacement <= 0.005 else 0
+                    previous_position = position
+                else:
+                    previous_position = None
+                    stable_updates = 0
+            await clock.sleep(0.02)
+    assert state is not None
+    return state
 
 
 @pytest.fixture
@@ -52,21 +80,22 @@ async def sim(tmp_path: Path):
 
 async def test_move_advances_more_than_fifteen_cm(sim):
     governor, link, clock = sim
-    before = link.state()["odom"]
+    before_state = await _wait_for_settled_odom(link, clock)
+    before = before_state["odom"]
     assert (await governor.move(0.2, 0, 0, 2)).ok
     completed = await governor.wait_motion()
     assert completed is not None and completed.ok, completed
-    await clock.sleep(0.3)
-    after = link.state()["odom"]
+    after_state = await _wait_for_settled_odom(link, clock)
+    after = after_state["odom"]
     delta = [after["position"][i] - before["position"][i] for i in range(2)]
     forward = delta[0] * math.cos(before["yaw"]) + delta[1] * math.sin(before["yaw"])
-    print(f"move: before={before['position']} after={after['position']} forward_m={forward:.3f}")
+    print(
+        f"move: before={before['position']} after={after['position']} "
+        f"forward_m={forward:.3f} applied={after_state['move']['applied']}"
+    )
     assert forward > 0.15
-    assert link.state()["move"]["requested"] == [0, 0, 0]
-    async with asyncio.timeout(1):
-        while any(abs(value) >= 0.01 for value in link.state()["move"]["applied"]):
-            await clock.sleep(0.02)
-    assert all(abs(value) < 0.01 for value in link.state()["move"]["applied"])
+    assert after_state["move"]["requested"] == [0, 0, 0]
+    assert all(abs(value) < 0.01 for value in after_state["move"]["applied"])
 
 
 async def test_turn_ninety_degrees_within_fifteen(sim):

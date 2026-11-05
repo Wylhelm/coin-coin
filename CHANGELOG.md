@@ -18,6 +18,16 @@
 - Validation : ruff, format et Pyright verts ; 415 tests réussis, 5 ignorés
   (3 sim, 2 assets VAD absents du worktree), couverture 91 % ; AudioWorklet 6/6.
 
+## SIMWALK — Mesure du test de marche — 2026-11-05
+
+- Le test de marche attend maintenant un état odométrique frais et stabilisé
+  après STOP, avec `applied < 0,01`; la consigne de 2 s, sa vitesse de
+  0,2 m/s et le seuil strict `> 0,15 m` sont inchangés.
+- Le rapport et les dix exécutions consécutives non sélectionnées sont
+  consignés dans `docs/simwalk-motion.md` et `docs/evidence/simwalk/`.
+- Validation finale : commande qualité complète verte, 387 tests réussis,
+  5 ignorés, couverture 90,91 % ; campagne sim 10/10 réussites.
+
 ## S4 — Conversation Realtime — 2026-11-05
 
 - Ajout du client WebSocket GA `/v1/realtime`, des évènements normalisés, du

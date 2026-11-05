@@ -1,0 +1,162 @@
+SIMWALK final-version motion campaign; 10 sequential invocations, no pytest reruns.
+Branch: session/SIMWALK
+Base commit (test fix in worktree during campaign): 051eb33b246c7ecbae4e5239f0a88abf9e8c1f07
+Test source SHA-256: 5b8b41d51faa09fd3b77129191bb4b28ee407f84e791f0609f3bc627ad3b6d3b
+Test: tests/sim/test_sim_motion.py::test_move_advances_more_than_fifteen_cm
+Command per trial: COINCOIN_TEST_SIM=1 uv run pytest <test> -s --no-cov
+
+===== PRE-CAMPAIGN SMOKE (same test source, excluded from the 10-run series) =====
+tests/sim/test_sim_motion.py move: before=[0.38242323121308475, -0.09364243605095984, 0.11723110629179873] after=[0.5144775169501448, -0.18948731662596413, 0.11749102006511877] forward_m=0.161 applied=[0.0003094850097583019, 0.0, 0.0]
+1 passed in 3.21s
+
+===== TRIAL 01/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[0.5175386558051082, -0.19316580956535878, 0.11738701453097537] after=[0.6352822375741032, -0.32051105092309473, 0.11762296863374518] forward_m=0.173 applied=[0.00048357032774734674, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.14s ===============================
+TRIAL 01 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 02/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[0.6354163510978749, -0.32054746962107317, 0.11751600662095599] after=[0.745062746341511, -0.45004093983930915, 0.11764075352738308] forward_m=0.169 applied=[0.0003094850097583019, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.32s ===============================
+TRIAL 02 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 03/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[0.744754659752995, -0.4503008328068643, 0.11750990978361059] after=[0.8522046400749677, -0.581332809447904, 0.11753126276950049] forward_m=0.169 applied=[0.0003094850097583019, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.27s ===============================
+TRIAL 03 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 04/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[0.8520114103266956, -0.5813343701456177, 0.11757396325242717] after=[0.9615462402576678, -0.7187977252618607, 0.11755114567292237] forward_m=0.175 applied=[0.0007555786371052293, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.18s ===============================
+TRIAL 04 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 05/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[0.961322128635231, -0.7189270394584241, 0.11755608185259418] after=[1.0529269750359787, -0.8600969624108948, 0.11749323494592792] forward_m=0.168 applied=[0.0003868562621978774, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.25s ===============================
+TRIAL 05 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 06/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[1.0534821430171086, -0.8599802403491008, 0.11757697201570207] after=[1.1265230378749738, -1.0058810822873943, 0.11749175097812585] forward_m=0.163 applied=[0.0003094850097583019, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.30s ===============================
+TRIAL 06 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 07/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[1.1267544194355816, -1.0061716032659496, 0.11748544354652417] after=[1.2074066294050194, -1.1436171626513332, 0.11761213364648555] forward_m=0.159 applied=[0.0003094850097583019, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.24s ===============================
+TRIAL 07 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 08/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[1.2075553404379247, -1.1437090787446376, 0.11759222625333635] after=[1.2976845770288268, -1.2819093486002349, 0.11760919572011891] forward_m=0.165 applied=[0.0006044629096841834, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.21s ===============================
+TRIAL 08 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 09/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[1.2979034378955432, -1.281894009909713, 0.11752861356039183] after=[1.3773065886165552, -1.4286467998005805, 0.11761221299448142] forward_m=0.166 applied=[0.00048357032774734674, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.12s ===============================
+TRIAL 09 RESULT: PASS (one passed, no skip)
+
+===== TRIAL 10/10 =====
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.2.0, pluggy-1.7.0
+rootdir: /home/user/projects/microduck/coin-coin-wt/SIMWALK
+configfile: pyproject.toml
+plugins: asyncio-1.4.1.post1, cov-7.1.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=function, asyncio_default_test_loop_scope=function
+collected 1 item
+
+tests/sim/test_sim_motion.py move: before=[1.37691991210162, -1.429468423184593, 0.11752909010224034] after=[1.4546066164343907, -1.5811892748264047, 0.11761956984670362] forward_m=0.170 applied=[0.0002475880078066415, 0.0, 0.0]
+.
+
+============================== 1 passed in 3.29s ===============================
+TRIAL 10 RESULT: PASS (one passed, no skip)
+
+CAMPAIGN: 10 distinct executions; failures/invalid=0; no run retried.
