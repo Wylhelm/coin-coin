@@ -9,8 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Load the master specification's settings from the environment and .env.
 
-    Realtime model/voice remain unset until S4. The S3 Vosk threshold is the
-    measured best-compromise setting, not a validated production threshold.
+    Realtime defaults are the model and voice exercised by S4's real trace.
+    The S3 Vosk threshold is the measured best-compromise setting, not a
+    validated production threshold.
     Empty credentials are valid for the offline foundation and its fake services.
     """
 
@@ -23,8 +24,8 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: SecretStr = SecretStr("")
-    openai_realtime_model: str = ""
-    openai_realtime_voice: str = ""
+    openai_realtime_model: str = "gpt-realtime-2.1"
+    openai_realtime_voice: str = "marin"
     openclaw_url: str = "http://127.0.0.1:18789"
     openclaw_token: SecretStr = SecretStr("")
     openclaw_agent: str = "coin-coin"

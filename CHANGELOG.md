@@ -1,5 +1,22 @@
 # Changelog
 
+## S4 — Conversation Realtime — 2026-11-05
+
+- Ajout du client WebSocket GA `/v1/realtime`, des évènements normalisés, du
+  VAD/transcription FR-EN, des outils asynchrones bornés et des hooks `Feature`
+  pour S5–S8. Les échanges ne démarrent qu'après le réveil local ; aucune
+  connexion robot n'est faite par la conversation.
+- Barge-in : progression et item audio capturés avant le flush navigateur,
+  puis annulation et troncature à la durée réellement jouée. Ajout du suivi
+  des transcriptions, de l'usage, de la latence VAD→premier audio joué, du
+  renouvellement anticipé de session et du résumé de reprise.
+- Trace réelle API enregistrée avant l'implémentation, avec audio de tonalité
+  non sensible, outil factice `ping` et annulation ; fixture plafonnée à 80 ms
+  d'audio et vérifiée sans clé. Modèle `gpt-realtime-2.1`, voix provisoire
+  `marin` (écoute humaine encore requise).
+- Ajout du faux serveur fixture-backed et des tests de conversation, sommeil,
+  reconnexion, renouvellement, journalisation, latence et barge-in.
+
 ## S2 — Flush borné — 2026-11-05
 
 - Après la borne initiale d'attente de l'acquittement, l'échéance totale de

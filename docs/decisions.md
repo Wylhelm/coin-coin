@@ -324,3 +324,51 @@ flux WebRTC sans recopier corrélation/état. S5 utilise le gouverneur, jamais
 la CLI `raw`. Les tests contre la simulation sont en opt-in explicite
 (`COINCOIN_TEST_SIM=1`) et lisent alors uniquement le `.env` du dépôt exécuté.
 La suite hors sim reste indépendante de tous les vrais secrets.
+
+## ADR-006 — Conversation vocale via Realtime WebSocket
+
+Date : 2026-11-05. Statut : implémenté ; validation vocale humaine en attente.
+
+**Contexte.** S4 doit fournir une conversation vocale bilingue et interruptible
+sans exposer de clé dans le navigateur, et enregistrer une trace réelle avant
+d'implémenter son client. L'identifiant ADR-004 étant déjà attribué à l'arrêt
+robot, cette décision prend le prochain numéro libre plutôt que de dupliquer
+ou renommer une décision existante.
+
+**Décision.** Utiliser l'API GA `wss://api.openai.com/v1/realtime` avec la clé
+uniquement côté serveur. La trace réelle, capturée avant l'implémentation du
+client, utilise le modèle `gpt-realtime-2.1`, la voix provisoire `marin`,
+l'audio PCM16 mono 24 kHz, la transcription d'entrée et un outil `ping`
+factice. Elle a confirmé ces événements serveur : `session.created`,
+`session.updated`, `input_audio_buffer.committed`,
+`conversation.item.added`, `conversation.item.done`,
+`conversation.item.input_audio_transcription.completed`,
+`response.created`, `response.function_call_arguments.delta`,
+`response.function_call_arguments.done`, `response.output_audio.delta`,
+`response.output_audio.done`, `response.output_audio_transcript.delta`,
+`response.output_audio_transcript.done`, `response.output_item.added`,
+`response.output_item.done`, `response.done` et
+`conversation.item.truncated`, ainsi que les événements de partie de contenu
+et de limite de débit. Le client reconnaît aussi les évènements VAD GA
+`input_audio_buffer.speech_started` et `input_audio_buffer.speech_stopped`,
+conformément à la documentation Realtime ; le WAV de trace utilisait un
+commit explicite et ne les a donc pas émis. Après un résultat d'outil, le
+client demande explicitement la réponse suivante. En interruption, il capture
+l'item et sa progression avant le flush, envoie `response.cancel`, puis tronque
+à la durée réellement jouée.
+
+La fixture `tests/fakes/fixtures/realtime_trace.jsonl` conserve les 77
+événements serveur de la trace ; la sortie audio est limitée à 80 ms et
+aucune trame micro, clé ou donnée personnelle n'y est enregistrée. L'interruption
+de la trace API a utilisé `audio_end_ms=0`, car aucun son n'était lu par le
+script ; cela confirme le protocole, pas le silence physique d'un haut-parleur.
+
+**Conséquences.** La session est ouverte uniquement après le réveil local ;
+aucun audio n'est envoyé en sommeil et la conversation n'appelle aucun outil
+robot. Les features ajoutent leurs outils, hooks et contextes d'instructions
+via `App` et la liste `FEATURES`. Une perte de connexion déclenche une
+reconnexion bornée ; une session est renouvelée une minute avant expiration
+avec un résumé de conversation court et non fiable injecté comme contexte.
+La voix `marin` est un choix de travail, pas une sélection humaine validée.
+FR/EN, le barge-in sous 500 ms et le retour en sommeil après 7 minutes restent
+à écouter/vérifier par user.

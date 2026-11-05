@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Coroutine
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 from aiohttp import WSMsgType, web
@@ -14,6 +14,7 @@ from aiohttp import WSMsgType, web
 from coincoin.audio.browser import BrowserAudio
 from coincoin.audio.resample import pcm16_to_float32
 from coincoin.audio.tone import find_tone_offset, make_tone
+from coincoin.config import Settings
 from coincoin.journal import Journal
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,6 +24,33 @@ _AUDIO = web.AppKey("browser_audio", BrowserAudio)
 _ECHO = web.AppKey("echo", bool)
 _TONE = web.AppKey("tone", bool)
 _TASKS = web.AppKey("background_tasks", set[asyncio.Task[None]])
+
+
+class Conversation(Protocol):
+    @property
+    def active(self) -> bool: ...
+
+    async def start(self) -> None: ...
+
+    async def stop(self) -> None: ...
+
+    async def stop_pressed(self) -> None: ...
+
+
+class _OfflineConversation:
+    active = False
+
+    async def start(self) -> None:
+        return
+
+    async def stop(self) -> None:
+        return
+
+    async def stop_pressed(self) -> None:
+        return
+
+
+_CONVERSATION = web.AppKey("conversation", Conversation)
 
 
 class _JournalState:
@@ -136,7 +164,11 @@ async def _ui_ws(request: web.Request) -> web.WebSocketResponse:
                 audio.acknowledge_flush(page, generation)
                 await websocket.send_json({"type": "flush_complete", "generation": generation})
         elif kind == "stop":
-            _spawn(request.app, audio.flush())
+            conversation = request.app[_CONVERSATION]
+            if conversation.active:
+                _spawn(request.app, conversation.stop_pressed())
+            else:
+                _spawn(request.app, audio.flush())
         else:
             await websocket.send_json({"type": "error", "message": "Unknown UI event"})
     await audio.disconnect_ui(page, websocket)
@@ -178,6 +210,9 @@ async def _tone_listener(audio: BrowserAudio, probe: _ToneProbe, journal: Journa
 
 
 async def _startup(app: web.Application) -> None:
+    conversation = app[_CONVERSATION]
+    if conversation is not None:
+        await conversation.start()
     if app[_ECHO]:
         _spawn(app, _echo_loop(app[_AUDIO]))
     if app[_TONE]:
@@ -187,6 +222,9 @@ async def _startup(app: web.Application) -> None:
 
 
 async def _cleanup(app: web.Application) -> None:
+    conversation = app[_CONVERSATION]
+    if conversation is not None:
+        await conversation.stop()
     tasks = tuple(app[_TASKS])
     for task in tasks:
         task.cancel()
@@ -218,14 +256,30 @@ def create_app(
     echo: bool = False,
     tone: bool = False,
     journal: Journal | None = None,
+    settings: Settings | None = None,
+    conversation: Conversation | None = None,
 ) -> web.Application:
-    """Create the S2 HTTP/WebSocket app without external service connections."""
+    """Create the HTTP/audio app; Realtime connects only after a local wake phrase."""
+    audio_io = audio if audio is not None else BrowserAudio()
+    effective_journal = journal
+    active_conversation = conversation
+    if conversation is None and settings is not None and not echo and not tone:
+        from coincoin.app import App
+
+        effective_journal = journal if journal is not None else Journal()
+        active_conversation = App(
+            settings,
+            audio_io,
+            effective_journal,
+            control=audio_io.send_control,
+        )
     app = web.Application()
-    app[_AUDIO] = audio if audio is not None else BrowserAudio()
+    app[_AUDIO] = audio_io
     app[_ECHO] = echo
     app[_TONE] = tone
-    app[_JOURNAL] = _JournalState(journal)
+    app[_JOURNAL] = _JournalState(effective_journal)
     app[_TASKS] = set()
+    app[_CONVERSATION] = active_conversation or _OfflineConversation()
     app.add_routes(
         [
             web.get("/", _index),

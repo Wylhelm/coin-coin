@@ -5,6 +5,7 @@ const stopButton = document.querySelector("#stop");
 const statusLabel = document.querySelector("#status");
 const messageLabel = document.querySelector("#message");
 const meter = document.querySelector("#meter");
+const transcriptItems = new Map();
 
 let audioContext;
 let microphone;
@@ -27,6 +28,17 @@ function addEntry(id, text) {
   const item = document.createElement("li");
   item.textContent = text;
   document.querySelector(id).prepend(item);
+}
+
+function updateTranscript(event) {
+  let item = transcriptItems.get(event.item_id);
+  if (!item) {
+    item = document.createElement("li");
+    transcriptItems.set(event.item_id, item);
+    document.querySelector("#transcripts").prepend(item);
+  }
+  const speaker = event.speaker === "user" ? "Vous : " : "Coin-Coin : ";
+  item.textContent = speaker + (event.final ? event.text : item.textContent.slice(speaker.length) + event.text);
 }
 
 async function start() {
@@ -84,7 +96,7 @@ async function start() {
       } else if (event.type === "state") {
         statusLabel.textContent = event.state;
       } else if (event.type === "transcript") {
-        addEntry("#transcripts", event.text);
+        updateTranscript(event);
       } else if (event.type === "action") {
         addEntry("#actions", event.text);
       }

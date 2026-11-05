@@ -1,13 +1,14 @@
-# Coin-Coin — pilotage robot, audio navigateur et réveil local (S1/S2/S3)
+# Coin-Coin — audio navigateur, réveil local et conversation Realtime (S1–S4)
 
 Service vocal du MicroDuck Coin-Coin, développé séparément du code Pollen.
 S0 fournit le socle asynchrone ; S2 ajoute le micro et le haut-parleur du
 navigateur, deux WebSockets PCM16, le mode écho et le test de latence par tonalité.
 S3 ajoute le réveil local, le VAD, la porte audio et la machine d'états.
 **S1 livre le relais filtrant, `TcpLink`, le gouverneur et `coincoin-cli`**,
-en plus du socle S0. Le robot est utilisé explicitement par la CLI ;
-le démarrage du serveur web ne le connecte pas. Aucun accès à OpenAI ou
-OpenClaw n'est encore ouvert ; les sessions Realtime restent à livrer.
+en plus du socle S0. S4 ajoute la conversation vocale bilingue par Realtime
+WebSocket côté serveur. Les sessions ne s'ouvrent qu'après le réveil local.
+Le serveur vocal n'établit aucune connexion robot ; les outils robot restent
+réservés aux futures features.
 
 ## Piloter la simulation S1 depuis le conteneur
 
@@ -238,6 +239,39 @@ mode écho selon la section précédente, retirer le casque et vérifier que
 
 Noter le résultat (latence et efficacité AEC) dans ADR-002 après le test live.
 
+## Conversation Realtime S4
+
+Cette procédure est destinée au worktree S4 et utilise uniquement ses
+ressources : HTTP `8774`, projet Compose `coincoin-s4`. Elle ne démarre ni
+simulation ni liaison robot. Le `.env` local doit contenir `OPENAI_API_KEY` ;
+ne jamais l'afficher, la placer sur la ligne de commande ou la copier dans le
+dépôt. Le modèle tracé est `gpt-realtime-2.1` et la voix initiale `marin` ;
+le choix de voix reste à confirmer par écoute.
+
+Depuis WSL, entrer explicitement dans le worktree S4 et lancer le service :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S4
+mkdir -p .cache/logs
+COINCOIN_PORT=8774 COMPOSE_PROJECT_NAME=coincoin-s4 \
+  docker compose up --build --wait --wait-timeout 60
+```
+
+Ouvrir `http://localhost:8774/` sous Windows, cliquer sur **Démarrer** et
+autoriser le micro. Vérifier la réponse FR à « Coin-Coin, bonjour, qui es-tu ? »
+et la réponse EN à « Hey Coin-Coin, who are you? ». Pendant une réponse longue,
+parler pour vérifier le barge-in et l'arrêt de lecture ; après 7 minutes sans
+parole, vérifier le retour en sommeil, l'état affiché et le journal. Les
+transcriptions et événements d'usage sont conservés dans `.cache/logs/` ;
+traiter ces fichiers locaux comme des données personnelles.
+
+Arrêter uniquement les ressources attribuées à S4 :
+
+```sh
+cd ~/projects/microduck/coin-coin-wt/S4
+COINCOIN_PORT=8774 COMPOSE_PROJECT_NAME=coincoin-s4 docker compose down
+```
+
 ## Développement et qualité
 
 ```sh
@@ -414,7 +448,8 @@ qui utilise effectivement le robot. S0 n'ouvre aucun lien robot.
 
 ```text
 src/coincoin/
-  app.py, config.py, journal.py, clock.py
+  app.py, config.py, features.py, journal.py, clock.py
+  realtime/          session WebSocket GA, évènements, instructions, outils
   audio/io.py        AudioIO : PCM16 mono 24 kHz, trames 20 ms
   audio/browser.py   BrowserAudio, WebSockets audio et contrôle
   audio/resample.py  conversions PCM16/float32 et SoXR 24→16 kHz
@@ -445,8 +480,9 @@ attentes échues par deadline, puis par ordre d'inscription.
 `state_age()` vaut l'infini avant le premier état.
 
 La configuration reprend toutes les variables de la spec maître §4.2 j.
-Modèle et voix Realtime restent vides jusqu'à S4 ; le seuil Vosk provisoire
-sélectionné en S3 vaut `0.9`. Les trois identifiants sensibles utilisent
+Le modèle Realtime `gpt-realtime-2.1` et la voix provisoire `marin` sont ceux
+de la trace réelle S4 ; l'écoute humaine reste requise. Le seuil Vosk
+provisoire sélectionné en S3 vaut `0.9`. Les identifiants secrets sont des
 `SecretStr`. Le journal masque récursivement les clés sensibles, les motifs
 de clé API et les en-têtes Authorization ; il refuse les données non JSON
 et laisse remonter les erreurs d'écriture.
