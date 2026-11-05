@@ -8,6 +8,7 @@ dependencies = [
     "aiohttp>=3.14.5",
     "numpy>=2.5.4",
     "onnxruntime>=1.20.0",
+    "pillow>=12.0.0",
     "pydantic-settings>=2.16.2",
     "soxr>=1.0.0",
     "vosk>=0.3.45",
@@ -15,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 coincoin = "coincoin.app:main"
+coincoin-cli = "coincoin.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.13.7,<0.14.0"]
@@ -40,7 +42,7 @@ select = ["E", "F", "I", "B", "UP", "ASYNC", "SIM"]
 line-ending = "lf"
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "relay", "tests"]
 pythonVersion = "3.12"
 typeCheckingMode = "basic"
 venvPath = "."
@@ -50,7 +52,7 @@ venv = ".venv"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-addopts = "--strict-markers --cov=coincoin --cov-report=term-missing --cov-fail-under=80"
+addopts = "--strict-markers --cov=coincoin --cov=relay --cov-report=term-missing --cov-fail-under=80"
 markers = ["sim: requires an explicitly assigned simulator and relay"]
 
 [tool.coverage.report]

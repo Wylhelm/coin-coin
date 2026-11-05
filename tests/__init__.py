@@ -1,0 +1,1 @@
+"""Coin-Coin test support."""
