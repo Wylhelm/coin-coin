@@ -112,6 +112,7 @@ class _Session:
         self.instructions = ""
         self.audio: list[bytes] = []
         self.tool_results: list[tuple[str, str]] = []
+        self.responses_created = 0
         self.truncation: tuple[str, int] | None = None
         self.session_expires_at = None
 
@@ -138,6 +139,9 @@ class _Session:
 
     async def send_tool_result(self, call_id: str, result: str) -> None:
         self.tool_results.append((call_id, result))
+
+    async def create_response(self) -> None:
+        self.responses_created += 1
 
     async def close(self) -> None:
         self.closed = True
@@ -307,7 +311,7 @@ async def test_barge_in_flushes_before_hook_and_truncates_heard_item_in_samples(
     app._active_response_id = "r1"
     app.state = State(Mode.AWAKE, speaking=True, response_active=True)
     app._ignore_audio_until_response = False
-    await app._handle_realtime_event(AudioDelta(item_id="first", pcm=bytes(2400), response_id="r1"))
+    await app._handle_realtime_event(AudioDelta(item_id="first", pcm=bytes(4800), response_id="r1"))
     await app._handle_realtime_event(
         AudioDelta(item_id="second", pcm=bytes(2400), response_id="r1")
     )
@@ -391,6 +395,7 @@ async def test_tool_refusal_is_sent_unchanged_to_realtime_and_journal(tmp_path: 
 
     app.register_tool("refuse_test", "Refusal test", {"type": "object"}, refuse)
     await app._handle_realtime_event(ToolCall(call_id="call-2", name="refuse_test", arguments="{}"))
+    await app._handle_realtime_event(ResponseDone(status="completed"))
     for _ in range(100):
         if session.tool_results:
             break

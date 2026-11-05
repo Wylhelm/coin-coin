@@ -74,10 +74,13 @@ class RealtimeSession:
         url = f"{self.base_url}?model={quote(model, safe='')}"
         self._client = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None))
         try:
-            self._socket = await self._client.ws_connect(
-                url,
-                headers={"Authorization": f"Bearer {key}"},
-                heartbeat=20,
+            self._socket = await asyncio.wait_for(
+                self._client.ws_connect(
+                    url,
+                    headers={"Authorization": f"Bearer {key}"},
+                    heartbeat=20,
+                ),
+                timeout=_OPEN_TIMEOUT_S,
             )
             created = await self._receive_handshake_event()
             if created.get("type") != "session.created":
@@ -265,6 +268,9 @@ class RealtimeSession:
                 },
             }
         )
+
+    async def create_response(self) -> None:
+        """Resume once all function outputs from a completed parent have been sent."""
         await self._send({"type": "response.create"})
 
     async def add_image(self, jpeg: bytes) -> None:

@@ -289,7 +289,7 @@ async def test_barge_in_truncates_only_current_item_at_pre_flush_playback(tmp_pa
     app._active_response_id = "response"
     app._ignore_audio_until_response = False
     await app._handle_realtime_event(
-        AudioDelta(item_id="first-item", pcm=bytes(2400), response_id="response")
+        AudioDelta(item_id="first-item", pcm=bytes(4800), response_id="response")
     )
     await app._handle_realtime_event(
         AudioDelta(item_id="second-item", pcm=bytes(2400), response_id="response")

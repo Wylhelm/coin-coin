@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 
 from aiohttp import web
 
+from coincoin.audio.io import PlaybackProgress
+
 _LOGGER = logging.getLogger(__name__)
 _FRAME_SAMPLES = 480
 _FRAME_BYTES = _FRAME_SAMPLES * 2
@@ -23,6 +25,7 @@ class _Page:
     ui_ws: web.WebSocketResponse | None = None
     sent_samples: int = 0
     played_ms: int = 0
+    played_samples: int = 0
     last_sequence: int = 0
     is_playing: bool = False
     generation: int = 0
@@ -46,6 +49,7 @@ class BrowserAudio:
         self._page_lock = asyncio.Lock()
         self._mic_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=_MAX_MIC_FRAMES)
         self._last_sequence = 0
+        self._playback_epoch = 0
         self.dropped_mic_frames = 0
 
     async def connect_audio(self, websocket: web.WebSocketResponse) -> _Page:
@@ -55,6 +59,7 @@ class BrowserAudio:
                 await self._replace(previous)
             self._drain_mic_queue()
             page = _Page(websocket)
+            self._playback_epoch += 1
             self._page = page
             return page
 
@@ -83,6 +88,7 @@ class BrowserAudio:
             async with page.condition:
                 page.condition.notify_all()
             if self._page is page:
+                self._playback_epoch += 1
                 self._page = None
                 self._drain_mic_queue()
 
@@ -186,8 +192,10 @@ class BrowserAudio:
                     phase = "updating playback generation"
                     async with page.condition:
                         page.generation += 1
+                        self._playback_epoch += 1
                         page.sent_samples = 0
                         page.played_ms = 0
+                        page.played_samples = 0
                         page.is_playing = False
                         page.flushed.clear()
                         page.condition.notify_all()
@@ -249,12 +257,20 @@ class BrowserAudio:
             await self._send_control(page.ui_ws, message)
 
     async def update_playback(
-        self, page: _Page, played_ms: int, *, playing: bool, generation: int
+        self,
+        page: _Page,
+        played_ms: int,
+        *,
+        playing: bool,
+        generation: int,
+        played_samples: int | None = None,
     ) -> None:
         if generation != page.generation or page.closed:
             return
         async with page.condition:
             page.played_ms = max(page.played_ms, min(played_ms, page.sent_samples // 24))
+            samples = played_ms * 24 if played_samples is None else played_samples
+            page.played_samples = max(page.played_samples, min(samples, page.sent_samples))
             page.is_playing = playing
             page.condition.notify_all()
 
@@ -271,6 +287,13 @@ class BrowserAudio:
     def played_ms(self) -> int:
         page = self._page
         return 0 if page is None or page.closed else page.played_ms
+
+    @property
+    def playback_progress(self) -> PlaybackProgress:
+        page = self._page
+        if page is None or page.closed:
+            return PlaybackProgress(self._playback_epoch, 0, 0)
+        return PlaybackProgress(self._playback_epoch, page.sent_samples, page.played_samples)
 
     async def _replace(self, page: _Page) -> None:
         page.closed = True

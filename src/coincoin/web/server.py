@@ -163,21 +163,29 @@ async def _ui_ws(request: web.Request) -> web.WebSocketResponse:
             ms = event.get("ms")
             generation = event.get("generation", 0)
             playing = event.get("playing", False)
+            samples = event.get("samples")
             if (
                 isinstance(ms, int)
                 and not isinstance(ms, bool)
                 and ms >= 0
                 and isinstance(generation, int)
                 and isinstance(playing, bool)
+                and (samples is None or (type(samples) is int and samples >= 0))
             ):
-                await audio.update_playback(page, ms, playing=playing, generation=generation)
+                await audio.update_playback(
+                    page, ms, playing=playing, generation=generation, played_samples=samples
+                )
         elif kind == "flushed":
             generation = event.get("generation")
             if isinstance(generation, int):
                 audio.acknowledge_flush(page, generation)
                 await websocket.send_json({"type": "flush_complete", "generation": generation})
         elif kind == "stop":
-            if request.app[_ECHO] or request.app[_TONE]:
+            if (
+                request.app[_ECHO]
+                or request.app[_TONE]
+                or isinstance(request.app[_CONVERSATION], _OfflineConversation)
+            ):
                 _spawn(request.app, audio.flush())
             else:
                 _spawn(request.app, request.app[_CONVERSATION].stop_pressed())

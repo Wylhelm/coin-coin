@@ -10,12 +10,13 @@ import random
 import re
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from aiohttp import web
 
 from coincoin.audio.gate import AudioGate
-from coincoin.audio.io import AudioIO
+from coincoin.audio.io import AudioIO, PlaybackProgress, TrackedPlayback
 from coincoin.audio.resample import resample_pcm16
 from coincoin.clock import Clock, SystemClock
 from coincoin.config import Settings
@@ -47,6 +48,7 @@ _MAX_RECONNECT_S = 30.0
 _MIN_RECONNECT_S = 0.5
 _PLAYBACK_TIMEOUT_S = 60.0
 _SESSION_RENEW_BEFORE_S = 60
+_STOP_TIMEOUT_S = 1.0
 
 EventHandler = Callable[..., Any]
 SessionFactory = Callable[[Settings], RealtimeSession]
@@ -61,6 +63,17 @@ class Vad(Protocol):
     def feed(self, pcm16_16k: bytes) -> list[VadEvent]: ...
 
     def reset(self) -> None: ...
+
+
+@dataclass
+class _ToolTurn:
+    response_id: str | None
+    session: RealtimeSession | None
+    generation: int
+    calls: list[ToolCall] = field(default_factory=list)
+    results: dict[str, str] = field(default_factory=dict)
+    status: str | None = None
+    sending: bool = False
 
 
 class App:
@@ -96,7 +109,17 @@ class App:
         self._session: RealtimeSession | None = None
         self._session_task: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
-        self._play_queue: asyncio.Queue[tuple[str, bytes, int, int] | None] = asyncio.Queue()
+        self._stop_tasks: set[asyncio.Task[None]] = set()
+        self._audio_hook_tasks: set[asyncio.Task[None]] = set()
+        self._play_task: asyncio.Task[None] | None = None
+        self._playback_target: PlaybackProgress | None = None
+        self._playback_epoch = (
+            audio.playback_progress.epoch if isinstance(audio, TrackedPlayback) else None
+        )
+        self._play_queue: asyncio.Queue[tuple[str, bytes, int, int, int | None] | None] = (
+            asyncio.Queue()
+        )
+        self._response_audio_epoch: int | None = None
         self._play_error: str | None = None
         self._started = False
         self._stopping = False
@@ -114,6 +137,7 @@ class App:
         self._session_generation = 0
         self._session_task_generation: int | None = None
         self._tool_tasks: set[asyncio.Task[None]] = set()
+        self._tool_turns: dict[str | None, _ToolTurn] = {}
         self._speech_end_at: float | None = None
         self._latency_target_ms: int | None = None
         self._response_finish_task: asyncio.Task[None] | None = None
@@ -177,7 +201,13 @@ class App:
         if self._stopping:
             return
         self._stopping = True
-        await self.stop_pressed()
+        self._start_robot_stop()
+        cleanup = asyncio.create_task(self.stop_pressed())
+        await asyncio.gather(*tuple(self._stop_tasks))
+        try:
+            await asyncio.wait_for(cleanup, timeout=_STOP_TIMEOUT_S)
+        except TimeoutError as exc:
+            self._report_error("conversation shutdown", exc)
         for task in tuple(self._tasks):
             task.cancel()
         if self._tasks:
@@ -187,6 +217,20 @@ class App:
             await self._session.close()
             self._session = None
         self._started = False
+
+    def _start_robot_stop(self) -> None:
+        if self._stop_tasks:
+            return
+        task = self._spawn(self._run_robot_stop())
+        self._stop_tasks.add(task)
+        task.add_done_callback(self._stop_tasks.discard)
+
+    async def _run_robot_stop(self) -> None:
+        try:
+            async with asyncio.timeout(_STOP_TIMEOUT_S):
+                await self._emit("stop")
+        except Exception as exc:
+            self._report_error("robot stop hook", exc)
 
     async def request_sleep(self) -> None:
         """Handle the model's sleep tool."""
@@ -323,7 +367,7 @@ class App:
                 self.vad.reset()
 
         if "RobotStop" in priority_effects:
-            self._spawn(self._emit("stop"))
+            self._start_robot_stop()
             await asyncio.sleep(0)
         flush_done = False
         cancel_done = False
@@ -399,15 +443,17 @@ class App:
         self._active_response_id = None
         for task in tuple(self._audio_send_tasks):
             task.cancel()
-        for task in tuple(self._tool_tasks):
-            task.cancel()
+        self._cancel_stale_tool_tasks()
         session_task = self._session_task
         if session_task is not None and session_task is not asyncio.current_task():
             session_task.cancel()
 
     def _cancel_stale_tool_tasks(self) -> None:
+        for turn in self._tool_turns.values():
+            turn.status = "cancelled"
         for task in tuple(self._tool_tasks):
-            task.cancel()
+            if task is not asyncio.current_task():
+                task.cancel()
 
     def _start_session_after_brain_start(self) -> None:
         generation = self._session_generation
@@ -477,9 +523,13 @@ class App:
                 self._report_error("response truncation", exc)
 
     async def _flush_for_barge_in(self) -> None:
-        played_samples = self.audio.played_ms * 24
+        played_samples = (
+            self.audio.playback_progress.played_samples
+            if isinstance(self.audio, TrackedPlayback)
+            else self.audio.played_ms * 24
+        )
         segment = next(
-            (entry for entry in self._audio_segments if played_samples <= entry[2]),
+            (entry for entry in self._audio_segments if played_samples < entry[2]),
             self._audio_segments[-1] if self._audio_segments else None,
         )
         if segment is not None:
@@ -488,6 +538,16 @@ class App:
             self._pending_truncation = item_id, heard_samples // 24
         self._audio_generation += 1
         self._ignore_audio_until_response = True
+        if self._active_response_id is not None:
+            self._cancelled_response_ids.add(self._active_response_id)
+        self._cancel_stale_tool_tasks()
+        if self._response_finish_task is not None:
+            self._response_finish_task.cancel()
+            self._response_finish_task = None
+        if self._play_task is not None:
+            self._play_task.cancel()
+        for task in tuple(self._audio_hook_tasks):
+            task.cancel()
         for task in tuple(self._audio_send_tasks):
             task.cancel()
         try:
@@ -497,6 +557,9 @@ class App:
         self._discard_queued_audio()
         self._output_enqueued_samples = 0
         self._audio_segments.clear()
+        self._playback_target = None
+        if isinstance(self.audio, TrackedPlayback):
+            self._playback_epoch = self.audio.playback_progress.epoch
         self._play_error = None
 
     async def _session_loop(self, generation: int | None = None) -> None:
@@ -579,6 +642,17 @@ class App:
                 )
             ):
                 return
+            if (
+                isinstance(self.audio, TrackedPlayback)
+                and self._response_audio_epoch is not None
+                and self._response_audio_epoch != self.audio.playback_progress.epoch
+            ):
+                self._play_error = (
+                    "Browser playback page or generation was replaced during response"
+                )
+                return
+            self._sync_playback_epoch()
+            self._response_audio_epoch = self._playback_epoch
             start_sample = self._output_enqueued_samples
             if self._speech_end_at is not None and self._latency_target_ms is None:
                 self._latency_target_ms = start_sample // 24 + 1
@@ -594,12 +668,18 @@ class App:
                 self._audio_segments.append((event.item_id, start_sample, end_sample))
             self._output_enqueued_samples = end_sample
             await self._play_queue.put(
-                (event.item_id, event.pcm, start_sample, self._audio_generation)
+                (
+                    event.item_id,
+                    event.pcm,
+                    start_sample,
+                    self._audio_generation,
+                    self._playback_epoch,
+                )
             )
-            await self._emit("audio_out", event.pcm, start_sample // 24)
         elif isinstance(event, AssistantTranscript):
             if event.final:
                 self._assistant_text = event.text
+                self.journal.write("assistant_transcript", text=event.text)
             else:
                 self._assistant_text += event.text
             await self._send_transcript(event.item_id, "assistant", event.text, event.final)
@@ -617,6 +697,7 @@ class App:
             if event.response_id in self._cancelled_response_ids:
                 return
             self._assistant_text = ""
+            self._response_audio_epoch = None
             self._active_response_id = event.response_id
             self._ignore_audio_until_response = False
             if self._response_finish_task is not None:
@@ -625,7 +706,26 @@ class App:
             await self._apply(Event("response_started"))
             await self._emit("response_started", event)
         elif isinstance(event, ToolCall):
-            task = self._spawn(self._handle_tool_call(event))
+            response_id = event.response_id or self._active_response_id
+            if (
+                self.state.mode == Mode.SLEEPING
+                or response_id in self._cancelled_response_ids
+                or (response_id is None and self._ignore_audio_until_response)
+            ):
+                self.journal.write(
+                    "tool_rejected",
+                    call_id=event.call_id,
+                    response_id=response_id,
+                    reason="Inactive or interrupted response",
+                )
+                return
+            turn = self._tool_turns.setdefault(
+                response_id, _ToolTurn(response_id, self._session, self._session_generation)
+            )
+            if turn.status is not None or any(call.call_id == event.call_id for call in turn.calls):
+                return
+            turn.calls.append(event)
+            task = self._spawn(self._handle_tool_call(event, turn))
             self._tool_tasks.add(task)
             task.add_done_callback(self._tool_tasks.discard)
         elif isinstance(event, ResponseDone):
@@ -634,7 +734,18 @@ class App:
             )
             if event.response_id in self._cancelled_response_ids:
                 return
+            turn = self._tool_turns.get(event.response_id)
+            if turn is not None:
+                turn.status = event.status
+                if event.status == "completed":
+                    task = self._spawn(self._complete_tool_turn(turn))
+                    self._tool_tasks.add(task)
+                    task.add_done_callback(self._tool_tasks.discard)
+                else:
+                    self._cancel_stale_tool_tasks()
             if event.status == "completed":
+                if turn is not None:
+                    return
                 if self._response_finish_task is not None:
                     self._response_finish_task.cancel()
                 self._response_finish_task = self._spawn(
@@ -650,46 +761,112 @@ class App:
             message = f"{event.error_type}: {event.message}"
             self._report_error("Realtime API event", RuntimeError(message))
 
-    async def _handle_tool_call(self, event: ToolCall) -> None:
+    def _tool_turn_valid(self, turn: _ToolTurn) -> bool:
+        return (
+            turn.session is not None
+            and self._session is turn.session
+            and turn.generation == self._session_generation
+            and turn.response_id not in self._cancelled_response_ids
+            and turn.status in {None, "completed"}
+            and (turn.response_id is None or turn.response_id == self._active_response_id)
+            and self.state.mode != Mode.SLEEPING
+        )
+
+    async def _handle_tool_call(self, event: ToolCall, turn: _ToolTurn) -> None:
+        if not self._tool_turn_valid(turn):
+            return
         self.journal.write("tool_call", name=event.name, call_id=event.call_id)
-        generation = self._session_generation
-        session = self._session
         result = await self.tools.dispatch(event.name, event.arguments, self)
         result_json = json.dumps(result, ensure_ascii=False, allow_nan=False)
         self.journal.write("tool_result", name=event.name, call_id=event.call_id, result=result)
+        turn.results[event.call_id] = result_json
+        await self._complete_tool_turn(turn)
+
+    async def _complete_tool_turn(self, turn: _ToolTurn) -> None:
         if (
-            session is not None
-            and self._session is session
-            and generation == self._session_generation
-            and self.state.mode != Mode.SLEEPING
+            not self._tool_turn_valid(turn)
+            or turn.status != "completed"
+            or turn.sending
+            or len(turn.results) != len(turn.calls)
         ):
-            try:
-                await session.send_tool_result(event.call_id, result_json)
-            except RealtimeConnectionError as exc:
-                self._report_error("tool result send", exc)
+            return
+        session = turn.session
+        if session is None:
+            return
+        turn.sending = True
+        try:
+            for call in turn.calls:
+                if not self._tool_turn_valid(turn):
+                    return
+                await session.send_tool_result(call.call_id, turn.results[call.call_id])
+            if self._tool_turn_valid(turn):
+                await session.create_response()
+        except RealtimeConnectionError as exc:
+            self._report_error("tool result send", exc)
+            if self._tool_turn_valid(turn):
+                turn.status = "failed"
+                await self._apply(Event("response_failed"))
+
+    def _sync_playback_epoch(self) -> None:
+        if not isinstance(self.audio, TrackedPlayback):
+            return
+        epoch = self.audio.playback_progress.epoch
+        if epoch != self._playback_epoch:
+            self._playback_epoch = epoch
+            self._audio_generation += 1
+            self._discard_queued_audio()
+            self._output_enqueued_samples = 0
+            self._audio_segments.clear()
+            self._playback_target = None
+            self._play_error = None
 
     async def _finish_response(self, event: ResponseDone, expected_samples: int) -> None:
+        failed = False
         try:
             await asyncio.wait_for(self._play_queue.join(), timeout=_PLAYBACK_TIMEOUT_S)
             deadline = self.clock.now() + _PLAYBACK_TIMEOUT_S
-            expected_ms = (expected_samples + 23) // 24
-            while self.audio.played_ms < expected_ms and self.clock.now() < deadline:
+            target = self._playback_target
+            while True:
                 if self._play_error is not None:
+                    raise RuntimeError(self._play_error)
+                if isinstance(self.audio, TrackedPlayback):
+                    progress = self.audio.playback_progress
+                    if (
+                        self._response_audio_epoch is not None
+                        and progress.epoch != self._response_audio_epoch
+                    ):
+                        raise ConnectionError("Browser playback page or generation was replaced")
+                    if target is None:
+                        break
+                    if progress.epoch != target.epoch:
+                        raise ConnectionError("Browser playback page or generation was replaced")
+                    finished = progress.played_samples >= target.sent_samples
+                else:
+                    finished = self.audio.played_ms * 24 >= expected_samples or (
+                        not self.audio.playing and self.audio.played_ms >= expected_samples // 24
+                    )
+                if finished:
                     break
+                if self.clock.now() >= deadline:
+                    raise TimeoutError("Response playback progress timed out")
                 await self.clock.sleep(0.02)
         except TimeoutError:
+            failed = True
             self._report_error("audio playback", TimeoutError("Response playback did not finish"))
         except asyncio.CancelledError:
             raise
         except (ConnectionError, RuntimeError) as exc:
+            failed = True
             self._report_error("audio playback", exc)
         if not self._stopping and self.state.mode != Mode.SLEEPING:
+            if failed:
+                await self._apply(Event("response_failed"))
+                return
             await self._apply(
                 Event("response_done", question=self._assistant_text.rstrip().endswith("?"))
             )
             await self._emit("response_done", event)
             self._remember_turn("Coin-Coin", self._assistant_text)
-            self.journal.write("assistant_transcript", text=self._assistant_text)
 
     async def _playback_loop(self) -> None:
         while True:
@@ -697,17 +874,35 @@ class App:
             try:
                 if item is None:
                     return
-                _, pcm, start_sample, generation = item
+                _, pcm, start_sample, generation, epoch = item
                 if generation != self._audio_generation or self._ignore_audio_until_response:
                     continue
-                await self.audio.play(pcm)
+                if (
+                    isinstance(self.audio, TrackedPlayback)
+                    and epoch != self.audio.playback_progress.epoch
+                ):
+                    raise ConnectionError("Browser playback page or generation was replaced")
+                self._play_task = asyncio.create_task(self.audio.play(pcm))
+                await asyncio.sleep(0)
+                if generation == self._audio_generation and not self._play_task.cancelled():
+                    hook = self._spawn(self._emit("audio_out", pcm, start_sample // 24))
+                    self._audio_hook_tasks.add(hook)
+                    hook.add_done_callback(self._audio_hook_tasks.discard)
+                await self._play_task
+                if isinstance(self.audio, TrackedPlayback):
+                    self._playback_target = self.audio.playback_progress
                 await self._record_audio_latency(start_sample // 24)
             except asyncio.CancelledError:
-                raise
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    if self._play_task is not None:
+                        self._play_task.cancel()
+                    raise
             except (ConnectionError, ValueError, RuntimeError) as exc:
                 self._play_error = str(exc)
                 self._report_error("audio playback", exc)
             finally:
+                self._play_task = None
                 self._play_queue.task_done()
 
     def _discard_queued_audio(self) -> None:

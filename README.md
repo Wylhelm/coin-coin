@@ -277,10 +277,33 @@ lents, l'invalidation d'une ouverture périmée, l'ordre du tampon micro, la
 troncature barge-in par item et par échantillon, le traitement prioritaire des
 évènements durant un outil, la reconnexion après refus TCP local, le contexte
 mémoire avant l'ouverture Realtime, l'état de parole UI et les compteurs d'audio
-transmis sans conserver le PCM. La revalidation complète après correction
-compte 366 tests réussis, 3 tests de simulation ignorés et 90,40 % de couverture ;
-ruff, format et Pyright passent, ainsi que les 5 tests AudioWorklet Node. Les
-tests automatisés ne remplacent pas les validations vocales humaines ci-dessus.
+transmis sans conserver le PCM. La première correction (`5cc8a42`) comptait
+366 tests réussis, 3 tests de simulation ignorés et 90,40 % de couverture,
+mais une seconde revue a révélé d'autres régressions.
+
+La seconde correction ajoute 23 cas dans `tests/integration/test_s4_followup.py` :
+réarmement silencieux 500 ms après STOP (même déjà en sommeil), arrêt de service
+laissant au hook robot jusqu'à 1 s pour finir ou signaler son échec, et vrai
+outil `sleep` sans auto-annulation. Les appels périmés sont filtrés par réponse ;
+les outils parallèles rendent leurs résultats dans l'ordre des appels puis
+demandent une seule reprise après `response.done` du parent et tous les résultats.
+L'interruption annule ce lot et interdit la reprise. Un échec d'envoi est
+journalisé et termine l'état de parole, sans succès factice.
+
+Le worklet rapporte aussi les échantillons exacts (25 échantillons restent
+distincts des 24 correspondant à 1 ms arrondie), avec un suivi par génération
+de page/flush. Une page remplacée ne reçoit pas l'ancien audio en file ; une
+réponse inachevée perdue est signalée comme un échec, et la suivante repart
+sur les compteurs de la nouvelle page. Les hooks `audio_out` sont initiés lors
+de l'appel réel à `AudioIO.play`, hors du consommateur Realtime ; un hook lent
+ne retarde pas le flush. L'upgrade WebSocket est borné et testé contre une
+socket TCP locale bloquée ; STOP hors ligne, écho et tonalité conserve le flush.
+
+La commande qualité complète passe désormais **389 tests, 3 tests de simulation
+ignorés, couverture 90,91 %** ; ruff, format et Pyright sont verts, et le vrai
+AudioWorklet passe **6/6** sous Node. Aucune nouvelle session OpenAI, simulation
+ou liaison robot n'a été utilisée ; la trace réelle unique est inchangée.
+Ces tests ne remplacent pas les validations vocales humaines ci-dessus.
 
 ## Développement et qualité
 

@@ -48,6 +48,7 @@ class ToolCall(_Event):
     name: str
     arguments: str
     item_id: str | None = None
+    response_id: str | None = None
 
 
 class ResponseDone(_Event):
@@ -122,6 +123,7 @@ def parse_event(payload: dict[str, Any]) -> RealtimeEvent | None:
                 name=item["name"],
                 arguments=item.get("arguments", "{}"),
                 item_id=item.get("id"),
+                response_id=payload.get("response_id"),
             )
     if kind == "response.done":
         response = payload.get("response")

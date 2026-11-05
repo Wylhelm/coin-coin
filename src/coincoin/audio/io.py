@@ -1,10 +1,20 @@
 """PCM transport contract shared by browser and robot audio."""
 
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 SAMPLE_RATE = 24_000
 FRAME_MS = 20
+
+
+@dataclass(frozen=True)
+class PlaybackProgress:
+    """Sample-accurate progress within one page/flush playback epoch."""
+
+    epoch: int
+    sent_samples: int
+    played_samples: int
 
 
 @runtime_checkable
@@ -20,7 +30,7 @@ class AudioIO(Protocol):
         ...
 
     async def flush(self) -> None:
-        """Empty playback in less than 50 ms and reset its progress."""
+        """Empty playback within 100 ms or raise, and reset its progress."""
         ...
 
     @property
@@ -32,3 +42,9 @@ class AudioIO(Protocol):
     def played_ms(self) -> int:
         """Milliseconds actually played since the last flush or response."""
         ...
+
+
+@runtime_checkable
+class TrackedPlayback(AudioIO, Protocol):
+    @property
+    def playback_progress(self) -> PlaybackProgress: ...

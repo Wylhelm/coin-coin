@@ -66,6 +66,7 @@ class CoinCoinPlayProcessor extends AudioWorkletProcessor {
       this.port.postMessage({
         type: "played",
         ms: Math.floor((this.playedSamples * 1000) / 24000),
+        samples: this.playedSamples,
         playing: rendered > 0,
         generation: this.generation,
       });

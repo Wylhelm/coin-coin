@@ -63,6 +63,17 @@ function render(processor, count = 128) {
   return output;
 }
 
+test("played reports retain exact samples for a sub-millisecond tail", () => {
+  const processor = makeProcessor(24_000);
+  const gate = new AudioSequenceGate();
+  feed(gate, processor, frame(1, new Int16Array(25).fill(1000)));
+  for (let i = 0; i < 40; i++) render(processor);
+  const progress = posted.filter((event) => event.type === "played").at(-1);
+  assert.equal(progress.ms, 1);
+  assert.equal(progress.samples, 25);
+  assert.equal(progress.playing, false);
+});
+
 test("flush sequence barrier drops delayed old packets, including repeated flushes", () => {
   const processor = makeProcessor(24_000);
   const gate = new AudioSequenceGate();

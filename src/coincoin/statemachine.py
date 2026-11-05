@@ -66,7 +66,9 @@ class Effect:
     value: str | bool | None = None
 
 
-def _sleep(state: State, *, stopped: bool = False, summary: str = "") -> tuple[State, list[Effect]]:
+def _sleep(
+    state: State, now: float, *, stopped: bool = False, summary: str = ""
+) -> tuple[State, list[Effect]]:
     effects = [
         Effect("RobotStop"),
         Effect("ResetPose"),
@@ -85,6 +87,7 @@ def _sleep(state: State, *, stopped: bool = False, summary: str = "") -> tuple[S
         speaking=not stopped,
         quack_active=not stopped,
         wake_enabled=False,
+        wake_enable_at=now + 0.5 if stopped else None,
         followup_s=state.followup_s,
     ), effects
 
@@ -228,16 +231,16 @@ def transition(state: State, event: Event, now: float) -> tuple[State, list[Effe
     if event.kind == "sleep_requested":
         if state.mode == Mode.SLEEPING:
             return state, []
-        return _sleep(state, summary=event.summary)
+        return _sleep(state, now, summary=event.summary)
     if event.kind == "stop_pressed":
-        return _sleep(state, stopped=True, summary=event.summary)
+        return _sleep(state, now, stopped=True, summary=event.summary)
     if event.kind == "tick":
         if (
             state.mode == Mode.FOLLOWUP
             and state.followup_deadline is not None
             and now >= state.followup_deadline
         ):
-            return _sleep(state)
+            return _sleep(state, now)
         if (
             not state.wake_enabled
             and not state.speaking

@@ -384,3 +384,54 @@ sans appel externe. Les régressions App/UI/transport et la suite complète
 valident les compteurs audio uniquement après acceptation par le transport,
 l'état de parole synchronisé à la connexion, les hooks de sommeil et les
 erreurs UI bornées. Les vérifications humaines ci-dessus restent ouvertes.
+
+**Seconde correction après revue de `5cc8a42`.** STOP ne joue aucun son et
+réarme le réveil après 500 ms, même s'il était déjà en sommeil. À l'arrêt du
+service, le hook `stop` a une échéance de 1 s, indépendante de l'UI et de Realtime ;
+son timeout/échec est journalisé avant l'annulation générale des tâches.
+L'invalidation n'annule pas sa propre tâche : l'outil `sleep` termine les hooks,
+le coucher et le journal de résultat sans reprendre une session fermée.
+
+`response.output_item.done.response_id`, présent dans la trace initiale, est
+conservé pour corréler chaque outil au parent. Une interruption invalide
+immédiatement les appels en cours et les appels tardifs. Un lot d'outils ne
+reprend la génération qu'après `response.done completed` du parent et tous
+les résultats, transmis dans l'ordre initial des appels, avec un unique
+`response.create`. `send_tool_result()` envoie seulement l'output ;
+`create_response()` est désormais explicite. La
+[documentation Realtime actuelle](https://developers.openai.com/api/docs/guides/realtime-conversations#function-calling)
+confirme le séquencement `function_call_output` puis `response.create` ;
+aucune nouvelle trace API n'a été créée pour tester les ordonnancements.
+Les faux couvrent les deux ordres de fin lent/rapide, leur interruption et
+l'échec d'envoi d'un résultat. Les transcriptions finales sont journalisées
+dès leur réception, y compris pour un parent avec outils : ce sont des textes
+générés, pas une preuve de ce qui a été entendu.
+
+L'extension optionnelle `TrackedPlayback` de `AudioIO` expose
+`PlaybackProgress(epoch, sent_samples, played_samples)`. BrowserAudio change
+d'epoch au flush et au remplacement/débranchement de page ; le message worklet
+`played` transporte aussi `samples`, relayé par la vraie route `/ws/ui`.
+Les anciens rapports millisecondes restent acceptés, mais les queues
+sous-milliseconde exigent le champ exact de la page/worklet mis à jour.
+La fin de réponse n'arrondit plus sa cible au-dessus du compteur disponible
+et n'annonce pas un succès sur timeout ou perte de page. Les intervalles
+d'items sont semi-ouverts : à la frontière exacte, le suivant est à zéro.
+Un bloc déjà en file ou un delta tardif d'une ancienne page n'est pas rejoué
+sur la nouvelle ; une nouvelle réponse utilise ses nouveaux compteurs.
+
+Le hook `audio_out(pcm, play_at_ms)` est initié à l'appel effectif `AudioIO.play`,
+avec la position prévue dans la file de lecture, dans une tâche indépendante.
+Un hook lent n'arrête ni le consommateur Realtime ni le flush ; les hooks
+anciens sont annulés à l'interruption. L'upgrade WebSocket est lui aussi
+soumis à `_OPEN_TIMEOUT_S`, avec fermeture et erreur réseau normalisée avant
+le backoff. STOP hors ligne conserve `BrowserAudio.flush()` comme écho/tone.
+
+**Preuves de seconde correction.** Commande qualité complète verte :
+389 tests réussis, 3 simulations ignorées, couverture 90,91 %, aucun diagnostic
+ruff/Pyright. Les 23 cas de `tests/integration/test_s4_followup.py` utilisent
+App, BrowserAudio, les routes UI/audio, le faux serveur Realtime et une socket
+TCP locale bloquant l'upgrade. Le harness du vrai worklet passe 6/6 et vérifie
+explicitement 25 échantillons joués pour seulement 1 ms entière rapportée.
+La trace réelle initiale reste inchangée ; aucune sim, connexion robot ou
+nouvelle requête OpenAI. Cela ne lève pas les validations humaines ni la
+limite du silence physique d'un navigateur injoignable.

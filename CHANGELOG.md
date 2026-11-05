@@ -26,6 +26,23 @@
   simulation ignorés, couverture totale 90,40 %, ruff/format/Pyright verts ;
   le harness AudioWorklet réel passe 5/5. La trace API unique demeure inchangée ;
   aucun nouvel appel OpenAI, aucune sim et aucun robot.
+- Seconde correction après revue de `5cc8a42` : réveil réarmé silencieusement
+  après STOP, arrêt robot de service attendu avec échéance explicite, outil
+  `sleep` exécuté jusqu'à ses hooks et son résultat, outils corrélés à leur
+  réponse et invalidés dès interruption. Plusieurs outils parallèles produisent
+  leurs résultats ordonnés puis une seule reprise, jamais après annulation ;
+  les erreurs d'envoi sont explicites et terminent l'état de parole.
+- Fin de lecture à l'échantillon exact et suivi des générations de page ;
+  audio périmé rejeté après remplacement, progression manquante ou timeout
+  signalé sans faux succès, frontière entre items tronquée sur le suivant à zéro.
+  Hooks `audio_out` déplacés vers l'appel effectif à `play` sans bloquer les
+  évènements prioritaires ; deadline étendue à l'upgrade WebSocket ; flush
+  STOP restauré en mode hors ligne. Les transcriptions finales sont journalisées
+  à leur réception, indépendamment de l'achèvement sonore de la réponse.
+- Revalidation de cette seconde correction : 23 nouveaux cas App/UI/transport,
+  389 tests réussis, 3 sim ignorés, couverture 90,91 %, ruff/format/Pyright verts,
+  harness du vrai AudioWorklet 6/6. Trace réelle conservée à l'identique, aucun
+  nouvel appel OpenAI, aucune simulation ni connexion robot.
 
 ## S2 — Flush borné — 2026-11-05
 
