@@ -109,6 +109,13 @@ Le stockage d'images est désactivé (politique `LOG_IMAGES=false`, sans opt-in)
 
 ### Caméra sur les ressources S7
 
+Validation réelle encore bloquée : lors de l'essai du 2026-11-05,
+`webrtcsink` a signalé un échec de découverte codec (`nvh264enc`,
+`Selected preset not supported`). La sim a été arrêtée sans modifier Pollen ;
+aucune image réelle ni validation Compose n'est revendiquée.
+Attention : le wrapper `duck-sim ctl frame` de cet essai visait le socket
+par défaut `/run/mediad/media.sock`, pas celui de l'instance S7.
+
 Depuis WSL, réserver d'abord le verrou caméra partagé (ne jamais effacer celui
 d'une autre session ; attendre 60 s entre tentatives, maximum 2 h) :
 

@@ -40,6 +40,8 @@
   Test sim caméra opt-in avec sauvegarde temporaire puis suppression.
 - Régression vrai `App` du tour remplacé : 3 échecs avant correction,
   6 cas verts après (capture, préparation et verrou d'envoi, avec témoins).
+- Qualité : 486 tests réussis, 6 ignorés ; caméra réelle non validée.
+  Essai S7 arrêté sur erreur codec mediad/webrtcsink ; ressources nettoyées.
 
 ## S5 — Correction de la course d'annonce — 2026-11-05
 
