@@ -194,12 +194,16 @@
   `control`, piste vidéo, reconnexion et sélection par URL `webrtc://`.
 - Les tests de mouvement sim sélectionnent le transport configuré ; tests du
   pair WebRTC local et scénarios opt-in de mouvement, RTT et gigue.
-- Contre la sim caméra : 7 scénarios via WebRTC réussis sans saut ; avance
-  0,216–0,217 m, tours 90,735–92,854°, et regards positifs. RTT `robot.health`
-  p50/p95 0,57/0,76 ms ; gigue absolue p95 `robot.move` 33,03 ms, aucun deadman.
+- Revalidé après rebase sur `main` `0597380` : ruff, format, pyright verts ;
+  suite complète 342 réussis, 7 tests sim sautés hors opt-in, couverture 91,30 %.
+- Avec `ROBOT_LINK=webrtc://192.0.2.1:8443`, `COINCOIN_TEST_SIM=1 uv run
+  pytest --no-cov -m sim -s -rs` : **7 passed, aucun saut**. S1 avance 0,289 m,
+  tour 92,556°, regard 0,208 rad ; S9 avance 0,254 m, tour 92,340°, regard
+  0,353 rad. RTT `robot.health` p50/p95 0,58/0,99 ms ; gigue absolue p95
+  `robot.move` 29,76 ms à 20 Hz, aucun deadman.
 - Q10 validée depuis WSL et le bridge Docker par défaut : health HTTP 200 sur
-  8779, CLI robot healthy et commande move Docker réussie ; aucune ouverture
-  du port hôte 8765 ni besoin de `network_mode: host`.
+  8779, CLI robot healthy et mouvement Docker de 3 s sur 0,228 m ; aucune
+  ouverture du port hôte 8765 ni besoin de `network_mode: host`.
 - Mesures détaillées et décision : `docs/webrtc.md` et ADR-006.
 
 ## Correctif S3 H-POSITIFS — 2026-11-04

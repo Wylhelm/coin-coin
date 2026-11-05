@@ -80,14 +80,16 @@ Le premier échange réel atteignait ICE mais échouait au DTLS : l'offreur
 produisait un échec SSL. Les réponses `passive` ont établi le DTLS et le canal
 `control`. Le test local vérifie désormais ce rôle.
 
-Commande exécutée avec `ROBOT_LINK=webrtc://192.0.2.1:8443` dans le `.env`
-S9, caméra active et `COINCOIN_TEST_SIM=1` :
+Commande exécutée après rebase sur `main` `0597380`, avec
+`ROBOT_LINK=webrtc://192.0.2.1:8443` dans le `.env` S9, caméra active et
+`COINCOIN_TEST_SIM=1` :
 
 ```sh
-uv run pytest --no-cov -m sim -s -rs
+ROBOT_LINK=webrtc://192.0.2.1:8443 COINCOIN_TEST_SIM=1 \
+  uv run pytest --no-cov -m sim -s -rs
 ```
 
-Résultat : **7 passed, 309 deselected, aucun saut**. Les trois tests S1 et les
+Résultat : **7 passed, 342 deselected, aucun saut**. Les trois tests S1 et les
 quatre tests S9 ont tous utilisé WebRTC, y compris les anciens scénarios de
 mouvement du fichier `test_sim_motion.py`. Le fixture global efface les
 variables de configuration et désactive la source `.env` de `Settings` ; les
@@ -98,16 +100,16 @@ leur marqueur ni saut de connexion.
 
 | Mesure réelle | Résultat |
 |---|---:|
-| `robot.health` RTT | p50 **0,57 ms**, p95 **0,76 ms** |
-| `robot.move` observé par `robotd` | **20 Hz** ; intervalle p50 **42,36 ms** |
-| Gigue absolue des intervalles `robot.move` | p95 **33,03 ms** |
+| `robot.health` RTT | p50 **0,58 ms**, p95 **0,99 ms** |
+| `robot.move` observé par `robotd` | **20 Hz** ; intervalle p50 **42,72 ms** |
+| Gigue absolue des intervalles `robot.move` | p95 **29,76 ms** |
 | `limited_by` pendant les mouvements | aucun `deadman` |
-| S1/WebRTC, avance 3 s | **0,216 m** |
-| S1/WebRTC, tour | **90,735°** |
-| S1/WebRTC, regard gauche | yaw **0,294 rad** |
-| S9/WebRTC, avance 3 s | **0,217 m** |
-| S9/WebRTC, tour | **92,854°** |
-| S9/WebRTC, regard gauche | yaw **0,246 rad** |
+| S1/WebRTC, avance 3 s | **0,289 m** |
+| S1/WebRTC, tour | **92,556°** |
+| S1/WebRTC, regard gauche | yaw **0,208 rad** |
+| S9/WebRTC, avance 3 s | **0,254 m** |
+| S9/WebRTC, tour | **92,340°** |
+| S9/WebRTC, regard gauche | yaw **0,353 rad** |
 
 Une commande `coincoin-cli status` depuis WSL a aussi renvoyé un état debout,
 mode `walk`, activé et healthy.
@@ -118,8 +120,8 @@ Depuis WSL, `coincoin-cli status` a établi la session WebRTC et reçu
 `robot.health`. Docker Engine **29.8.2**, Compose **5.6.0**. Le bridge Docker
 par défaut a joint `192.0.2.1:8443`, établi WebRTC, puis exécuté avec
 succès `coincoin-cli status` et `coincoin-cli move 0.1 0 0 1`. `/healthz`
-répond HTTP **200** sur le port affecté **8779**. Une commande Docker de
-3 secondes `move 0.2 0 0 3` a avancé de **0,211 m**.
+répond HTTP **200** sur le port affecté **8779**. Après le rebase, une commande
+Docker de 3 secondes `move 0.2 0 0 3` a avancé de **0,228 m**.
 
 Le premier démarrage Compose échouait parce que le montage local `.cache/logs`
 était `root:root`; le répertoire de ce worktree S9 seulement a été corrigé en
