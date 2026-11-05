@@ -264,7 +264,7 @@ Le harness du vrai AudioWorklet est séparé des tests Python. Après
 cache indiqué ci-dessus (aucun Node global n'est requis) :
 
 ```sh
-"$PYRIGHT_PYTHON_CACHE_DIR/nodeenv/bin/node" --test tests/js/play_worklet.test.mjs
+"$PYRIGHT_PYTHON_CACHE_DIR/pyright-python/nodeenv/bin/node" --test tests/js/play_worklet.test.mjs
 ```
 
 Node.js n'est pas requis pour exécuter le service.
