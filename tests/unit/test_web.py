@@ -24,8 +24,9 @@ async def test_hello_and_healthz() -> None:
         assert missing.status == 404
 
 
+@pytest.mark.parametrize("argv, host", [([], "0.0.0.0"), (["--host", "127.0.0.1"], "127.0.0.1")])
 def test_entrypoint_is_offline_and_uses_fixed_internal_port(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], host: str
 ) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("ECHO", raising=False)
@@ -36,8 +37,8 @@ def test_entrypoint_is_offline_and_uses_fixed_internal_port(
         called.append((host, port))
 
     monkeypatch.setattr(web, "run_app", run_app)
-    main([])
-    assert called == [("0.0.0.0", 8765)]
+    main(argv)
+    assert called == [(host, 8765)]
     entry = json.loads(next((tmp_path / "logs").glob("*.jsonl")).read_text(encoding="utf-8"))
     assert entry["type"] == "state"
     assert entry["service"] == "starting"

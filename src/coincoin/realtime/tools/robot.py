@@ -65,28 +65,27 @@ def schemas(
         for name, fields in properties.items()
     }
     result["quack"]["required"] = ["tag"]
-    result["look"]["oneOf"] = [
-        {"required": ["direction"], "not": {"anyOf": [{"required": [k]} for k in ("x", "y", "z")]}},
-        {"required": ["x", "y", "z"], "not": {"required": ["direction"]}},
-    ]
     return result
 
 
 DESCRIPTIONS = {
     "move": (
-        "Avance / move: returns immediately; movement lasts duration_s seconds, then stops. "
+        "Move: returns immediately; movement lasts duration_s seconds, then stops. "
         "A new move or turn replaces the previous motion; do not chain them before it finishes."
     ),
-    "turn": "Tourne / turn degrees, positive = left; tourne a gauche = +90. Returns immediately.",
-    "stop": "Arrete / stop all robot motion immediately.",
-    "look": "Regarde / look in a direction or at x forward, y left, z up (metres, body frame).",
-    "set_pose": "Posture / set a persistent bounded pose, z metres, roll/pitch radians.",
-    "reset_pose": "Posture neutre / reset the persistent pose.",
-    "sit": "Assieds-toi / sit, idempotent.",
-    "stand": "Leve-toi / stand, idempotent.",
-    "do_skill": "Figure / perform one currently available skill.",
-    "quack": "Cancane / quack; wheee can be held for at most 3 seconds.",
-    "status": "Etat / short robot posture, safety, mode and health summary.",
+    "turn": "Turn degrees, positive = left; a left quarter-turn is +90. Returns immediately.",
+    "stop": "Stop all robot motion immediately.",
+    "look": (
+        "Look: provide either direction alone or all of x, y, z, never both. "
+        "Coordinates are x forward, y left, z up (metres, body frame). hold_s is optional."
+    ),
+    "set_pose": "Set a persistent bounded pose, z metres, roll/pitch radians.",
+    "reset_pose": "Reset the persistent pose.",
+    "sit": "Sit, idempotent.",
+    "stand": "Stand, idempotent.",
+    "do_skill": "Perform one currently available skill.",
+    "quack": "Quack; wheee can be held for at most 3 seconds.",
+    "status": "Short robot posture, safety, mode and health summary.",
 }
 
 
@@ -133,8 +132,8 @@ def install_tools(app: App, handler: RobotHandler) -> dict[str, dict[str, Any]]:
 
         app.register_tool(
             name,
-            DESCRIPTIONS[name] + " Announce briefly what you do / annonce brievement l'action. "
-            "If clamped is present, say you go slower / dis que tu vas moins vite.",
+            DESCRIPTIONS[name] + " Briefly announce the action in the conversation language. "
+            "If clamped is present, explain the limited values, including duration.",
             schema,
             dispatch,
         )

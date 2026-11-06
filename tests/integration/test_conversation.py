@@ -3,6 +3,7 @@ import json
 import time
 from pathlib import Path
 
+import pytest
 from pydantic import SecretStr
 
 from coincoin.app import App
@@ -96,6 +97,24 @@ async def test_fake_realtime_replays_real_trace_and_tool_turn(tmp_path: Path) ->
         await fake.close()
 
 
+async def test_empty_voice_setting_falls_back_to_verse() -> None:
+    fake = FakeRealtimeServer()
+    await fake.start()
+    settings = Settings.model_construct(
+        openai_api_key=SecretStr("test-key"),
+        openai_realtime_model="gpt-realtime-2.1",
+        openai_realtime_voice="",
+    )
+    session = RealtimeSession(settings, base_url=fake.websocket_url)
+    try:
+        await session.open("Test instructions", [])
+        update = next(event for event in fake.received if event.get("type") == "session.update")
+        assert update["session"]["audio"]["output"]["voice"] == "verse"
+    finally:
+        await session.close()
+        await fake.close()
+
+
 async def test_sleeping_app_does_not_send_microphone_audio(tmp_path: Path) -> None:
     fake = FakeRealtimeServer()
     await fake.start()
@@ -117,14 +136,26 @@ async def test_sleeping_app_does_not_send_microphone_audio(tmp_path: Path) -> No
         await fake.close()
 
 
-async def test_realtime_session_loss_reconnects_and_is_journaled(tmp_path: Path) -> None:
+@pytest.mark.parametrize("language", ["auto", "French", "English"])
+async def test_realtime_session_loss_reconnects_and_is_journaled(
+    tmp_path: Path, language: str
+) -> None:
     attempts = 0
+    sessions: list[_ReconnectSession] = []
     journal = Journal(log_dir=tmp_path / "logs")
+    settings = _settings()
+    settings.response_language = language
+
+    def factory(settings: Settings) -> _ReconnectSession:
+        session = _ReconnectSession(settings, app, next_attempt())
+        sessions.append(session)
+        return session
+
     app = App(
-        _settings(),
+        settings,
         _FakeAudio(),
         journal,
-        session_factory=lambda settings: _ReconnectSession(settings, app, next_attempt()),
+        session_factory=factory,
     )
     app.state = State(Mode.AWAKE)
 
@@ -141,6 +172,12 @@ async def test_realtime_session_loss_reconnects_and_is_journaled(tmp_path: Path)
         for line in path.read_text(encoding="utf-8").splitlines()
     ]
     assert attempts == 2
+    expected = (
+        "Reply in the user's language"
+        if language == "auto"
+        else f"Use {language} as the default response language"
+    )
+    assert all(expected in session.instructions for session in sessions)
     assert any(entry["type"] == "error" for entry in entries)
 
 
@@ -267,9 +304,10 @@ class _ReconnectSession(RealtimeSession):
         super().__init__(settings)
         self.app = app
         self.attempt = attempt
+        self.instructions = ""
 
     async def open(self, instructions: str, tools: list[dict[str, object]]) -> None:
-        _ = instructions, tools
+        self.instructions = instructions
 
     async def events(self):
         if self.attempt == 1:

@@ -85,10 +85,11 @@ class ScriptedRealtime(FakeRealtimeServer):
 
 
 @pytest.fixture
-async def rig(tmp_path: Path):
+async def rig(tmp_path: Path, request: pytest.FixtureRequest):
     robot = FakeRobotd()
     await robot.start()
     settings = _settings()
+    settings.max_move_s = getattr(request, "param", 5)
     settings.robot_link = f"tcp://127.0.0.1:{robot.port}"
     feature = RobotFeature()
     controls: list[dict[str, object]] = []
@@ -181,6 +182,33 @@ async def test_dynamic_skill_schema_refreshes_and_excludes_toggle(rig) -> None:
     assert definition["parameters"]["properties"]["name"]["enum"] == ["new_skill", "ground_pick"]
 
 
+async def test_exported_tool_schemas_have_realtime_compatible_roots(rig) -> None:
+    app, feature, _, _ = rig
+    await feature.skills_context()
+    forbidden = {"oneOf", "anyOf", "allOf", "enum", "const", "not"}
+    for definition in app.tools.definitions():
+        schema = definition["parameters"]
+        assert schema["type"] == "object", definition["name"]
+        assert not forbidden.intersection(schema), definition["name"]
+    look = next(d for d in app.tools.definitions() if d["name"] == "look")
+    assert look["parameters"]["required"] == []
+    assert set(look["parameters"]["properties"]) == {"direction", "x", "y", "z", "hold_s"}
+    assert "never both" in look["description"]
+
+
+@pytest.mark.parametrize("rig", [30], indirect=True)
+async def test_configured_duration_is_shared_by_tool_schema_and_governor(rig) -> None:
+    app, feature, _, _ = rig
+    move = next(d for d in app.tools.definitions() if d["name"] == "move")
+    assert move["parameters"]["properties"]["duration_s"]["maximum"] == 30
+    result = await app.tools.dispatch("move", '{"vx":0.1,"vy":0,"vyaw":0,"duration_s":10}', app)
+    assert result["ok"] and not result.get("clamped")
+    await feature.governor.stop()
+    result = await app.tools.dispatch("move", '{"vx":0.1,"vy":0,"vyaw":0,"duration_s":45}', app)
+    assert result["ok"] and result["clamped"] == {"duration_s": 30}
+    await feature.governor.stop()
+
+
 @pytest.mark.parametrize(
     ("name", "arguments"),
     [
@@ -188,8 +216,12 @@ async def test_dynamic_skill_schema_refreshes_and_excludes_toggle(rig) -> None:
         ("move", '{"vx":NaN,"vy":0,"vyaw":0,"duration_s":1}'),
         ("move", '{"vx":0.1}'),
         ("turn", '{"degrees":90,"surprise":1}'),
+        ("look", "{}"),
         ("look", '{"direction":"haut","x":1,"y":0,"z":1}'),
+        ("look", '{"direction":"haut","x":1}'),
         ("look", '{"x":1}'),
+        ("look", '{"y":1,"z":0}'),
+        ("look", '{"hold_s":1}'),
         ("look", '{"direction":"ailleurs"}'),
         ("quack", '{"tag":"greet","hold_s":1}'),
         ("quack", '{"tag":"wheee","hold_s":4}'),

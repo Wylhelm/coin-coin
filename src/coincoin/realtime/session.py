@@ -67,7 +67,7 @@ class RealtimeSession:
         model = self.settings.openai_realtime_model or "gpt-realtime-2.1"
         if not model:
             raise RealtimeConnectionError("OPENAI_REALTIME_MODEL is empty")
-        voice = self.settings.openai_realtime_voice or "marin"
+        voice = self.settings.openai_realtime_voice or "verse"
         if not voice:
             raise RealtimeConnectionError("OPENAI_REALTIME_VOICE is empty")
 

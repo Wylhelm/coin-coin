@@ -10,7 +10,8 @@ def test_master_defaults() -> None:
     settings = Settings()
     assert settings.model_dump(exclude={"openai_api_key", "openclaw_token", "relay_token"}) == {
         "openai_realtime_model": "gpt-realtime-2.1",
-        "openai_realtime_voice": "marin",
+        "openai_realtime_voice": "verse",
+        "response_language": "auto",
         "openclaw_url": "http://127.0.0.1:18789",
         "openclaw_agent": "coin-coin",
         "robot_link": "tcp://host.docker.internal:7810",
@@ -73,6 +74,8 @@ def test_example_dotenv_has_master_defaults(monkeypatch: pytest.MonkeyPatch) -> 
         ("WAKE_THRESHOLD", "1.1"),
         ("WAKE_ENGINE", "unknown"),
         ("QUACK_SINK", "unknown"),
+        ("RESPONSE_LANGUAGE", ""),
+        ("RESPONSE_LANGUAGE", "  "),
     ],
 )
 def test_invalid_configuration_is_explicit(

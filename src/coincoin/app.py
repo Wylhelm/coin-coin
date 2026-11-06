@@ -653,7 +653,10 @@ class App:
                     instructions_context[key] = await value if inspect.isawaitable(value) else value
                 instructions_context["conversation_summary"] = self._conversation_summary()
                 await session.open(
-                    build_instructions(instructions_context), self.tools.definitions()
+                    build_instructions(
+                        instructions_context, language=self.settings.response_language
+                    ),
+                    self.tools.definitions(),
                 )
                 async with self._audio_lock:
                     if generation != self._session_generation or self.state.mode == Mode.SLEEPING:
@@ -1078,6 +1081,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="coincoin")
     parser.add_argument("--echo", action="store_true", help="echo microphone audio to playback")
     parser.add_argument(
+        "--host", default="0.0.0.0", help="HTTP bind address (default: all interfaces)"
+    )
+    parser.add_argument(
         "--tone", action="store_true", help="play a 1 kHz tone and measure round-trip latency"
     )
     args = parser.parse_args(argv)
@@ -1096,7 +1102,7 @@ def main(argv: list[str] | None = None) -> None:
             journal=journal,
             settings=None if echo or args.tone else settings,
         ),
-        host="0.0.0.0",
+        host=args.host,
         port=8765,
     )
 

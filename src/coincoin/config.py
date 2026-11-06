@@ -2,14 +2,14 @@
 
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Load the master specification's settings from the environment and .env.
 
-    Realtime defaults are the model and voice exercised by S4's real trace.
+    Realtime defaults use S4's model and the voice selected for live audition.
     The S3 Vosk threshold is the measured best-compromise setting, not a
     validated production threshold.
     Empty credentials are valid for the offline foundation and its fake services.
@@ -25,7 +25,8 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr = SecretStr("")
     openai_realtime_model: str = "gpt-realtime-2.1"
-    openai_realtime_voice: str = "marin"
+    openai_realtime_voice: str = "verse"
+    response_language: str = Field(default="auto", min_length=1, max_length=80)
     openclaw_url: str = "http://127.0.0.1:18789"
     openclaw_token: SecretStr = SecretStr("")
     openclaw_agent: str = "coin-coin"
@@ -44,3 +45,11 @@ class Settings(BaseSettings):
     log_audio: bool = False
     log_retention_days: int = Field(default=30, gt=0)
     relay_token: SecretStr = SecretStr("")
+
+    @field_validator("response_language")
+    @classmethod
+    def nonempty_response_language(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("RESPONSE_LANGUAGE must be a language name or auto")
+        return value
