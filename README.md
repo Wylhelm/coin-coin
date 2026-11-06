@@ -254,6 +254,12 @@ Node.js is needed only for the browser audio tests above. Simulator/model-depend
 tests require their explicit prerequisites; skipped tests are not evidence of
 live behavior. Keep genuine failed measurements instead of relaxing thresholds.
 
+GitHub Actions runs these offline checks on pull requests and pushes to `main`,
+using Python 3.12 and Node.js 22 without OpenAI or robot credentials. CI does not
+validate the simulator or physical hardware. Pull requests normally require
+code-owner review and passing CI; an administrator can explicitly bypass these
+requirements through a pull request.
+
 | Directory | Contents |
 |---|---|
 | `src/coincoin/` | App, browser UI, audio pipeline, tools, robot governor and memory. |
