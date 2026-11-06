@@ -196,6 +196,12 @@ walking-slot override. Restart the local stack once after updating both checkout
 On real hardware, mode selection does **not** physically fit or remove skates;
 that equipment must be changed by a person before selecting its mode.
 
+If the simulated duck has fallen, **"Releve-toi"** retries its current mode's
+assisted home ramp; **"Reviens a la marche"** also removes the skates. Success
+requires fresh upright state and a completed ramp, not just an accepted request.
+This recovery is available only when `robot.policies` reports `simulated: true`;
+real-robot fall, pickup, stale-state and STOP protections remain in force.
+
 | Action | Behavior |
 |---|---|
 | Say "Coin coin" | Wakes local listening and opens a Realtime conversation. |

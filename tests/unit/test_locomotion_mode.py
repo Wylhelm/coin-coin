@@ -115,3 +115,86 @@ async def test_unconfirmed_or_unhealthy_switch_is_not_success(rig):
     link.responses["robot.health"] = {"healthy": False}
     outcome = await governor.set_mode("roller")
     assert not outcome.ok and "unhealthy" in outcome.reason
+
+
+@pytest.mark.parametrize("target", ["walk", "roller"])
+async def test_simulation_can_recover_after_a_fall_but_waits_until_upright(rig, target):
+    governor, link, clock = rig
+    link.policies["simulated"] = True
+    link.mode = "roller"
+    link.safety["fallen"] = True
+    pending = asyncio.create_task(governor.set_mode(target))
+    await pump()
+    assert commands(link, "robot.setMode")[-1].params == {"mode": target}
+    assert not pending.done()
+    await advance(clock, 0.5)
+    assert not pending.done()
+    link.safety["fallen"] = False
+    await advance(clock, 0.8)
+    assert (await pending).ok
+    assert not commands(link, "robot.move")
+
+
+async def test_stand_recovers_a_fallen_simulated_robot_in_its_current_mode(rig):
+    governor, link, clock = rig
+    link.policies["simulated"] = True
+    link.mode = "roller"
+    link.safety["fallen"] = True
+    await advance(clock, 0.2)
+    pending = asyncio.create_task(governor.stand())
+    await pump()
+    assert commands(link, "robot.setMode")[-1].params == {"mode": "roller"}
+    link.safety["fallen"] = False
+    await advance(clock, 0.8)
+    assert (await pending).ok
+
+
+async def test_simulated_recovery_does_not_override_pickup_staleness_or_stop(rig):
+    governor, link, clock = rig
+    link.policies["simulated"] = True
+    link.safety.update(fallen=True, picked_up=True)
+    assert not (await governor.set_mode("walk")).ok
+    assert not commands(link, "robot.setMode")
+    link.safety["picked_up"] = False
+    await advance(clock, 0.2)
+    pending = asyncio.create_task(governor.set_mode("roller"))
+    await pump()
+    await governor.stop()
+    await advance(clock, 0.2)
+    assert not (await pending).ok
+    link.streaming = False
+    clock.advance(2)
+    count = len(commands(link, "robot.setMode"))
+    assert not (await governor.set_mode("walk")).ok
+    assert len(commands(link, "robot.setMode")) == count
+
+
+async def test_simulated_recovery_times_out_if_the_robot_stays_down(rig):
+    governor, link, clock = rig
+    link.policies["simulated"] = True
+    link.safety["fallen"] = True
+    await advance(clock, 0.2)
+    pending = asyncio.create_task(governor.set_mode("roller"))
+    await pump()
+    await advance(clock, 10.2)
+    outcome = await pending
+    assert not outcome.ok and "within 10 s" in outcome.reason
+
+
+@pytest.mark.parametrize("simulated", [False, None, "true", 1])
+async def test_recovery_requires_an_explicit_simulation_capability(rig, simulated):
+    governor, link, _ = rig
+    link.policies["simulated"] = simulated
+    link.safety["fallen"] = True
+    assert not (await governor.set_mode("walk")).ok
+    assert not (await governor.stand()).ok
+    assert not commands(link, "robot.setMode")
+    assert not commands(link, "robot.do")
+
+
+async def test_simulation_recovery_does_not_allow_moving_while_fallen(rig):
+    governor, link, _ = rig
+    link.policies["simulated"] = True
+    link.safety["fallen"] = True
+    assert not (await governor.move(0.2, 0, 0, 1)).ok
+    assert not commands(link, "robot.move")

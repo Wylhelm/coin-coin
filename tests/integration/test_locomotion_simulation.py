@@ -23,11 +23,35 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def body_read(port):
+BODY_BOOTSTRAP = """
+import mujoco
+from mjlab_microduck.sim import body_server
+
+dispatch = body_server.Handler.dispatch
+def with_fall(self, body, request):
+    if request.get("op") == "test_fall":
+        with body.world.lock:
+            data = body.world.data
+            data.qpos[body.trunk + 2] = 0.06
+            data.qpos[body.trunk + 3:body.trunk + 7] = [0.70710678, 0.70710678, 0, 0]
+            data.qvel[body.trunk_dof:body.trunk_dof + 6] = 0
+            mujoco.mj_forward(body.world.model, data)
+        return {}
+    return dispatch(self, body, request)
+body_server.Handler.dispatch = with_fall
+body_server.main()
+"""
+
+
+def body_request(port, request):
     with socket.create_connection(("127.0.0.1", port), timeout=2) as stream:
-        stream.sendall(b'{"op":"read"}\n')
+        stream.sendall((json.dumps(request) + "\n").encode())
         with stream.makefile("rb") as frames:
             return json.loads(frames.readline())
+
+
+def body_read(port):
+    return body_request(port, {"op": "read"})
 
 
 async def test_real_walk_skate_walk_without_support_during_motion(tmp_path):
@@ -45,6 +69,12 @@ async def test_real_walk_skate_walk_without_support_during_motion(tmp_path):
         next((rl / ".venv").glob("lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so*"))
     )
     env["DUCK_RUNTIME_DIR"] = str(tmp_path)
+    camera_args = []
+    if os.environ.get("DUCK_TEST_LOCOMOTION_CAMERA") == "1":
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            frame_port = reservation.getsockname()[1]
+        camera_args = ["--cameras", "a", "--frame-port", str(frame_port)]
     processes, logs = [], []
     relay = link = governor = None
     try:
@@ -54,8 +84,8 @@ async def test_real_walk_skate_walk_without_support_during_motion(tmp_path):
                 [
                     str(rl / ".venv/bin/python"),
                     "-u",
-                    "-m",
-                    "mjlab_microduck.sim.body_server",
+                    "-c",
+                    BODY_BOOTSTRAP,
                     "--headless",
                     "--port",
                     str(port),
@@ -63,6 +93,7 @@ async def test_real_walk_skate_walk_without_support_during_motion(tmp_path):
                     str(rl / "src/mjlab_microduck/robot/microduck/scene_backlash.xml"),
                     "--keyframe",
                     "SIT",
+                    *camera_args,
                 ],
                 rl,
             ),
@@ -105,7 +136,9 @@ async def test_real_walk_skate_walk_without_support_during_motion(tmp_path):
                 if link.state() is not None:
                     break
                 await asyncio.sleep(0.05)
-        governor = Governor(link, Settings(), SystemClock(), Journal(tmp_path / "journal"))
+        governor = Governor(
+            link, Settings(max_move_s=15), SystemClock(), Journal(tmp_path / "journal")
+        )
         await link.call("robot.enable", {"on": True})
         async with asyncio.timeout(10):
             while True:
@@ -132,11 +165,23 @@ async def test_real_walk_skate_walk_without_support_during_motion(tmp_path):
                     await asyncio.sleep(0.05)
             before = await asyncio.to_thread(body_read, port)
             assert before["mode"] == mode
-            moved = await governor.move(0.2, 0, 0, 3)
+            deadline = asyncio.get_running_loop().time() + (20 if mode == "roller" else 8)
+            while asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.25)
+                idle = await asyncio.to_thread(body_read, port)
+                assert not idle["supported"]
+                assert idle["imu"]["gravity"][2] < -0.8, (mode, "idle", idle)
+            idle = await asyncio.to_thread(body_read, port)
+            assert idle["imu"]["gravity"][2] < -0.8, (mode, "idle", idle)
+            before = idle
+            started = asyncio.get_running_loop().time()
+            moved = await governor.move(0.2, 0, 0, 10 if mode == "roller" else 3)
             assert moved.ok, moved
             completed = await governor.wait_motion()
             assert completed is not None and completed.ok, completed
             after = await asyncio.to_thread(body_read, port)
+            elapsed = asyncio.get_running_loop().time() - started
+            assert 0.9 <= (after["sim_time"] - before["sim_time"]) / elapsed <= 1.1
             assert not after["supported"]
             assert after["mode"] == mode
             distance = math.dist(before["trunk"][:2], after["trunk"][:2])
@@ -145,6 +190,35 @@ async def test_real_walk_skate_walk_without_support_during_motion(tmp_path):
             assert after["imu"]["gravity"][2] < -0.8
             assert (await link.call("robot.health"))["healthy"]
             print(f"{mode}: {distance:.3f} m without support")
+
+        assert (await governor.set_mode("roller")).ok
+        await asyncio.sleep(0.6)
+        assert not (await asyncio.to_thread(body_read, port))["supported"]
+        for mode in ("roller", "walk"):
+            await asyncio.to_thread(body_request, port, {"op": "test_fall"})
+            async with asyncio.timeout(3):
+                while True:
+                    state = link.state()
+                    if state is not None and state["safety"]["fallen"]:
+                        break
+                    await asyncio.sleep(0.05)
+            await asyncio.sleep(0.2)
+            recovered = (
+                await governor.stand() if mode == "roller" else await governor.set_mode(mode)
+            )
+            assert recovered.ok, recovered
+            await asyncio.sleep(3)
+            before = await asyncio.to_thread(body_read, port)
+            assert before["mode"] == mode
+            assert not before["supported"]
+            assert before["imu"]["gravity"][2] < -0.8
+            assert before["trunk_z"] > 0.1
+            assert (await governor.move(0.2, 0, 0, 3)).ok
+            completed = await governor.wait_motion()
+            assert completed is not None and completed.ok, completed
+            after = await asyncio.to_thread(body_read, port)
+            assert after["imu"]["gravity"][2] < -0.8
+            assert math.dist(before["trunk"][:2], after["trunk"][:2]) > 0.02
     finally:
         try:
             if governor is not None:
