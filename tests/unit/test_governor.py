@@ -99,6 +99,37 @@ async def test_configurable_walk_bounds(rig):
     }
 
 
+@pytest.mark.parametrize("duration", [10, 30, 45])
+async def test_long_moves_respect_configured_duration(rig, duration):
+    governor, link, clock = rig
+    governor.settings = Settings(max_move_s=30)
+    result = await governor.move(0.1, 0, 0, duration)
+    assert result.ok
+    assert result.clamped == ({"duration_s": 30} if duration > 30 else None)
+    await pump()
+    await advance(clock, 5.2)
+    assert governor.moving
+    await advance(clock, min(duration, 30) - 5)
+    assert not governor.moving
+    assert commands(link, "robot.stop")[-1].t == pytest.approx(min(duration, 30), abs=0.1)
+    assert link.twist == [0, 0, 0]
+
+
+async def test_stop_interrupts_a_long_move_without_resuming(rig):
+    governor, link, clock = rig
+    governor.settings = Settings(max_move_s=30)
+    assert (await governor.move(0.1, 0, 0, 30)).ok
+    await pump()
+    await advance(clock, 6)
+    assert governor.moving
+    assert (await governor.stop()).ok
+    count = len(commands(link, "robot.move"))
+    await advance(clock, 25)
+    assert len(commands(link, "robot.move")) == count
+    assert not governor.moving
+    assert link.twist == [0, 0, 0]
+
+
 @pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf, True])
 async def test_non_finite_input_refused(rig, value):
     governor, link, _ = rig
@@ -136,9 +167,11 @@ async def test_replacement_does_not_send_stop(rig):
 
 
 @pytest.mark.parametrize("hazard", ["fallen", "picked_up", "stale", "down", "missing_safety"])
-async def test_each_watchdog_stop(rig, hazard):
+@pytest.mark.parametrize("duration", [5, 30])
+async def test_each_watchdog_stop(rig, hazard, duration):
     governor, link, clock = rig
-    await governor.move(0.2, 0, 0, 5)
+    governor.settings = Settings(max_move_s=duration)
+    await governor.move(0.2, 0, 0, duration)
     await pump()
     if hazard in ("fallen", "picked_up"):
         link.safety[hazard] = True

@@ -6,6 +6,38 @@
 > commits mentionnés dans les relevés correspondent à l'historique local
 > d'origine, dont les identifiants diffèrent de l'historique public.
 
+## Public configuration and reproducible live stack — 2026-11-06
+
+- Replace French-only instructions with English source instructions and a
+  configurable `RESPONSE_LANGUAGE` (`auto` follows the user). Preserve explicit
+  language requests and consistent tool announcements across reconnects.
+- Expand the English README with architecture, configuration, simulator setup,
+  safety controls, privacy and the actual live-test results and limitations.
+- Add `scripts/live_stack.py`: preflight-only mode, prepared-checkout paths,
+  unique simulator state/logs, loopback-only relay/app, explicit OpenClaw disable,
+  readiness checks, owned-process shutdown and simulator-lock cleanup.
+- Allow the launcher to override the existing configurable movement ceiling,
+  with duration/completion/STOP regression coverage up to thirty seconds.
+  The repository's conservative five-second default remains unchanged.
+- Add `coincoin --host` so local test stacks need not bind the UI to the network.
+
+## Voix, langue et visualisation du bec — 2026-11-06
+
+- Voix par défaut `verse` pour audition ; une voix explicitement configurée
+  reste prioritaire. Le style demandé est celui d'un jeune homme drôle et joueur,
+  mais l'âge, le genre et le rendu de la voix restent à confirmer à l'écoute.
+- Lors de l'essai live, français par défaut et annonces cohérentes autour des
+  outils ; cette préférence est maintenant locale via `RESPONSE_LANGUAGE`,
+  et non une langue imposée au dépôt public.
+- Documente l'animation visuelle du bec en simulation suivant les commandes de
+  bouche, sans changement de physique ni validation du servo ou du mécanisme.
+- Retire le `oneOf` racine de `look`, refusé par l'API OpenAI Realtime
+  lors du réveil et bloquant l'ouverture de toute la conversation.
+- L'exclusivité direction / point complet reste contrôlée côté service
+  avant toute commande robot et est explicitée dans la description de l'outil.
+- Régression sur les racines des schémas exportés et sur les arguments de
+  regard absents, incomplets ou mélangeant direction et coordonnées.
+
 ## Pré-réception — procédure assemblée et actifs locaux — 2026-11-05
 
 - Procédure actuelle depuis `main=e7cb24f` : modèles, sons, configuration

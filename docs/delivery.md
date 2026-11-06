@@ -101,9 +101,27 @@ Pour le futur essai TCP depuis le clone durable, utiliser les ressources
 | `COINCOIN_PORT`, `COMPOSE_PROJECT_NAME` | `8765`, `coincoin` |
 | `ECHO`, `QUACK_SINK` | `0`, `stream` |
 | `WAKE_ENGINE`, `WAKE_THRESHOLD`, `FOLLOWUP_S`, `LANGS` | `vosk`, `0.9`, `420`, `fr,en` |
-| `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_VOICE` | `gpt-realtime-2.1`, `marin` ; voix à confirmer à l'écoute |
+| `OPENAI_REALTIME_MODEL`, `OPENAI_REALTIME_VOICE` | `gpt-realtime-2.1`, `verse` pour audition ; style demandé : jeune homme drôle et joueur, rendu perçu (dont âge/genre) à confirmer à l'écoute |
 | `OPENAI_API_KEY` | requise pour la conversation réelle, pas pour écho/tonalité |
 | `OPENCLAW_URL`, `OPENCLAW_TOKEN`, `OPENCLAW_AGENT` | facultatifs ; sans jeton, mémoire explicitement indisponible |
+
+La langue n'est pas imposée dans le code : `RESPONSE_LANGUAGE=auto` suit celle
+de l'utilisateur. Une préférence locale telle que `RESPONSE_LANGUAGE=French`
+ou `English` s'applique dès l'ouverture/reconnexion ; une demande explicite de
+changement de langue reste prioritaire pendant la conversation. Les annonces
+avant/après outil suivent la langue de conversation.
+
+Le lanceur reproductible `scripts/live_stack.py` démarre la simulation native,
+la caméra, le relais et Coin-Coin en une commande, sans OpenClaw ni Docker.
+Voir le [README anglais](../README.md#one-command-simulator-stack) pour les
+prérequis, `--check`, les chemins et l'arrêt. `--max-move-s 30` autorise les
+mouvements de dix à trente secondes dans ce créneau de simulation ; le défaut
+public `MAX_MOVE_S=5` reste inchangé. STOP, échéance et contrôles de sécurité
+du gouverneur restent actifs.
+
+L'animation visuelle du bec dans le simulateur suit les commandes de bouche.
+C'est une présentation seulement : elle ne modifie pas la physique et ne valide
+ni le servo ni le mécanisme du bec.
 
 Conserver les bornes du gouverneur de `.env.example`, `LOG_AUDIO=false`.
 Les secrets ne vont ni dans Git ni dans l'historique shell.
