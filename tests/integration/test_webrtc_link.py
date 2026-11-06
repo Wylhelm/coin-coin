@@ -266,7 +266,6 @@ async def test_s1_method_policy_blocks_calls_and_notifications_before_send(
         "robot.rest",
         "robot.shutdown",
         "robot.rebootMotors",
-        "robot.setMode",
         "robot.setSkill",
         "robot.removeSkill",
         "robot.loadPolicy",

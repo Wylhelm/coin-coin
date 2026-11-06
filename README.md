@@ -177,6 +177,25 @@ detected if present.
 
 ### Controls and movement limits
 
+Ask **"Coin coin, mets tes patins et patine vers l'avant pendant deux secondes"**
+to select `roller` and then move, or **"Reviens a la marche"** to select `walk`.
+Switching modes stops motion first, waits for confirmation, and keeps that mode
+until another request changes it. You can alternate repeatedly in one session.
+Skating uses the roller safety limits (no lateral command, yaw at most 0.3 rad/s).
+For manual diagnostics, use `coincoin-cli mode roller` or `coincoin-cli mode walk`.
+
+The simulation needs matching runtime and RL checkouts with **body protocol 2**:
+the runtime selects the correct policy bundle and the simulator swaps the actual
+foot/skate models, including passive wheels and collisions. During the transition,
+the simulator steadies the trunk through the home ramp and briefly while the new
+gait takes over, then releases it. Walking and skating use real contact physics,
+without that support. This is an assisted simulation transition, not an autonomous
+balance or equipment-changing skill. The local policy set must contain `roller.onnx` and
+`roller_crouch.onnx`; `duck-sim` selects it with `[policy] directory` rather than a
+walking-slot override. Restart the local stack once after updating both checkouts.
+On real hardware, mode selection does **not** physically fit or remove skates;
+that equipment must be changed by a person before selecting its mode.
+
 | Action | Behavior |
 |---|---|
 | Say "Coin coin" | Wakes local listening and opens a Realtime conversation. |

@@ -105,6 +105,9 @@ class FakeRobotLink:
                 return {"accepted": True}
             case "robot.mode":
                 return {"mode": self.mode}
+            case "robot.setMode":
+                assert params is not None
+                self.mode = params["mode"]
             case "robot.policies":
                 return copy.deepcopy(self.policies)
             case "robot.enable":

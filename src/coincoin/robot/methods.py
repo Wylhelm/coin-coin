@@ -16,6 +16,7 @@ ROBOT_METHODS = frozenset(
         "robot.health",
         "robot.skills",
         "robot.mode",
+        "robot.setMode",
         "robot.policies",
     }
 )

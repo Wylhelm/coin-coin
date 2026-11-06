@@ -171,6 +171,60 @@ class Governor:
             self._failure("robot.mode", error)
             await self.stop("robot mode unavailable")
 
+    async def set_mode(self, mode: str) -> ToolResult:
+        if mode not in ("walk", "roller"):
+            return self._refuse("set_mode", "mode must be walk or roller")
+        generation = self._stop_generation
+        try:
+            await self.start()
+            async with self._action_lock, self._mode_lock:
+                self._check_safety(generation)
+                await self._cancel(self._motion)
+                self._motion = None
+                await self._action_call(generation, "robot.stop", timeout=0.1)
+                current = await self._action_call(generation, "robot.mode")
+                if not isinstance(current, dict) or current.get("mode") not in ("walk", "roller"):
+                    raise RobotRefused("unsupported or unavailable robot mode")
+                if current["mode"] != mode:
+                    before = await self._policies(generation)
+                    was_sitting = before.get("sitting")
+                    self._mode = None
+                    await self._action_call(generation, "robot.setMode", {"mode": mode})
+                    deadline = self.clock.now() + 10
+                    while True:
+                        self._check_safety(generation)
+                        current = await self._action_call(generation, "robot.mode")
+                        if not isinstance(current, dict) or current.get("mode") not in (
+                            "walk",
+                            "roller",
+                        ):
+                            raise RobotRefused("unsupported or unavailable robot mode")
+                        policies = await self._policies(generation)
+                        state = self.link.state()
+                        if (
+                            current.get("mode") == mode
+                            and (not policies["enabled"] or policies.get("homed") is True)
+                            and policies.get("sitting") == was_sitting
+                            and (state is not None and state.get("policy") != "rise")
+                        ):
+                            health = await self._action_call(generation, "robot.health")
+                            if not isinstance(health, dict) or health.get("healthy") is not True:
+                                raise RobotRefused("robot unhealthy after mode change")
+                            break
+                        if self.clock.now() >= deadline:
+                            raise RobotRefused("robot mode change did not complete within 10 s")
+                        await self.clock.sleep(0.1)
+                self._mode = mode
+                self._mode_at = self.clock.now()
+        except ROBOT_ERRORS as error:
+            self._mode = None
+            self._mode_at = -math.inf
+            outcome = self._failure("set_mode", error)
+            await self.stop("mode change failed")
+            return outcome
+        self.journal.write("tool_result", method="set_mode", mode=mode)
+        return ToolResult(True, detail=f"locomotion mode: {mode}")
+
     async def _watch(self) -> None:
         last_reason: str | None = None
         was_connected = False

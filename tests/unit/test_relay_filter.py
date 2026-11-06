@@ -25,7 +25,6 @@ def test_every_permitted_method_passes_exactly(methods, method):
         "robot.rest",
         "robot.shutdown",
         "robot.rebootMotors",
-        "robot.setMode",
         "robot.setSkill",
         "robot.removeSkill",
         "robot.loadPolicy",
