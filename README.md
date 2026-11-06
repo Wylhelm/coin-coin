@@ -97,9 +97,32 @@ Arrange prepared checkouts as follows, or pass explicit paths:
 ```text
 workspace/
   coin-coin/
-  microduck/       # runtime, including scripts/duck-sim
-  microduck_rl/    # simulator, with its own .venv and policies
+  microduck/       # Pollen Robotics runtime, including scripts/duck-sim
+  microduck_rl/    # Wylhelm simulator fork, develop branch, own .venv/policies
 ```
+
+Clone the repositories from the workspace directory:
+
+```sh
+mkdir -p workspace && cd workspace
+git clone https://github.com/Wylhelm/coin-coin.git coin-coin
+git clone https://github.com/pollen-robotics/microduck.git microduck
+git clone --branch develop https://github.com/Wylhelm/microduck_rl.git microduck_rl
+```
+
+The runtime comes from the upstream
+[Pollen Robotics `microduck`](https://github.com/pollen-robotics/microduck)
+repository. The visual beak animation is currently published only in
+[Wylhelm's `microduck_rl` fork on `develop`](https://github.com/Wylhelm/microduck_rl/tree/develop);
+no pull request for that change has been submitted to Pollen Robotics. The
+upstream simulator may therefore not include the visual-mouth animation, and
+cloning upstream alone does not guarantee it will appear.
+
+The live check documented below used a local `microduck` checkout whose
+`scripts/duck-sim` had already been modified for WSL GPU parameters. It did
+**not** test a fresh, unmodified clone of the upstream runtime; that clone may
+need an equivalent WSL/GPU adjustment before the simulator starts. The
+Coin-Coin launcher does not install or apply that runtime-specific change.
 
 In the Coin-Coin checkout:
 
