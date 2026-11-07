@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import aiohttp
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 from aiortc.exceptions import InvalidStateError
 from aiortc.mediastreams import MediaStreamError
 from aiortc.sdp import candidate_from_sdp
@@ -32,6 +32,9 @@ MAX_MOVE_BUFFERED_BYTES = 0
 FRAME_STALE_S = 2.0
 # The robot or mediad restarting takes seconds; retry soon enough to be back promptly.
 MAX_RECONNECT_S = 10.0
+# The link subscribes to robot.state at 10 Hz; this long without one, the peer is gone even if
+# ICE consent (about 30 s in aiortc) has not noticed yet.
+STATE_LOST_S = 3.0
 
 
 def _encode_video_frame(video_frame: VideoFrame, captured_at: float) -> Frame:
@@ -171,6 +174,7 @@ class WebRtcLink:
         self.producer_meta: dict[str, Any] = {}
         self.hello: dict[str, Any] | None = None
         self.last_error = ""
+        self._session_id = ""
 
     @property
     def connected(self) -> bool:
@@ -321,9 +325,13 @@ class WebRtcLink:
                 session_id = started.get("sessionId")
                 if not isinstance(session_id, str) or not session_id:
                     raise LinkDown("mediad returned an invalid WebRTC session")
+                self._session_id = session_id
                 LOGGER.debug("Started mediad WebRTC session")
 
-                self._peer = RTCPeerConnection()
+                # LAN only: host candidates pair directly and mediad offers any relay itself
+                # (mediad/src/turn.rs). aiortc's default public STUN server would only add a
+                # third-party request and a multi-second gathering timeout to every connection.
+                self._peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
                 self._channel_open.clear()
                 self._peer_connected.clear()
                 self._peer_lost.clear()
@@ -518,14 +526,45 @@ class WebRtcLink:
             LOGGER.warning("WebRTC video receiver failed (%s)", type(error).__name__)
 
     async def _wait_link_down(self, connection: JsonRpcConnection) -> None:
-        closed = asyncio.create_task(connection.wait_closed())
-        peer_lost = asyncio.create_task(self._peer_lost.wait())
+        watchers = (
+            asyncio.create_task(connection.wait_closed()),
+            asyncio.create_task(self._peer_lost.wait()),
+            asyncio.create_task(self._watch_signalling()),
+            asyncio.create_task(self._watch_state(connection)),
+        )
         try:
-            await asyncio.wait((closed, peer_lost), return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if not task.cancelled() and (error := task.exception()) is not None:
+                    self.last_error = str(error)
+                    LOGGER.warning("WebRTC robot link lost: %s", error)
         finally:
-            closed.cancel()
-            peer_lost.cancel()
-            await asyncio.gather(closed, peer_lost, return_exceptions=True)
+            for task in watchers:
+                task.cancel()
+            await asyncio.gather(*watchers, return_exceptions=True)
+
+    async def _watch_signalling(self) -> None:
+        """mediad ends the session, or dies, before ICE consent notices."""
+        while True:
+            try:
+                message = await self._receive_signal()
+            except LinkDown as error:
+                raise LinkDown("mediad signalling closed") from error
+            if message.get("sessionId") not in (None, self._session_id):
+                continue
+            if message["type"] in ("endSession", "error"):
+                raise LinkDown("mediad ended the WebRTC session")
+            if message["type"] == "peer":
+                with contextlib.suppress(LinkDown, ValueError, InvalidStateError):
+                    await self._handle_peer_signal(message, self._session_id)
+
+    async def _watch_state(self, connection: JsonRpcConnection) -> None:
+        started = time.monotonic()
+        while True:
+            await asyncio.sleep(0.25)
+            age = connection.state_age()
+            if age > STATE_LOST_S and time.monotonic() - started > STATE_LOST_S:
+                raise LinkDown(f"no robot.state for {min(age, time.monotonic() - started):.1f} s")
 
     async def _cleanup(self) -> None:
         connection, self._connection = self._connection, None

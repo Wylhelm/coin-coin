@@ -56,6 +56,18 @@ class PatternVideoTrack(VideoStreamTrack):
         return frame
 
 
+STATE_NOTIFICATION = json.dumps(
+    {
+        "jsonrpc": "2.0",
+        "method": "robot.state",
+        "params": {
+            "safety": {"fallen": False, "picked_up": False},
+            "move": {"requested": [0, 0, 0], "applied": [0, 0, 0]},
+        },
+    }
+)
+
+
 class LocalMediad:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
@@ -66,10 +78,21 @@ class LocalMediad:
         # Like mediad's route.rs: robot.setMode never crosses the WebRTC route.
         self.refuse_set_mode = True
         self.simulated = True
+        # When set, robot.state repeats at 20 Hz until `state_frozen` (a producer that hangs).
+        self.stream_state = False
+        self.state_frozen = False
         self.meta = {"name": "test", "api_version": "47", "simulated": "true"}
         self._peers: set[RTCPeerConnection] = set()
+        self._sockets: set[web.WebSocketResponse] = set()
+        # A crashed mediad: signalling gone, the peer's SCTP/ICE not (yet) noticing.
+        self.hold_peers = False
         self._port: int | None = None
         self._server = self._new_server()
+
+    async def _stream_state(self, control: Any) -> None:
+        while control.readyState == "open" and not self.state_frozen:
+            control.send(STATE_NOTIFICATION)
+            await asyncio.sleep(0.05)
 
     def _new_server(self) -> TestServer:
         server = TestServer(web.Application(), port=self._port)
@@ -98,9 +121,15 @@ class LocalMediad:
         self._server = self._new_server()
         await self.start()
 
+    async def drop_signalling(self) -> None:
+        """Close every signalling socket and leave the peers running."""
+        self.hold_peers = True
+        await asyncio.gather(*(ws.close() for ws in list(self._sockets)))
+
     async def _handle(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
+        self._sockets.add(ws)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self._peers.add(peer)
         channel = None
@@ -172,21 +201,9 @@ class LocalMediad:
                                 json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
                             )
                             if method == "robot.subscribe":
-                                control.send(
-                                    json.dumps(
-                                        {
-                                            "jsonrpc": "2.0",
-                                            "method": "robot.state",
-                                            "params": {
-                                                "safety": {"fallen": False, "picked_up": False},
-                                                "move": {
-                                                    "requested": [0, 0, 0],
-                                                    "applied": [0, 0, 0],
-                                                },
-                                            },
-                                        }
-                                    )
-                                )
+                                control.send(STATE_NOTIFICATION)
+                                if self.stream_state:
+                                    asyncio.create_task(self._stream_state(control))
                             if method == "robot.health" and self.disconnect_once:
                                 self.disconnect_once = False
                                 asyncio.create_task(peer.close())
@@ -210,23 +227,27 @@ class LocalMediad:
                             RTCSessionDescription(sdp=description["sdp"], type=description["type"])
                         )
         finally:
-            if peer.connectionState != "closed":
-                await peer.close()
-            self._peers.discard(peer)
+            self._sockets.discard(ws)
+            if not self.hold_peers:
+                if peer.connectionState != "closed":
+                    await peer.close()
+                self._peers.discard(peer)
         return ws
 
 
 @pytest.fixture
 async def mediad(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        webrtc_module,
-        "RTCPeerConnection",
-        lambda: RTCPeerConnection(RTCConfiguration(iceServers=[])),
-    )
+    def lan_only(configuration: RTCConfiguration) -> RTCPeerConnection:
+        # A public STUN server would add a gathering timeout and a third-party request.
+        assert configuration.iceServers == []
+        return RTCPeerConnection(configuration)
+
+    monkeypatch.setattr(webrtc_module, "RTCPeerConnection", lan_only)
     server = LocalMediad()
     await server.start()
     yield server
-    await server.close()
+    async with asyncio.timeout(10):
+        await server.close()
 
 
 @pytest.mark.parametrize(

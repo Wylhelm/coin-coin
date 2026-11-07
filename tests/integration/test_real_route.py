@@ -18,7 +18,8 @@ from coincoin.journal import Journal
 from coincoin.robot.capabilities import probe
 from coincoin.robot.feature import LINK_LOST, RobotFeature
 from coincoin.robot.frames import FrameError
-from coincoin.robot.webrtc_link import FRAME_STALE_S, WebRtcLink
+from coincoin.robot.governor import Governor
+from coincoin.robot.webrtc_link import FRAME_STALE_S, STATE_LOST_S, WebRtcLink
 from tests.integration.test_s4_regressions import _Audio
 from tests.integration.test_webrtc_link import LocalMediad, until
 from tests.integration.test_webrtc_link import mediad as mediad  # noqa: F401 - fixture
@@ -68,9 +69,13 @@ def _feature_app(tmp_path: Path, url: str) -> tuple[App, RobotFeature]:
 
 
 def _entries(app: App) -> list[dict[str, Any]]:
+    return _journal(app.journal.log_dir)
+
+
+def _journal(log_dir: Path) -> list[dict[str, Any]]:
     return [
         json.loads(line)
-        for path in app.journal.log_dir.glob("*.jsonl")
+        for path in log_dir.glob("*.jsonl")
         for line in path.read_text().splitlines()
     ]
 
@@ -204,3 +209,77 @@ async def test_doctor_refuses_sim_target_on_a_real_robot(mediad: LocalMediad) ->
     steps = {step.name: step for step in report.steps}
     assert not report.ok and steps["target"].status == FAIL
     assert "sim-only tools (go_to, assisted get-up) disabled" in steps["capabilities"].detail
+
+
+async def test_governor_stops_when_state_freezes_while_the_link_stays_up(
+    mediad: LocalMediad, tmp_path: Path
+) -> None:
+    mediad.stream_state = True
+    settings = Settings()
+    link = WebRtcLink(mediad.url, clock=SystemClock())
+    governor = Governor(link, settings, SystemClock(), Journal(tmp_path, retention_days=1))
+    try:
+        await link.connect()
+        await until(lambda: link.state() is not None)
+        result = await governor.move(0.1, 0, 0, 4)
+        assert result.ok and governor.moving
+        mediad.state_frozen = True
+        frozen = time.monotonic()
+        await until(lambda: not governor.moving)
+        assert time.monotonic() - frozen < 2.5
+        assert link.connected
+        assert any(record.get("method") == "robot.stop" for record in mediad.records)
+        assert any(
+            entry.get("action") == "stop" and entry.get("reason") == "robot state stale"
+            for entry in _journal(tmp_path)
+        )
+    finally:
+        await governor.close()
+        await link.close()
+
+
+async def _down_and_back(mediad: LocalMediad, break_link) -> float:
+    events: list[str] = []
+    link = WebRtcLink(
+        mediad.url,
+        clock=SystemClock(),
+        on_up=lambda: events.append("up"),
+        on_down=lambda: events.append("down"),
+    )
+    try:
+        await link.connect()
+        await until(lambda: link.state() is not None)
+        broken = time.monotonic()
+        await break_link()
+        await until(lambda: "down" in events)
+        detected = time.monotonic() - broken
+        assert not link.connected
+        await until(lambda: events.count("up") == 2 and link.connected)
+        await until(lambda: link.state_age() < 1)
+        return detected
+    finally:
+        await link.close()
+
+
+async def test_link_notices_mediad_signalling_dying_before_ice_does(
+    mediad: LocalMediad,
+) -> None:
+    mediad.stream_state = True
+    assert await _down_and_back(mediad, mediad.drop_signalling) < 1.5
+
+
+async def test_link_notices_a_silent_state_stream(mediad: LocalMediad) -> None:
+    mediad.stream_state = True
+
+    async def freeze() -> None:
+        mediad.state_frozen = True
+        await asyncio.sleep(0)
+
+    async def thaw() -> None:
+        await until(lambda: mediad.sessions >= 2)
+        mediad.state_frozen = False
+
+    thawing = asyncio.create_task(thaw())
+    detected = await _down_and_back(mediad, freeze)
+    await thawing
+    assert STATE_LOST_S <= detected < STATE_LOST_S + 1.5
