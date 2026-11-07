@@ -50,7 +50,10 @@ The relay bridges allowlisted JSON-RPC requests to MicroDuck's Unix sockets.
 The governor bounds speed and movement duration, streams movement setpoints,
 checks fresh robot safety state and stops on completion or hazards. The robot's
 deadman is a separate last line of defense if communication disappears.
-TCP is the default transport; WebRTC is experimental.
+TCP is the default transport. WebRTC (`webrtc://host:8443`) is the path a
+delivered robot exposes: mediad signalling plus a `control` DataChannel carrying the
+same JSON-RPC, with the camera as a video track and no relay. See
+[Connecting to a robot](#connecting-to-a-robot).
 
 The simulator and runtime are **separate repositories**, not bundled dependencies.
 The simulator's optional visual-mouth support animates a private render model:
@@ -266,6 +269,8 @@ Restart the service after changing them.
 | `OPENAI_REALTIME_VOICE` | `verse`; explicitly configured voices remain supported. |
 | `RESPONSE_LANGUAGE` | `auto`: follow the user. Examples: `English`, `French`, `Spanish`. Explicit spoken language requests take precedence during a conversation. |
 | `ROBOT_LINK`, `FRAME_LINK` | TCP robot/camera endpoints; the test launcher overrides both to localhost. |
+| `ROBOT_TARGET`, `ROBOT_HOST`, `ROBOT_SIGNALLING_PORT` | Empty: use `ROBOT_LINK`. `sim` (host defaults to `127.0.0.1`) or `robot` (host required: duck name or IP) selects `webrtc://ROBOT_HOST:8443`. |
+| `PERSON_MODE_TIMEOUT_S` | `120`: how long the duck waits for a person to change its mode when the link refuses `robot.setMode`. |
 | `RELAY_TOKEN` | Shared TCP relay token. Empty is permitted for loopback-only simulation, not remote exposure. |
 | `MAX_VX`, `MAX_VY`, `MAX_VYAW` | Walk limits: `0.25 m/s`, `0.2 m/s`, `1 rad/s`. |
 | `MAX_MOVE_S`, `MOVE_HZ` | Maximum command duration `5 s`; command streaming `20 Hz`. |
@@ -275,6 +280,34 @@ Restart the service after changing them.
 | `QUACK_SINK` | `stream` (browser output) or `robot`. |
 | `OPENCLAW_URL`, `OPENCLAW_TOKEN`, `OPENCLAW_AGENT` | Optional memory integration; the test launcher disables it. |
 | `LOG_AUDIO`, `LOG_RETENTION_DAYS` | Raw audio disabled by default; logs retained for `30` days. |
+
+## Connecting to a robot
+
+One profile switch, one check:
+
+```sh
+ROBOT_TARGET=sim uv run coincoin-cli doctor                          # simulator mediad
+ROBOT_TARGET=robot ROBOT_HOST=192.0.2.10 uv run coincoin-cli doctor  # delivered duck (`duckctl ip`)
+```
+
+`doctor` checks, in order: configuration, host resolution, the signalling port, the
+mediad producer, the WebRTC link, the API version, `robot.policies`, sim versus real
+target, capabilities, health and battery, the state stream, command latency, and the
+camera. It prints a fix for each failing step and exits nonzero on failure; `--json` is
+machine readable. Put the same two variables in `.env` to run Coin-Coin itself
+against that target. `scripts/live_stack.py --link webrtc` runs the local stack over
+the same path, without the TCP relay.
+
+At connect time Coin-Coin probes what the robot actually allows. The LAN WebRTC route
+refuses `robot.setMode`. When that is the case and you ask for skates or walking, the
+duck says that a person must fit or remove the equipment and select the mode on the
+robot (today `sudo robotctl configure` → `[policy] mode`, then restart robotd). It then
+waits for `robot.state` to report the new mode, up to `PERSON_MODE_TIMEOUT_S`, and
+refuses every movement meanwhile. Voice or browser STOP cancels the wait. Sim-only tools
+(`go_to` with the simulator's oracle pose, assisted get-up) are offered only when
+`robot.policies` reports `simulated: true`. If the link is lost, motion stops, the link
+reconnects with a backoff capped at 10 s, and capabilities are probed again. In the
+simulator, `scripts/sim_person_mode.py roller` plays the person's part.
 
 For a manually managed robot/relay setup, configure the links and token, start
 the relay separately, then run `uv run coincoin --host 127.0.0.1`.
@@ -298,7 +331,8 @@ Known open points are not hidden by that successful interaction:
 - The seven-minute automatic sleep observation was interrupted and is **not validated**.
 - OpenClaw was disabled in the live test; its real gateway is not validated.
 - No physical robot, servo synchronization or acoustic robustness is validated.
-- The full Docker/Compose assembly and experimental WebRTC path require further validation.
+- The full Docker/Compose assembly is not validated. The WebRTC path is validated against
+  the simulator's mediad only; no physical robot has been reached over it.
 
 ## Development
 

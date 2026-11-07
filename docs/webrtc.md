@@ -23,6 +23,133 @@ Preuves complètes : [suite réelle unique](evidence/s9-final-sim-20261105/READM
 Toutes les campagnes antérieures restent ci-dessous. Les preuves à 3 s
 ne valent pas acceptation ; durées et seuils ne sont pas assouplis.
 
+## Chemin du robot livré : profil, doctor, mode par une personne
+
+Coin-Coin parle au canard simulé par **exactement** le chemin du robot livré :
+signalisation `mediad` sur 8443, datachannel `control` portant le JSON-RPC de
+`robotd`, caméra en piste vidéo, sans relais TCP. Le jour de la livraison,
+se connecter tient en une commande :
+
+```sh
+duckctl ip                                            # adresse du canard (son nom d'hôte n'est pas unique)
+ROBOT_TARGET=robot ROBOT_HOST=<ip> uv run coincoin-cli doctor
+```
+
+En sim : `ROBOT_TARGET=sim uv run coincoin-cli doctor` (hôte `127.0.0.1` par
+défaut), ou `scripts/live_stack.py --link webrtc` pour toute la pile. TCP reste
+le défaut de `live_stack`.
+
+### Profil
+
+| Variable | Effet |
+|---|---|
+| `ROBOT_TARGET` | vide : `ROBOT_LINK` inchangé ; `sim` ou `robot` : `ROBOT_LINK=webrtc://ROBOT_HOST:ROBOT_SIGNALLING_PORT`. |
+| `ROBOT_HOST` | nom ou IP, sans port ni chemin ; obligatoire pour `robot`, `127.0.0.1` pour `sim`. IPv6 accepté. |
+| `ROBOT_SIGNALLING_PORT` | `8443`. |
+| `PERSON_MODE_TIMEOUT_S` | `120` : attente maximale d'un changement de mode fait par une personne. |
+
+`live_stack.py` force `ROBOT_TARGET` et `ROBOT_HOST` à vide : un profil de
+livraison laissé dans `.env` ne peut pas diriger la pile de test vers un robot.
+
+### `coincoin-cli doctor`
+
+Étapes, dans l'ordre, chacune avec un correctif : configuration, résolution du
+nom, port de signalisation (TCP), producteur `mediad` (`list`, métadonnées),
+ouverture WebRTC (ICE + datachannel, 25 s), version d'API (`hello`, échec
+si < 47, avertissement si plus récente), `robot.policies`, cible sim/réel
+(`ROBOT_TARGET=sim` sur un robot qui ne déclare pas `simulated: true` échoue,
+et inversement), capacités, santé et batterie (avertissement < 30 %, échec
+< 15 %), flux `robot.state`, latence de commande (20 × `robot.mode`,
+p50/p95), caméra (3 trames). Code retour 1 en cas d'échec, `--json` pour
+une sortie machine. Le même code tourne contre la sim et contre le robot.
+
+### Sonde de capacités
+
+À chaque connexion (et reconnexion), `capabilities.probe` lit `hello`,
+`robot.policies`, `robot.mode`, les métadonnées du producteur, puis envoie
+`robot.setMode` avec un mode impossible (`__coincoin_probe__`). La route WebRTC
+le refuse en `-32601` (« not available over WebRTC ») ; `robotd`, s'il le
+reçoit, le refuse avant de toucher son intention. Rien ne change dans les deux
+cas. Le résultat règle les outils exposés au modèle et une ligne `Robot: …` des
+instructions :
+
+- `set_mode` décrit l'intervention humaine dès que le changement de mode à
+  distance n'est pas prouvé ;
+- `go_to` (pose oracle de la sim) n'est offert que si `simulated: true`, et
+  seulement avec une carte ;
+- le relevé assisté de `stand` n'est permis qu'en sim avec changement de mode
+  à distance.
+
+Avant le résultat de la sonde, ces outils sont retirés. Un `-32601` reçu plus
+tard sur `set_mode` bascule aussi vers le mode « personne ».
+
+### Changement de mode par une personne
+
+Quand la liaison refuse `robot.setMode`, une demande « mets tes patins » ou
+« reviens à la marche » répond immédiatement `PENDING` : le canard dit qu'une
+personne doit poser ou retirer l'équipement puis choisir le mode sur le robot
+(aujourd'hui : `sudo robotctl configure`, `[policy] mode`, puis redémarrage de
+`robotd`, car ni WebRTC ni BLE n'acceptent `robot.setMode`). Coin-Coin sonde
+`robot.state`/`robot.mode` toutes les 0,5 s, jusqu'à `PERSON_MODE_TIMEOUT_S`,
+en survivant aux pertes de liaison, et annonce le résultat. Pendant l'attente,
+tout actionnement est refusé ; STOP (voix, navigateur, CLI) annule l'attente.
+`coincoin-cli mode roller` suit le même chemin et attend. En sim,
+`scripts/sim_person_mode.py roller --delay 3` joue la personne sur le socket
+local de `robotd`.
+
+### Perte de liaison
+
+Perte de pair ou de datachannel : le mouvement en cours échoue (`LINK_LOST`),
+le gouverneur cesse d'émettre, la reconnexion suit une attente exponentielle
+avec gigue plafonnée à 10 s, puis la sonde repasse. Aucun mouvement ne reprend
+seul. La perte est aussi détectée sans attendre ICE : fermeture de la
+signalisation ou `endSession`/`error` pour notre session, ou aucun
+`robot.state` pendant 3 s (`STATE_LOST_S`). Une trame caméra de plus de 2 s
+fait échouer `frame()` (« WebRTC camera stalled ») au lieu de décrire une image
+figée. Le gouverneur s'arrête toujours sur état périmé (> 1 s), même si la
+liaison reste ouverte. Tests : `tests/integration/test_real_route.py`
+(redémarrage du pair `mediad` local pendant un `move`, signalisation coupée,
+flux d'état muet, état figé).
+
+Le client crée son `RTCPeerConnection` sans serveur ICE : sur le LAN,
+`mediad` n'en demande pas (voir `turn.rs`), et le STUN Google par défaut
+d'aiortc coûtait ~5 s de collecte et une requête vers un tiers.
+
+### Mesures en sim
+
+Pile `duck-sim` headless (scène `backlash`, `mediad --sim-camera`), même machine :
+
+| Mesure | WebRTC | TCP (relais) |
+|---|---|---|
+| Ouverture de la liaison | 114–174 ms (5,5 s avant retrait du STUN) | 1 ms |
+| `robot.mode` aller-retour, p50 / p95 | 0,5–0,6 / 0,7 ms | 0,1 / 0,3 ms |
+| Trame caméra (640×360 JPEG, 11–13 KiB) | 5–6 ms la première, puis 2 ms | indisponible (délai dépassé) |
+| `coincoin-cli status` (processus complet) | 0,55 s | 0,41 s |
+
+`mediad` tué (SIGKILL) pendant un `move` : perte détectée et mouvement arrêté
+en 0,01–0,02 s (signalisation fermée), reconnexion 1,6 s après la relance,
+sonde identique, aucun mouvement repris. Changement de mode par une personne :
+`PENDING`, puis « (set by a person) » ; sans personne, échec après
+`PERSON_MODE_TIMEOUT_S`. En sim, changer de mode par le socket pendant que le
+canard est assis le fait tomber : faire `stand` d'abord.
+
+### Faits de protocole relevés (microduck `main`)
+
+- `mediad/src/route.rs` admet hello, move/head/look/pose/mouth, do/sound,
+  health/mode, subscribe, enable, stop, policies, skills, system info ; il
+  refuse `robot.setMode`, `net.connect` et `apply` en `-32601`.
+- Pas de piste audio : pas de micro robot par WebRTC. Pas d'authentification
+  sur le LAN. Mise à jour OTA bloquée tant qu'un pair WebRTC est connecté.
+- Découverte : `duckctl ip` / `duckctl open` ; le nom d'hôte par défaut n'est
+  pas unique. Wi-Fi provisionné par BLE seulement ; code d'appairage par défaut
+  = 6 derniers chiffres du numéro de série. BLE refuse aussi `robot.setMode`
+  et `robot.stop`.
+- Métadonnées du producteur : `simulated: "true"` seulement en sim.
+- API : Coin-Coin parle la v47 ; `main` est en v51 (la v48 ajoute la santé
+  `degraded`). `hello` ne refuse pas un écart de version.
+- `tof.stream` n'est pas dans `ROBOT_METHODS` ; le relais ToF par la route
+  réelle n'est pas vérifié.
+
 ## Revalidation unique après SIMWALK — 2026-11-05
 
 Commande exécutée une seule fois à 20:49:07 UTC, sur `2fc23f9` :
@@ -119,7 +246,7 @@ après STOP et le résultat d'échec si le tampon ne se vide pas.
 La piste vidéo conserve la dernière trame décodée et son heure de réception ;
 `frame()` l'encode en JPEG qualité 80 à la demande. Les pertes de peer/datachannel
 déclenchent un nettoyage puis une reconnexion exponentielle avec gigue, plafonnée
-à 30 secondes.
+à 10 secondes.
 
 La signalisation LAN de `mediad` n'est pas authentifiée. N'exposer ni son port
 8443 ni la caméra hors du LAN.
