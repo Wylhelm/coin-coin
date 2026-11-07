@@ -51,6 +51,10 @@ def walk_starter(params: dict[str, float]) -> dict[str, float]:
     return starter
 
 
+FALLEN_NEEDS_PERSON = (
+    "robot fallen; assisted get-up needs robot.setMode, which this link refuses: "
+    "a person must put the duck back on its feet"
+)
 EQUIPMENT = {"roller": "fit the skates", "walk": "remove the skates"}
 PERSON_POLL_S = 0.5
 
@@ -339,6 +343,8 @@ class Governor:
                 self.capabilities or Capabilities(transport_of(self.link)),
                 remote_mode_switch=False,
             )
+            if recovering:
+                return self._refuse("set_mode", FALLEN_NEEDS_PERSON)
             return await self._request_person(mode)
         except ROBOT_ERRORS as error:
             self._mode = None
@@ -1094,11 +1100,7 @@ class Governor:
                 policies = await self._policies()
                 if policies.get("simulated") is True:
                     if self.capabilities is not None and self.capabilities.mode_switch_needs_person:
-                        return self._refuse(
-                            "stand",
-                            "robot fallen; assisted get-up needs robot.setMode, which this link "
-                            "refuses: a person must put the duck back on its feet",
-                        )
+                        return self._refuse("stand", FALLEN_NEEDS_PERSON)
                     mode = await self.link.call("robot.mode")
                     if not isinstance(mode, dict) or mode.get("mode") not in ("walk", "roller"):
                         raise RobotRefused("unsupported or unavailable robot mode")

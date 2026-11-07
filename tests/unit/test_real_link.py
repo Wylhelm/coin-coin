@@ -7,6 +7,7 @@ import pytest
 
 from coincoin.clock import FakeClock
 from coincoin.config import Settings
+from coincoin.doctor import Doctor
 from coincoin.journal import Journal
 from coincoin.realtime.tools import ToolRegistry
 from coincoin.realtime.tools.robot import tool_availability, tool_description
@@ -166,6 +167,19 @@ async def test_fallen_robot_without_remote_mode_switch_asks_a_person(rig):
     assert not mode_changes(link)
 
 
+async def test_fallen_stand_without_probe_discovers_the_refusal_and_asks_a_person(rig):
+    governor, link, _, _ = rig
+    link.remote_mode_switch = False
+    link.policies["simulated"] = True
+    link.safety["fallen"] = True
+    assert governor.capabilities is None
+    result = await governor.stand()
+    assert not result.ok and "person" in result.reason
+    assert governor.awaiting_person is None
+    assert governor.capabilities is not None
+    assert governor.capabilities.remote_mode_switch is False
+
+
 def test_tool_descriptions_follow_capabilities():
     assert "PERSON" not in tool_description("set_mode")
     assert "cannot change mode by itself".upper() in tool_description("set_mode", WEBRTC).upper()
@@ -208,3 +222,32 @@ async def test_settings_timeout_is_used(rig):
     assert "5 s" in result.detail
     await asyncio.sleep(0)
     await governor.cancel_person_wait("test")
+
+
+class _HealthLink:
+    def __init__(self, health: dict[str, object]) -> None:
+        self.health = health
+
+    async def call(self, method: str, params: object = None, **_: object) -> object:
+        assert method == "robot.health"
+        return self.health
+
+
+@pytest.mark.parametrize(
+    ("health", "status"),
+    [
+        ({"healthy": True, "battery": {"volts": 8.1, "percent": 80.0}}, "ok"),
+        ({"healthy": True, "battery": {"volts": 7.4, "percent": 25.0}}, "warn"),
+        ({"healthy": True, "battery": {"volts": 7.0, "percent": 10.0}}, "fail"),
+        ({"healthy": False, "degraded": True, "reason": "servo power off"}, "warn"),
+        ({"healthy": False, "reason": "control loop stalled"}, "fail"),
+    ],
+)
+async def test_doctor_health_follows_robotd_thresholds_and_degraded(
+    health: dict[str, object], status: str
+) -> None:
+    doctor = Doctor(Settings(robot_link="webrtc://127.0.0.1:8443"))
+    await doctor._health(_HealthLink(health))  # type: ignore[arg-type]
+    (step,) = doctor.report.steps
+    assert step.name == "health" and step.status == status
+    assert (step.fix != "") == (status != "ok")

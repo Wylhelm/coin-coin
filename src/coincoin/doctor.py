@@ -152,6 +152,12 @@ def _percentile(values: list[float], fraction: float) -> float:
     return ordered[min(len(ordered) - 1, int(round(fraction * (len(ordered) - 1))))]
 
 
+def _num(value: object, digits: int) -> object:
+    if isinstance(value, float):
+        return round(value, digits) if digits else round(value)
+    return value
+
+
 class Doctor:
     def __init__(
         self,
@@ -377,9 +383,9 @@ class Doctor:
         volts = battery.get("volts") if isinstance(battery, dict) else None
         detail = f"healthy {health.get('healthy')}"
         if percent is not None:
-            detail += f", battery {percent}%"
+            detail += f", battery {_num(percent, 0)}%"
         if volts is not None:
-            detail += f" ({volts} V)"
+            detail += f" ({_num(volts, 2)} V)"
         if health.get("reason"):
             detail += f", {health['reason']}"
         status, fix = OK, ""
@@ -387,11 +393,13 @@ class Doctor:
             status, fix = FAIL, "battery critical: charge the duck before moving it"
         elif isinstance(percent, int | float) and percent < LOW_BATTERY_PCT:
             status, fix = WARN, "battery low: charge soon"
-        if health.get("healthy") is False:
+        if health.get("healthy") is False and health.get("degraded") is True:
+            # API v48+: a board condition (e.g. no servo power), not a broken release.
+            status = WARN if status == OK else status
+            fix = fix or "robot degraded: read the reason (servo power, configuration)"
+        elif health.get("healthy") is False:
             status = FAIL
             fix = fix or "robot unhealthy: read the reason; check motors and `journalctl -u robotd`"
-        elif health.get("degraded"):
-            status = WARN if status == OK else status
         self.report.add(Step("health", status, detail, fix, data=health))
 
     async def _state(self, link: RobotLink) -> None:
