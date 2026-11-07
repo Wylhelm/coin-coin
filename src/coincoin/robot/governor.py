@@ -3,13 +3,14 @@
 import asyncio
 import contextlib
 import math
-from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass, replace
 from typing import Any
 
 from coincoin.clock import Clock
 from coincoin.config import Settings
 from coincoin.journal import Journal
+from coincoin.robot.capabilities import Capabilities, refused_by_route, transport_of
 from coincoin.robot.jsonrpc import JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.move_latency import MoveLatency
@@ -48,6 +49,21 @@ def walk_starter(params: dict[str, float]) -> dict[str, float]:
     if vyaw:
         starter["vyaw"] = math.copysign(max(abs(vyaw), 1.0), vyaw)
     return starter
+
+
+EQUIPMENT = {"roller": "fit the skates", "walk": "remove the skates"}
+PERSON_POLL_S = 0.5
+
+
+def person_wait_reason(mode: str) -> str:
+    return (
+        f"waiting for a person to {EQUIPMENT[mode]} and select {mode} mode on the robot; "
+        "motion is disabled until the robot reports that mode"
+    )
+
+
+class _NeedsPerson(Exception):
+    """robot.setMode was refused by the transport: only someone at the robot can change mode."""
 
 
 LOOK_POINTS = {
@@ -112,6 +128,12 @@ class Governor:
         self._move_id = 0
         self._last_motion_command_at = -math.inf
         self._closed = False
+        # What the connected robot allows; set on every link-up by the runtime.
+        self.capabilities: Capabilities | None = None
+        # Spoken notices outside a tool call (person-assisted mode change finished or timed out).
+        self.on_notice: Callable[[str], Awaitable[None]] | None = None
+        self._person_target: str | None = None
+        self._person_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         if self._closed:
@@ -122,12 +144,13 @@ class Governor:
     async def close(self) -> None:
         if self._closed:
             return
-        for task in (self._monitor, self._mode_task):
+        for task in (self._monitor, self._mode_task, self._person_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-        self._monitor = self._mode_task = None
+        self._monitor = self._mode_task = self._person_task = None
+        self._person_target = None
         await self.stop("governor closed")
         if self.navigator is not None:
             await self.navigator.close()
@@ -200,6 +223,8 @@ class Governor:
     def _check_safety(self, generation: int, *, allow_fallen: bool = False) -> None:
         if generation != self._stop_generation or self._closed:
             raise RobotRefused("action cancelled by stop")
+        if self._person_target is not None:
+            raise RobotRefused(person_wait_reason(self._person_target))
         if (reason := self._safety_reason()) and not (allow_fallen and reason == "robot fallen"):
             raise RobotRefused(reason)
 
@@ -229,6 +254,10 @@ class Governor:
     async def set_mode(self, mode: str) -> ToolResult:
         if mode not in ("walk", "roller"):
             return self._refuse("set_mode", "mode must be walk or roller")
+        if self._person_target is not None or (
+            self.capabilities is not None and self.capabilities.remote_mode_switch is False
+        ):
+            return await self._request_person(mode)
         generation = self._stop_generation
         recovering = False
         try:
@@ -257,7 +286,12 @@ class Governor:
                 if current["mode"] != mode or recovering:
                     was_sitting = before.get("sitting")
                     self._mode = None
-                    await call("robot.setMode", {"mode": mode})
+                    try:
+                        await call("robot.setMode", {"mode": mode})
+                    except JsonRpcError as error:
+                        if refused_by_route(error):
+                            raise _NeedsPerson(error.message) from error
+                        raise
                     deadline = self.clock.now() + 10
                     settled_at: float | None = None
                     while True:
@@ -299,6 +333,13 @@ class Governor:
                         await self.clock.sleep(0.1)
                 self._mode = mode
                 self._mode_at = self.clock.now()
+        except _NeedsPerson as refusal:
+            self.journal.write("robot_refused", method="robot.setMode", reason=str(refusal))
+            self.capabilities = replace(
+                self.capabilities or Capabilities(transport_of(self.link)),
+                remote_mode_switch=False,
+            )
+            return await self._request_person(mode)
         except ROBOT_ERRORS as error:
             self._mode = None
             self._mode_at = -math.inf
@@ -310,6 +351,108 @@ class Governor:
                 self._mode_recovery_generation = None
         self.journal.write("tool_result", method="set_mode", mode=mode)
         return ToolResult(True, detail=f"locomotion mode: {mode}")
+
+    @property
+    def awaiting_person(self) -> str | None:
+        """The mode a person was asked to select, while Coin-Coin waits for it."""
+        return self._person_target
+
+    async def _request_person(self, mode: str) -> ToolResult:
+        """Ask for a person-assisted mode change; never actuate while it is pending."""
+        try:
+            await self.start()
+            current = await self.link.call("robot.mode")
+        except ROBOT_ERRORS as error:
+            return self._failure("set_mode", error)
+        if not isinstance(current, dict) or current.get("mode") not in ("walk", "roller"):
+            return self._refuse("set_mode", "unsupported or unavailable robot mode")
+        if current["mode"] == mode:
+            await self.cancel_person_wait("mode already selected")
+            self._mode = mode
+            self._mode_at = self.clock.now()
+            self.journal.write("tool_result", method="set_mode", mode=mode)
+            return ToolResult(True, detail=f"locomotion mode: {mode}")
+        # The person will pick the duck up to change its feet: nothing may move from now on.
+        await self.stop("mode change needs a person")
+        timeout_s = self.settings.person_mode_timeout_s
+        if self._person_target != mode or self._person_task is None or self._person_task.done():
+            await self.cancel_person_wait("mode request replaced")
+            self._person_target = mode
+            self._person_task = asyncio.create_task(self._await_person(mode, timeout_s))
+        self.journal.write(
+            "tool_result", method="set_mode", mode=mode, person_required=True, timeout_s=timeout_s
+        )
+        return ToolResult(
+            True,
+            detail=(
+                f"PENDING, not done: this link cannot switch modes. Tell the user now that a "
+                f"person must {EQUIPMENT[mode]} and then select {mode} mode on the robot itself. "
+                f"All motion stays disabled until the robot reports {mode} mode; you will be told "
+                f"when it does, or after {timeout_s:g} s if nobody does. Do not call move yet."
+            ),
+        )
+
+    async def cancel_person_wait(self, reason: str) -> None:
+        task, self._person_task = self._person_task, None
+        if self._person_target is not None:
+            self.journal.write("state", person_mode=None, reason=reason)
+        self._person_target = None
+        await self._cancel(task)
+
+    async def wait_person(self) -> None:
+        """Wait until a pending person-assisted mode change finishes, is cancelled or expires."""
+        task = self._person_task
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(task)
+
+    async def _notice(self, text: str) -> None:
+        self.journal.write("state", notice=text)
+        if self.on_notice is not None:
+            try:
+                await self.on_notice(text)
+            except Exception as error:  # noqa: BLE001 - a notice must never break the governor
+                self.journal.write("error", component="governor notice", reason=str(error))
+
+    async def _await_person(self, mode: str, timeout_s: float) -> None:
+        deadline = self.clock.now() + timeout_s
+        last_error = ""
+        try:
+            while True:
+                # Robot state is re-read every poll; a pick-up or a link outage while the
+                # equipment is changed is expected and does not end the wait.
+                current = None
+                if self.link.connected:
+                    try:
+                        answer = await self.link.call("robot.mode")
+                        current = answer.get("mode") if isinstance(answer, dict) else None
+                    except ROBOT_ERRORS as error:
+                        last_error = str(error)
+                if current == mode:
+                    self._person_target = None
+                    self._mode = mode
+                    self._mode_at = self.clock.now()
+                    self.journal.write("tool_result", method="set_mode", mode=mode, person=True)
+                    await self._notice(
+                        f"Le robot est maintenant en mode {mode}; tu peux de nouveau bouger. "
+                        f"(robot now reports {mode} mode; motion allowed again)"
+                    )
+                    return
+                if self.clock.now() >= deadline:
+                    self._person_target = None
+                    reason = f"nobody selected {mode} mode within {timeout_s:g} s"
+                    if last_error:
+                        reason += f" (last error: {last_error})"
+                    self.journal.write("robot_refused", method="set_mode", reason=reason)
+                    await self._notice(
+                        f"Personne n'a selectionne le mode {mode}; je reste comme je suis. "
+                        f"({reason}; still in the previous mode)"
+                    )
+                    return
+                await self.clock.sleep(PERSON_POLL_S)
+        finally:
+            if self._person_target == mode and asyncio.current_task() is self._person_task:
+                self._person_target = None
 
     async def _watch(self) -> None:
         last_reason: str | None = None
@@ -675,7 +818,7 @@ class Governor:
                 await self._refresh_mode()
                 if self._mode != mode:
                     switched = await self.set_mode(mode)
-                    if not switched.ok:
+                    if not switched.ok or self._person_target is not None:
                         return switched
                 if generation != self._stop_generation:
                     return self._refuse("go_to", "action cancelled by stop")
@@ -950,6 +1093,12 @@ class Governor:
             try:
                 policies = await self._policies()
                 if policies.get("simulated") is True:
+                    if self.capabilities is not None and self.capabilities.mode_switch_needs_person:
+                        return self._refuse(
+                            "stand",
+                            "robot fallen; assisted get-up needs robot.setMode, which this link "
+                            "refuses: a person must put the duck back on its feet",
+                        )
                     mode = await self.link.call("robot.mode")
                     if not isinstance(mode, dict) or mode.get("mode") not in ("walk", "roller"):
                         raise RobotRefused("unsupported or unavailable robot mode")
@@ -997,6 +1146,8 @@ class Governor:
         summary += "tout va bien" if all_clear else "etat a verifier"
         if self.moving:
             summary += ", mouvement en cours / motion active"
+        if self._person_target is not None:
+            summary += f", {person_wait_reason(self._person_target)}"
         return ToolResult(
             True,
             detail=summary,

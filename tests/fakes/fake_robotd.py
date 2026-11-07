@@ -11,6 +11,7 @@ from typing import Any
 
 from coincoin.clock import Clock, SystemClock
 from coincoin.robot.frames import FrameError
+from coincoin.robot.jsonrpc import JsonRpcError
 from coincoin.robot.link import Frame, LinkDown, RobotRefused
 
 
@@ -34,6 +35,7 @@ class FakeRobotLink:
         self.fail_notify: str | None = None
         self.auto_home = True
         self.mode = "walk"
+        self.remote_mode_switch = True
         self.policies: dict[str, Any] = {"enabled": True, "homed": True, "sitting": False}
         self.safety = {"fallen": False, "picked_up": False}
         self.yaw = 0.0
@@ -107,6 +109,11 @@ class FakeRobotLink:
                 return {"mode": self.mode}
             case "robot.setMode":
                 assert params is not None
+                if not self.remote_mode_switch:
+                    # mediad's WebRTC route refuses the method before robotd sees it.
+                    raise JsonRpcError(-32601, "robot.setMode is not available over WebRTC")
+                if params["mode"] not in ("walk", "roller"):
+                    raise RobotRefused('mode must be "walk" or "roller"')
                 self.mode = params["mode"]
             case "robot.policies":
                 return copy.deepcopy(self.policies)
@@ -215,6 +222,12 @@ class FakeRobotd(FakeRobotLink):
                         "jsonrpc": "2.0",
                         "id": request["id"],
                         "result": {"accepted": False, "reason": error.reason},
+                    }
+                except JsonRpcError as error:
+                    response = {
+                        "jsonrpc": "2.0",
+                        "id": request["id"],
+                        "error": {"code": error.code, "message": error.message},
                     }
                 writer.write(json.dumps(response).encode() + b"\n")
                 await writer.drain()
