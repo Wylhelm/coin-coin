@@ -28,6 +28,10 @@ from coincoin.robot.methods import ROBOT_METHODS
 LOGGER = logging.getLogger(__name__)
 LinkCallback = Callable[[], Awaitable[None] | None]
 MAX_MOVE_BUFFERED_BYTES = 0
+# A camera frame older than this is refused rather than shown as the present.
+FRAME_STALE_S = 2.0
+# The robot or mediad restarting takes seconds; retry soon enough to be back promptly.
+MAX_RECONNECT_S = 10.0
 
 
 def _encode_video_frame(video_frame: VideoFrame, captured_at: float) -> Frame:
@@ -164,6 +168,9 @@ class WebRtcLink:
         self._runner: asyncio.Task[None] | None = None
         self._ready: asyncio.Future[None] | None = None
         self._up = asyncio.Event()
+        self.producer_meta: dict[str, Any] = {}
+        self.hello: dict[str, Any] | None = None
+        self.last_error = ""
 
     @property
     def connected(self) -> bool:
@@ -222,6 +229,7 @@ class WebRtcLink:
 
     async def frame(self) -> Frame:
         if self._latest_frame is not None:
+            self._check_fresh(self._latest_video_at)
             return self._latest_frame
         try:
             async with asyncio.timeout(3):
@@ -230,15 +238,23 @@ class WebRtcLink:
             raise FrameError("No video frame received from WebRTC peer") from error
         async with self._frame_lock:
             if self._latest_frame is not None:
+                self._check_fresh(self._latest_video_at)
                 return self._latest_frame
             video_frame = self._latest_video_frame
             if video_frame is None:
                 raise FrameError("No video frame received from WebRTC peer")
             captured_at = self._latest_video_at
+            self._check_fresh(captured_at)
             frame = await asyncio.to_thread(_encode_video_frame, video_frame, captured_at)
             if video_frame is self._latest_video_frame and captured_at == self._latest_video_at:
                 self._latest_frame = frame
             return frame
+
+    @staticmethod
+    def _check_fresh(captured_at: float) -> None:
+        age = time.time() - captured_at
+        if age > FRAME_STALE_S:
+            raise FrameError(f"WebRTC camera stalled: last frame is {age:.1f} s old")
 
     def _require_connection(self) -> JsonRpcConnection:
         if not self.connected or self._connection is None:
@@ -298,6 +314,8 @@ class WebRtcLink:
                 )
                 if producer is None:
                     raise LinkDown("mediad returned an invalid producer list")
+                meta = producer.get("meta")
+                self.producer_meta = dict(meta) if isinstance(meta, dict) else {}
                 await self._send_signal({"type": "startSession", "peerId": producer["id"]})
                 started = await self._receive_until({"sessionStarted"})
                 session_id = started.get("sessionId")
@@ -348,8 +366,10 @@ class WebRtcLink:
                     raise LinkDown("mediad did not open the control datachannel")
                 connection = JsonRpcConnection(stream, stream, clock=self._clock)
                 self._connection = connection
+                self.hello = None
                 try:
-                    await connection.call("hello", {"api_version": API_VERSION})
+                    hello = await connection.call("hello", {"api_version": API_VERSION})
+                    self.hello = hello if isinstance(hello, dict) else None
                 except JsonRpcError:
                     LOGGER.info("mediad hello rejected; trying the state subscription")
                 await connection.call("robot.subscribe", {"hz": 10})
@@ -554,6 +574,7 @@ class WebRtcLink:
                     InvalidStateError,
                     ValueError,
                 ) as error:
+                    self.last_error = f"{type(error).__name__}: {error}"
                     LOGGER.warning("WebRTC robot connection failed (%s)", type(error).__name__)
                     if self._ready is not None and not self._ready.done():
                         self._ready.set_exception(
@@ -562,6 +583,7 @@ class WebRtcLink:
                         self._ready.exception()
                 else:
                     delay = 0.5
+                    self.last_error = ""
                     await self._callback(self.on_up)
                     self._up.set()
                     if self._ready is not None and not self._ready.done():
@@ -572,8 +594,8 @@ class WebRtcLink:
                     self._up.clear()
                     if was_up:
                         await self._callback(self.on_down)
-                await self._clock.sleep(min(30, delay * random.uniform(0.8, 1.2)))
-                delay = min(30, delay * 2)
+                await self._clock.sleep(min(MAX_RECONNECT_S, delay * random.uniform(0.8, 1.2)))
+                delay = min(MAX_RECONNECT_S, delay * 2)
         finally:
             was_up = self._connection is not None
             await self._cleanup()

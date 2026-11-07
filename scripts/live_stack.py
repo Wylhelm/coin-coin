@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Run one local simulator, TCP relay and Coin-Coin; never connect to real hardware."""
+"""Run one local simulator, its robot link and Coin-Coin; never connect to real hardware.
+
+``--link tcp`` (default) goes through the development relay; ``--link webrtc`` uses mediad's
+WebRTC signalling and control channel, the exact path of the delivered robot, with no relay.
+"""
 
 from __future__ import annotations
 
@@ -69,6 +73,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--headless", action="store_true", help="no MuJoCo window; keep the camera")
     parser.add_argument(
+        "--link",
+        choices=("tcp", "webrtc"),
+        default="tcp",
+        help="tcp: development relay (default); webrtc: mediad, as with the delivered robot",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="check prerequisites and ports without starting services or calling APIs",
@@ -96,8 +106,11 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
         DUCK_SIM_SCENE=str(args.scene.expanduser().resolve()) if args.scene else "backlash",
         DUCK_SIM_PRELOAD_EQUIPMENT="1" if args.preload_equipment else "0",
         DUCK_SIM_KEYFRAME="SIT",
-        ROBOT_LINK="tcp://127.0.0.1:7810",
+        ROBOT_LINK="tcp://127.0.0.1:7810" if args.link == "tcp" else "webrtc://127.0.0.1:8443",
         FRAME_LINK="tcp://127.0.0.1:7811",
+        # Forced empty so a delivery profile in .env cannot point this run at a real robot.
+        ROBOT_TARGET="",
+        ROBOT_HOST="",
         RELAY_TOKEN="",
         OPENCLAW_TOKEN="",
         ECHO="0",
@@ -197,7 +210,8 @@ def preflight(args: argparse.Namespace, env: dict[str, str]) -> None:
     if result.returncode:
         raise RuntimeError("Coin-Coin configuration check failed; no services started.")
     print(
-        "Prerequisites OK. OpenClaw disabled; robot/frame links forced to this local simulator.",
+        f"Prerequisites OK. OpenClaw disabled; {args.link} robot link forced to this local "
+        "simulator.",
         flush=True,
     )
 
@@ -258,7 +272,7 @@ def run(args: argparse.Namespace, env: dict[str, str]) -> None:
         )
         if stopping:
             return
-        for label, command, port in (
+        services = [
             (
                 "relay",
                 [
@@ -272,7 +286,11 @@ def run(args: argparse.Namespace, env: dict[str, str]) -> None:
                 7810,
             ),
             ("coincoin", [str(python), "-m", "coincoin.app", "--host", "127.0.0.1"], 8765),
-        ):
+        ]
+        if args.link == "webrtc":
+            services = services[1:]
+            print("Robot link: mediad WebRTC on 127.0.0.1:8443 (no relay).", flush=True)
+        for label, command, port in services:
             log = state / f"{label}.log"
             with log.open("ab") as output:
                 child = subprocess.Popen(
