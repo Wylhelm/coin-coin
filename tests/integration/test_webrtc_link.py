@@ -56,15 +56,48 @@ class PatternVideoTrack(VideoStreamTrack):
         return frame
 
 
+STATE_NOTIFICATION = json.dumps(
+    {
+        "jsonrpc": "2.0",
+        "method": "robot.state",
+        "params": {
+            "safety": {"fallen": False, "picked_up": False},
+            "move": {"requested": [0, 0, 0], "applied": [0, 0, 0]},
+        },
+    }
+)
+
+
 class LocalMediad:
     def __init__(self) -> None:
         self.records: list[dict[str, Any]] = []
         self.answer_sdps: list[str] = []
         self.sessions = 0
         self.disconnect_once = False
+        self.mode = "walk"
+        # Like mediad's route.rs: robot.setMode never crosses the WebRTC route.
+        self.refuse_set_mode = True
+        self.simulated = True
+        # When set, robot.state repeats at 20 Hz until `state_frozen` (a producer that hangs).
+        self.stream_state = False
+        self.state_frozen = False
+        self.meta = {"name": "test", "api_version": "47", "simulated": "true"}
         self._peers: set[RTCPeerConnection] = set()
-        self._server = TestServer(web.Application())
-        self._server.app.router.add_get("/", self._handle)
+        self._sockets: set[web.WebSocketResponse] = set()
+        # A crashed mediad: signalling gone, the peer's SCTP/ICE not (yet) noticing.
+        self.hold_peers = False
+        self._port: int | None = None
+        self._server = self._new_server()
+
+    async def _stream_state(self, control: Any) -> None:
+        while control.readyState == "open" and not self.state_frozen:
+            control.send(STATE_NOTIFICATION)
+            await asyncio.sleep(0.05)
+
+    def _new_server(self) -> TestServer:
+        server = TestServer(web.Application(), port=self._port)
+        server.app.router.add_get("/", self._handle)
+        return server
 
     @property
     def url(self) -> str:
@@ -72,6 +105,7 @@ class LocalMediad:
 
     async def start(self) -> None:
         await self._server.start_server()
+        self._port = self._server.port
 
     async def close(self) -> None:
         await asyncio.gather(
@@ -80,9 +114,22 @@ class LocalMediad:
         )
         await self._server.close()
 
+    async def restart(self, down_s: float = 0.5) -> None:
+        """Kill mediad (peers and signalling) and start it again on the same port."""
+        await self.close()
+        await asyncio.sleep(down_s)
+        self._server = self._new_server()
+        await self.start()
+
+    async def drop_signalling(self) -> None:
+        """Close every signalling socket and leave the peers running."""
+        self.hold_peers = True
+        await asyncio.gather(*(ws.close() for ws in list(self._sockets)))
+
     async def _handle(self, request: web.Request) -> web.WebSocketResponse:
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
+        self._sockets.add(ws)
         peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
         self._peers.add(peer)
         channel = None
@@ -97,7 +144,7 @@ class LocalMediad:
                         await ws.send_json(
                             {
                                 "type": "list",
-                                "producers": [{"id": "local-robot", "meta": {"name": "test"}}],
+                                "producers": [{"id": "local-robot", "meta": self.meta}],
                             }
                         )
                     case "startSession":
@@ -116,14 +163,36 @@ class LocalMediad:
                             if request_id is None:
                                 return
                             result: Any = {"accepted": True}
+                            if method == "robot.setMode" and self.refuse_set_mode:
+                                control.send(
+                                    json.dumps(
+                                        {
+                                            "jsonrpc": "2.0",
+                                            "id": request_id,
+                                            "error": {
+                                                "code": -32601,
+                                                "message": "`robot.setMode` is not available "
+                                                "over WebRTC",
+                                            },
+                                        }
+                                    )
+                                )
+                                return
                             if method == "hello":
                                 result = {"api_version": API_VERSION}
                             elif method == "robot.health":
                                 result = {"healthy": True}
                             elif method == "robot.mode":
-                                result = {"mode": "walk"}
+                                result = {"mode": self.mode}
                             elif method == "robot.policies":
-                                result = {"enabled": True, "homed": True}
+                                result = {
+                                    "enabled": True,
+                                    "homed": True,
+                                    "simulated": self.simulated,
+                                    "mode": self.mode,
+                                    "sitting": False,
+                                    "skills": ["bow"],
+                                }
                             elif method in ("robot.subscribe", "robot.stop"):
                                 result = {"accepted": True}
                             elif method == "robot.do":
@@ -132,21 +201,9 @@ class LocalMediad:
                                 json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result})
                             )
                             if method == "robot.subscribe":
-                                control.send(
-                                    json.dumps(
-                                        {
-                                            "jsonrpc": "2.0",
-                                            "method": "robot.state",
-                                            "params": {
-                                                "safety": {"fallen": False, "picked_up": False},
-                                                "move": {
-                                                    "requested": [0, 0, 0],
-                                                    "applied": [0, 0, 0],
-                                                },
-                                            },
-                                        }
-                                    )
-                                )
+                                control.send(STATE_NOTIFICATION)
+                                if self.stream_state:
+                                    asyncio.create_task(self._stream_state(control))
                             if method == "robot.health" and self.disconnect_once:
                                 self.disconnect_once = False
                                 asyncio.create_task(peer.close())
@@ -170,23 +227,27 @@ class LocalMediad:
                             RTCSessionDescription(sdp=description["sdp"], type=description["type"])
                         )
         finally:
-            if peer.connectionState != "closed":
-                await peer.close()
-            self._peers.discard(peer)
+            self._sockets.discard(ws)
+            if not self.hold_peers:
+                if peer.connectionState != "closed":
+                    await peer.close()
+                self._peers.discard(peer)
         return ws
 
 
 @pytest.fixture
 async def mediad(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(
-        webrtc_module,
-        "RTCPeerConnection",
-        lambda: RTCPeerConnection(RTCConfiguration(iceServers=[])),
-    )
+    def lan_only(configuration: RTCConfiguration) -> RTCPeerConnection:
+        # A public STUN server would add a gathering timeout and a third-party request.
+        assert configuration.iceServers == []
+        return RTCPeerConnection(configuration)
+
+    monkeypatch.setattr(webrtc_module, "RTCPeerConnection", lan_only)
     server = LocalMediad()
     await server.start()
     yield server
-    await server.close()
+    async with asyncio.timeout(10):
+        await server.close()
 
 
 @pytest.mark.parametrize(
@@ -334,9 +395,11 @@ async def test_cli_raw_webrtc_refusal_and_all_permitted_methods(
     link = WebRtcLink(mediad.url)
     try:
         await link.connect()
-        for method in sorted(ROBOT_METHODS - {"robot.move", "robot.do"}):
+        for method in sorted(ROBOT_METHODS - {"robot.move", "robot.do", "robot.setMode"}):
             params = {"api_version": 47} if method == "hello" else {}
             await link.call(method, params)
+        with pytest.raises(JsonRpcError, match="not available over WebRTC"):
+            await link.call("robot.setMode", {"mode": "roller"})
         with pytest.raises(RobotRefused, match="test refusal"):
             await link.call("robot.do", {"skill": "not-allowed"})
         await link.notify("robot.move", {"vx": 0.1, "vy": 0, "vyaw": 0})

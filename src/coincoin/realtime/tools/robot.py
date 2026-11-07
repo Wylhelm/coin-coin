@@ -10,6 +10,7 @@ from coincoin.robot.governor import LOOK_POINTS
 
 if TYPE_CHECKING:
     from coincoin.app import App
+    from coincoin.robot.capabilities import Capabilities
 
 RobotHandler = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -123,6 +124,45 @@ DESCRIPTIONS = {
 }
 
 
+PERSON_DESCRIPTIONS = {
+    "set_mode": (
+        "Change locomotion: roller = skates (patiner, glisser, mettre les patins); walk = feet "
+        "(marcher, retirer les patins). THIS ROBOT CANNOT CHANGE MODE BY ITSELF over this link: "
+        "calling set_mode asks a person to fit or remove the skates and select the mode on the "
+        "robot, then waits for the robot to report it. Tell the user plainly that a person has "
+        "to do it. Motion is disabled until the mode changes; you are told when it does."
+    ),
+    "stand": (
+        "Stand, idempotent. If the duck has fallen over, it cannot get up by itself: ask a "
+        "person to put it back on its feet."
+    ),
+}
+
+SUFFIX = (
+    " Briefly announce the action in the conversation language. "
+    "If clamped is present, explain the limited values, including duration."
+)
+
+
+def tool_description(name: str, capabilities: Capabilities | None = None) -> str:
+    """Model-facing description, adapted to what the connected robot actually allows."""
+    needs_person = capabilities is not None and (
+        (name == "set_mode" and capabilities.mode_switch_needs_person)
+        or (
+            name == "stand"
+            and (not capabilities.simulated or capabilities.mode_switch_needs_person)
+        )
+    )
+    return (PERSON_DESCRIPTIONS[name] if needs_person else DESCRIPTIONS[name]) + SUFFIX
+
+
+def tool_availability(name: str, capabilities: Capabilities | None) -> str | None:
+    """Why a tool is hidden for this robot, or None when it may be offered."""
+    if name == "go_to" and (capabilities is None or not capabilities.simulated):
+        return "room navigation uses the simulator's true pose; this robot is not simulated"
+    return None
+
+
 def invalid_arguments(name: str, arguments: dict[str, Any], schema: dict[str, Any]) -> str | None:
     fields = schema["properties"]
     if extra := arguments.keys() - fields.keys():
@@ -170,8 +210,7 @@ def install_tools(
 
         app.register_tool(
             name,
-            DESCRIPTIONS[name] + " Briefly announce the action in the conversation language. "
-            "If clamped is present, explain the limited values, including duration.",
+            tool_description(name),
             schema,
             dispatch,
             manages_timeout=name not in {"stop", "status", "quack"},

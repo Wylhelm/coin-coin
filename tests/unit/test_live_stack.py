@@ -32,6 +32,20 @@ def test_language_and_duration_are_opt_in_overrides(monkeypatch: pytest.MonkeyPa
     assert custom["MAX_MOVE_S"] == "30.0"
 
 
+def test_webrtc_link_is_opt_in_and_ignores_delivery_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOT_TARGET", "robot")
+    monkeypatch.setenv("ROBOT_HOST", "192.168.1.42")
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert default["ROBOT_LINK"] == "tcp://127.0.0.1:7810"
+    env = live_stack.environment(live_stack.parse_args(["--link", "webrtc"]))
+    assert env["ROBOT_LINK"] == "webrtc://127.0.0.1:8443"
+    assert env["ROBOT_TARGET"] == env["ROBOT_HOST"] == default["ROBOT_TARGET"] == ""
+    with pytest.raises(SystemExit):
+        live_stack.parse_args(["--link", "udp"])
+
+
 def test_custom_scene_is_opt_in_and_resolved_from_invocation_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -180,7 +194,7 @@ def launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(live_stack.subprocess, "Popen", start)
     monkeypatch.setattr(live_stack, "health_ready", lambda: True)
     monkeypatch.setattr(live_stack, "listening", lambda port: len(commands) == 1)
-    args = argparse.Namespace(runtime=tmp_path, rl=tmp_path)
+    args = argparse.Namespace(runtime=tmp_path, rl=tmp_path, link="tcp")
     return args, commands, children
 
 
@@ -269,3 +283,23 @@ def test_stubborn_owned_process_is_killed_after_timeout(monkeypatch: pytest.Monk
     monkeypatch.setattr(process, "wait", wait)
     live_stack.stop_owned(process)  # type: ignore[arg-type]
     assert process.terminated and process.killed
+
+
+def test_webrtc_link_starts_no_relay(launcher, monkeypatch: pytest.MonkeyPatch) -> None:
+    args, commands, _ = launcher
+    args.link = "webrtc"
+    started: list[list[str]] = []
+
+    def start(argv, **kwargs):
+        started.append(argv)
+        process = OwnedProcess()
+        process.returncode = 4
+        return process
+
+    monkeypatch.setattr(live_stack.subprocess, "Popen", start)
+    monkeypatch.setattr(live_stack, "listening", lambda port: False)
+    with pytest.raises(RuntimeError, match="coincoin exited with 4"):
+        live_stack.run(args, {})
+    assert len(started) == 1 and started[0][1:3] == ["-m", "coincoin.app"]
+    assert commands[-1][-1] == "down"
+    assert not live_stack.LOCK.exists()

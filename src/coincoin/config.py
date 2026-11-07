@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -52,6 +52,32 @@ class Settings(BaseSettings):
     log_audio: bool = False
     log_retention_days: int = Field(default=30, gt=0)
     relay_token: SecretStr = SecretStr("")
+    # Connection profile. Empty keeps ROBOT_LINK as configured. sim and robot both use mediad's
+    # WebRTC path (the one the delivered robot exposes), so the simulator exercises it exactly.
+    robot_target: Literal["", "sim", "robot"] = ""
+    robot_host: str = ""
+    robot_signalling_port: int = Field(default=8443, gt=0, lt=65536)
+    # A person must fit/remove skates when the link refuses robot.setMode (WebRTC); how long
+    # Coin-Coin waits for robot.mode to change before giving up. Motion stays disabled meanwhile.
+    person_mode_timeout_s: float = Field(default=120, gt=0)
+
+    @model_validator(mode="after")
+    def apply_robot_target(self) -> "Settings":
+        if not self.robot_target:
+            return self
+        host = self.robot_host.strip()
+        if not host:
+            if self.robot_target == "robot":
+                raise ValueError(
+                    "ROBOT_TARGET=robot needs ROBOT_HOST (the duck's IP: run `duckctl ip`)"
+                )
+            host = "127.0.0.1"
+        if any(character in host for character in "/?#@ ") or host.count(":") == 1:
+            raise ValueError("ROBOT_HOST must be a host name or IP address, without port or path")
+        literal = f"[{host}]" if ":" in host else host
+        self.robot_host = host
+        self.robot_link = f"webrtc://{literal}:{self.robot_signalling_port}"
+        return self
 
     @field_validator("response_language")
     @classmethod

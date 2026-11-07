@@ -31,6 +31,10 @@ def test_master_defaults() -> None:
         "sim_pose_link": "",
         "log_audio": False,
         "log_retention_days": 30,
+        "robot_target": "",
+        "robot_host": "",
+        "robot_signalling_port": 8443,
+        "person_mode_timeout_s": 120.0,
     }
     for secret in (settings.openai_api_key, settings.openclaw_token, settings.relay_token):
         assert isinstance(secret, SecretStr)
@@ -79,11 +83,45 @@ def test_example_dotenv_has_master_defaults(monkeypatch: pytest.MonkeyPatch) -> 
         ("QUACK_SINK", "unknown"),
         ("RESPONSE_LANGUAGE", ""),
         ("RESPONSE_LANGUAGE", "  "),
+        ("ROBOT_TARGET", "moon"),
+        ("PERSON_MODE_TIMEOUT_S", "0"),
     ],
 )
 def test_invalid_configuration_is_explicit(
     monkeypatch: pytest.MonkeyPatch, name: str, value: str
 ) -> None:
     monkeypatch.setenv(name, value)
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+@pytest.mark.parametrize(
+    ("target", "host", "link"),
+    [
+        ("sim", "", "webrtc://127.0.0.1:8443"),
+        ("robot", "192.168.1.42", "webrtc://192.168.1.42:8443"),
+        ("robot", "duck.local", "webrtc://duck.local:8443"),
+        ("robot", "fe80::1", "webrtc://[fe80::1]:8443"),
+    ],
+)
+def test_robot_target_profile_selects_mediad_webrtc(
+    monkeypatch: pytest.MonkeyPatch, target: str, host: str, link: str
+) -> None:
+    monkeypatch.setenv("ROBOT_LINK", "tcp://127.0.0.1:7810")
+    monkeypatch.setenv("ROBOT_TARGET", target)
+    monkeypatch.setenv("ROBOT_HOST", host)
+    assert Settings().robot_link == link
+
+
+def test_empty_robot_target_keeps_robot_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOT_LINK", "tcp://127.0.0.1:7810")
+    monkeypatch.setenv("ROBOT_HOST", "192.168.1.42")
+    assert Settings().robot_link == "tcp://127.0.0.1:7810"
+
+
+@pytest.mark.parametrize("host", ["", "duck:8443", "http://duck", "duck/path"])
+def test_robot_target_needs_a_plain_host(monkeypatch: pytest.MonkeyPatch, host: str) -> None:
+    monkeypatch.setenv("ROBOT_TARGET", "robot")
+    monkeypatch.setenv("ROBOT_HOST", host)
     with pytest.raises(ValidationError):
         Settings()

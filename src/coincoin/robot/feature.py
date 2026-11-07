@@ -9,8 +9,14 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from coincoin.realtime.tools.robot import install_tools, invalid_arguments
+from coincoin.realtime.tools.robot import (
+    install_tools,
+    invalid_arguments,
+    tool_availability,
+    tool_description,
+)
 from coincoin.realtime.tools.vision import install_tools as install_vision_tools
+from coincoin.robot.capabilities import Capabilities, probe
 from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import (
     NAV_MAX_S,
@@ -90,6 +96,9 @@ class _RobotRuntime:
         self.contracts = install_tools(app, self.dispatch, places=self.governor.places())
         install_vision_tools(app, self.link)
         app.instructions_context("skills", self.skills_context)
+        app.instructions_context("robot", self.robot_context)
+        self.governor.on_notice = app.announce
+        self._apply_capabilities(None)
         app.on("stop", self.stop)
         app.on("reset_pose", self.reset_pose)
         app.on("mouth_close", self.mouth_close)
@@ -124,6 +133,50 @@ class _RobotRuntime:
     async def _up(self) -> None:
         self._lost = False
         self.app.journal.write("state", robot="connected")
+        self._spawn(self._probe())
+
+    async def _probe(self) -> None:
+        try:
+            capabilities = await probe(self.link)
+        except ROBOT_ERRORS as error:
+            self.app.journal.write("error", component="robot probe", reason=str(error))
+            return
+        self.governor.capabilities = capabilities
+        self._apply_capabilities(capabilities)
+        self.app.journal.write("robot_capabilities", **capabilities.as_dict())
+
+    def _apply_capabilities(self, capabilities: Capabilities | None) -> None:
+        # Tools and descriptions follow what this robot reported, never assumptions; the
+        # registry snapshot is taken at the next Realtime session open.
+        for name in self.contracts:
+            reason = tool_availability(name, capabilities)
+            if name == "go_to" and self.governor.navigator is None:
+                reason = reason or "no navigation map configured"
+            self.app.tools.configure(
+                name,
+                available=reason is None,
+                reason=reason or "",
+                description=tool_description(name, capabilities),
+            )
+
+    async def robot_context(self) -> str:
+        capabilities = self.governor.capabilities
+        if capabilities is None:
+            return "robot capabilities not probed yet; tool results are authoritative"
+        self._apply_capabilities(capabilities)
+        parts = [
+            f"link {capabilities.transport}",
+            "simulated robot" if capabilities.simulated else "real robot",
+            f"mode {capabilities.mode or 'unknown'}",
+        ]
+        if capabilities.mode_switch_needs_person:
+            parts.append(
+                "changing walk/roller needs a person to fit or remove the skates and select the "
+                "mode on the robot; say so when asked"
+            )
+        if self.governor.awaiting_person:
+            parts.append("waiting for that person now; motion is disabled")
+        return "; ".join(parts)
 
     async def _down(self) -> None:
         if self._closing or self._lost:
@@ -147,6 +200,7 @@ class _RobotRuntime:
         return ", ".join(names) if names else "unavailable; do not invent skills"
 
     async def stop(self) -> None:
+        await self.governor.cancel_person_wait("bouton")
         await self.governor.stop("bouton")
         await self.quack.cancel()
 
@@ -187,6 +241,7 @@ class _RobotRuntime:
                 result = {"ok": False, "reason": str(error)}
         else:
             if name == "stop":
+                await self.governor.cancel_person_wait("outil stop")
                 outcome = await self.governor.stop("outil stop")
                 await self.quack.cancel()
                 await self.app._emit("mouth_close")
