@@ -15,6 +15,7 @@ from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.move_latency import MoveLatency
 
 ROBOT_ERRORS = (RobotRefused, LinkDown, JsonRpcError, TimeoutError)
+ROLLER_MAX_VYAW = 0.3
 LOOK_POINTS = {
     "centre": (1.0, 0.0, 0.0),
     "gauche": (1.0, 1.0, 0.0),
@@ -42,6 +43,11 @@ def _finite(*values: object) -> bool:
 
 def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
+
+
+def turn_time_limit_s(degrees: float, max_rate: float) -> float:
+    """Return the governor's maximum turning time for an angle and angular rate."""
+    return abs(math.radians(degrees)) / max_rate * 1.5 + 1
 
 
 class Governor:
@@ -82,6 +88,10 @@ class Governor:
         self._monitor = self._mode_task = None
         await self.stop("governor closed")
         self._closed = True
+
+    @property
+    def stop_generation(self) -> int:
+        return self._stop_generation
 
     @property
     def moving(self) -> bool:
@@ -287,7 +297,7 @@ class Governor:
 
     def _limits(self) -> tuple[float, float, float]:
         if self._mode == "roller":
-            return 0.3, 0.0, 0.3
+            return 0.3, 0.0, ROLLER_MAX_VYAW
         if self._mode != "walk":
             raise RobotRefused("robot mode unavailable")
         return self.settings.max_vx, self.settings.max_vy, self.settings.max_vyaw
@@ -518,7 +528,7 @@ class Governor:
         self, degrees: float, yaw: float, max_rate: float, generation: int
     ) -> ToolResult:
         target = math.radians(degrees)
-        deadline = self.clock.now() + abs(target) / max_rate * 1.5 + 1
+        deadline = self.clock.now() + turn_time_limit_s(degrees, max_rate)
         next_tick = self.clock.now() + 1 / self.settings.move_hz
         progress = 0.0
         try:

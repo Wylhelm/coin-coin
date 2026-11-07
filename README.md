@@ -218,6 +218,13 @@ in the model's tool schema and enforced by the governor; over-limit requests are
 bounded and reported. The governor still stops at the deadline, on STOP, on stale
 safety state or on a detected hazard. Longer commands do not make walking more reliable.
 
+For multi-step requests, `move` and `turn` finish before the next queued robot
+action begins; time spent waiting in the queue does not consume an action's
+execution deadline. Voice or browser STOP bypasses the queue and cancels pending
+steps. A completed movement means the commanded interval or turn ended; it does
+not prove how far a physical robot travelled. Other actions such as skills may
+only report that they were accepted.
+
 ## Configuration
 
 Settings are loaded from `.env`; environment variables take precedence.

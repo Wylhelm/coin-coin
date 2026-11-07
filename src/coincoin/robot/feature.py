@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import Coroutine
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import TYPE_CHECKING, Any
 
 from coincoin.realtime.tools.robot import install_tools, invalid_arguments
 from coincoin.realtime.tools.vision import install_tools as install_vision_tools
 from coincoin.robot.factory import create_robot_link
-from coincoin.robot.governor import ROBOT_ERRORS, Governor, ToolResult
+from coincoin.robot.governor import (
+    ROBOT_ERRORS,
+    ROLLER_MAX_VYAW,
+    Governor,
+    ToolResult,
+    turn_time_limit_s,
+)
 from coincoin.robot.link import RobotLink
 from coincoin.robot.quack import QuackSink, QuackUnavailable
 
@@ -18,6 +25,7 @@ if TYPE_CHECKING:
     from coincoin.app import App
 
 LINK_LOST = "je ne sens plus mes pattes"
+_AWAITED_MOTIONS = frozenset({"move", "turn"})
 
 
 class NullQuack:
@@ -55,6 +63,7 @@ class _RobotRuntime:
         self._tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._lost = False
+        self._sequence = asyncio.Lock()
 
     async def install(self, app: App) -> None:
         self.app = app
@@ -163,9 +172,10 @@ class _RobotRuntime:
                 outcome = await self.governor.stop("outil stop")
                 await self.quack.cancel()
                 await self.app._emit("mouth_close")
+            elif name == "status":
+                outcome = await self.governor.status()
             else:
-                action = getattr(self.governor, name)
-                outcome: ToolResult = await action(**arguments)
+                outcome = await self._sequenced(name, arguments)
             result = (
                 {key: value for key, value in asdict(outcome).items() if value not in ("", None)}
                 if outcome.ok
@@ -180,3 +190,43 @@ class _RobotRuntime:
         self.app.journal.write("robot_action", name=name, result=result)
         await self.app.notify_action(text, ok=result["ok"])
         return result
+
+    async def _sequenced(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        # Actions run one at a time in call order so "walk, then turn, then sit" is not
+        # collapsed into the last command; stop bypasses the queue and drops pending steps.
+        generation = self.governor.stop_generation
+        async with self._sequence:
+            if self.governor.stop_generation != generation:
+                return ToolResult(False, reason="cancelled by stop")
+            timeout_s = self._execution_timeout_s(name, arguments)
+            if not math.isfinite(timeout_s):
+                reason = "robot action timeout is not finite"
+                self.app.journal.write("tool_refused", method=name, reason=reason)
+                return ToolResult(False, reason=reason)
+            try:
+                async with asyncio.timeout(timeout_s):
+                    outcome: ToolResult = await getattr(self.governor, name)(**arguments)
+                    if not outcome.ok or name not in _AWAITED_MOTIONS:
+                        return outcome
+                    finished = await self.governor.wait_motion()
+                    if finished is None:
+                        return ToolResult(False, reason="motion interrupted")
+                    return replace(finished, clamped=outcome.clamped) if finished.ok else finished
+            except TimeoutError:
+                reason = f"Tool {name} timed out"
+                self.app.journal.write("error", component="robot", method=name, reason=reason)
+                stopped = await self.governor.stop(reason)
+                if not stopped.ok:
+                    reason += f"; stop failed: {stopped.reason}"
+                return ToolResult(False, reason=reason)
+
+    def _execution_timeout_s(self, name: str, arguments: dict[str, Any]) -> float:
+        timeout_s = self.app.tools.timeout_s
+        if name == "move":
+            duration_s = max(0.0, min(arguments["duration_s"], self.app.settings.max_move_s))
+            timeout_s += duration_s
+        elif name == "turn":
+            angle = min(abs(arguments["degrees"]), 360)
+            slowest_rate = min(self.app.settings.max_vyaw, ROLLER_MAX_VYAW)
+            timeout_s += turn_time_limit_s(angle, slowest_rate)
+        return timeout_s

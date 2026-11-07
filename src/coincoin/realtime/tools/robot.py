@@ -71,11 +71,15 @@ def schemas(
 
 DESCRIPTIONS = {
     "move": (
-        "Move: returns immediately; movement lasts duration_s seconds, then stops. "
-        "A new move or turn replaces the previous motion; do not chain them before it finishes."
+        "Move for duration_s seconds, then stop; returns once the movement has finished "
+        "or was interrupted. Robot actions run one at a time in call order, so for a "
+        "multi-step request call each step in order (e.g. move, turn, move, sit)."
     ),
-    "turn": "Turn degrees, positive = left; a left quarter-turn is +90. Returns immediately.",
-    "stop": "Stop all robot motion immediately.",
+    "turn": (
+        "Turn degrees, positive = left; a left quarter-turn is +90. "
+        "Returns once the turn has finished."
+    ),
+    "stop": "Stop all robot motion immediately and cancel any pending steps.",
     "set_mode": (
         "Switch locomotion: roller = skate/glide on skates (patiner, glisser, mettre les patins); "
         "walk = walk on feet (marcher, retirer les patins, revenir a la marche). "
@@ -143,5 +147,6 @@ def install_tools(app: App, handler: RobotHandler) -> dict[str, dict[str, Any]]:
             "If clamped is present, explain the limited values, including duration.",
             schema,
             dispatch,
+            manages_timeout=name not in {"stop", "status", "quack"},
         )
     return contracts
