@@ -16,8 +16,9 @@ from coincoin.robot.governor import Governor
 from coincoin.robot.navigation import NavigationMap, Navigator, SimPose
 from coincoin.robot.tcp_link import TcpLink
 from relay.duck_relay import DuckRelay
+from tests.integration.sim_stack import STREAM, apartment_dir
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = STREAM
 pytestmark = pytest.mark.skipif(
     os.environ.get("DUCK_TEST_NAVIGATION_SIM") != "1",
     reason="requires the scanned apartment, sibling simulator and a built robotd",
@@ -109,8 +110,8 @@ async def test_room_navigation_on_skates(
     destination: str,
 ) -> None:
     runtime, rl = ROOT / "microduck", ROOT / "microduck_rl"
-    scene = ROOT / "scan_tout_lappart" / "scene_appartement.xml"
-    nav_map = NavigationMap.load(ROOT / "scan_tout_lappart" / "navigation_appartement.json")
+    scene = apartment_dir() / "scene_appartement.xml"
+    nav_map = NavigationMap.load(apartment_dir() / "navigation_appartement.json")
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
