@@ -1,8 +1,11 @@
-"""Named-place navigation for the simulator: map loading, path planning and true pose.
+"""Named-place navigation: map loading, path planning, steering and the pose it steers by.
 
-The map is a clearance grid in the simulator's world frame, built from a scanned scene. The pose
-comes from the MuJoCo body server, which knows where the duck really is. A real duck has no such
-source, so this is a simulation aid only and is not a safety map.
+The map is a clearance grid in the apartment's frame, built from a scanned scene and the Roborock
+map. The pose comes from a pose source (see `coincoin.robot.localization`): by default the
+`estimated` source, Monte-Carlo localization from contact odometry and the ToF depth frames, which
+is all a real duck has. The `oracle` source reads the MuJoCo body server's true pose and exists for
+evaluation; steering by it is a simulator shortcut. The map is not a safety map: obstacles it does
+not hold are only seen by the ToF while the duck walks.
 """
 
 from __future__ import annotations
@@ -16,14 +19,20 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from coincoin.robot.link import RobotRefused
 from coincoin.robot.tcp_link import tcp_address
+
+if TYPE_CHECKING:
+    from coincoin.robot.localization import EstimatedPose, PoseEstimate, PoseSource
 
 Point = tuple[float, float]
 # Paths keep this much extra room beyond the robot radius where the floor allows it.
 COMFORT_MARGIN_M = 0.15
 SNAP_RADIUS_M = 0.6
+# Obstacle points the ToF reported and navigation keeps blocking, newest last.
+OBSTACLE_MEMORY = 400
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,30 @@ class NavigationMap:
             float(data["resolution_m"]),
             float(data["robot_radius_m"]),
             places,
+        )
+
+    def with_obstacles(self, points: Sequence[Point]) -> NavigationMap:
+        """A copy with extra point obstacles (seen by the ToF, not in the map) blocked."""
+        if not points:
+            return self
+        clearance = bytearray(self.clearance)
+        reach = math.ceil((self.robot_radius + COMFORT_MARGIN_M + 0.1) / self.resolution)
+        for cell in {self.cell(point) for point in points}:
+            for row in range(max(0, cell[0] - reach), min(self.height, cell[0] + reach + 1)):
+                for col in range(max(0, cell[1] - reach), min(self.width, cell[1] + reach + 1)):
+                    distance = math.hypot(row - cell[0], col - cell[1]) * self.resolution
+                    centimetres = max(0, round((distance - self.resolution / 2) * 100))
+                    index = row * self.width + col
+                    if centimetres < clearance[index]:
+                        clearance[index] = centimetres
+        return NavigationMap(
+            bytes(clearance),
+            self.width,
+            self.height,
+            self.origin,
+            self.resolution,
+            self.robot_radius,
+            self.places,
         )
 
     def cell(self, point: Point) -> tuple[int, int]:
@@ -222,13 +255,18 @@ class NavigationMap:
 
 
 class SimPose:
-    """Read the duck's true pose from the MuJoCo body server over a persistent connection."""
+    """Read the duck's true pose from the MuJoCo body server over a persistent connection.
+
+    Newer body servers name it for what it is, `oracle.pose`; older ones only carry it in `read`
+    (`trunk` plus the IMU quaternion). The first answer decides which one is asked from then on.
+    """
 
     def __init__(self, url: str) -> None:
         self._address = tcp_address(url)
         self._lock = asyncio.Lock()
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
+        self._oracle_op: bool | None = None
 
     async def read(self) -> Pose:
         async with self._lock:
@@ -239,11 +277,7 @@ class SimPose:
                             asyncio.open_connection(*self._address), 2
                         )
                     assert self._reader is not None
-                    self._writer.write(b'{"op": "read"}\n')
-                    await self._writer.drain()
-                    answer = json.loads(await asyncio.wait_for(self._reader.readline(), 1))
-                    trunk, quat = answer["trunk"], answer["imu"]["quat"]
-                    pose = Pose(float(trunk[0]), float(trunk[1]), yaw_from_quat(*quat))
+                    pose = await self._ask(self._reader, self._writer)
                     if not all(map(math.isfinite, (pose.x, pose.y, pose.yaw))):
                         raise ValueError("non-finite pose")
                     return pose
@@ -259,6 +293,23 @@ class SimPose:
                     if attempt:
                         raise RobotRefused(f"simulated position unavailable: {error}") from None
         raise AssertionError("unreachable")
+
+    async def _ask(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> Pose:
+        if self._oracle_op is not False:
+            writer.write(b'{"op": "oracle.pose"}\n')
+            await writer.drain()
+            answer = json.loads(await asyncio.wait_for(reader.readline(), 1))
+            if "error" not in answer:
+                self._oracle_op = True
+                return Pose(float(answer["x"]), float(answer["y"]), float(answer["yaw"]))
+            if self._oracle_op:
+                raise ValueError(str(answer["error"]))
+            self._oracle_op = False
+        writer.write(b'{"op": "read"}\n')
+        await writer.drain()
+        answer = json.loads(await asyncio.wait_for(reader.readline(), 1))
+        trunk, quat = answer["trunk"], answer["imu"]["quat"]
+        return Pose(float(trunk[0]), float(trunk[1]), yaw_from_quat(*quat))
 
     async def _drop(self) -> None:
         writer, self._reader, self._writer = self._writer, None, None
@@ -418,16 +469,85 @@ def _idle() -> dict[str, float]:
 
 
 class Navigator:
-    def __init__(self, nav_map: NavigationMap, pose: SimPose) -> None:
+    """The map, the pose source navigation steers by, and what the ToF has added to the map.
+
+    `source` is the controller input: an `estimated` source by default, or `oracle` (the simulator's
+    true pose) when asked for. `oracle`, when given separately, is only ever read to score the
+    estimate. `localizer` is the MCL instance behind an estimated source (or running alongside the
+    oracle), which also carries the latest depth scans for obstacle checks and head sweeps.
+    """
+
+    def __init__(
+        self,
+        nav_map: NavigationMap,
+        source: PoseSource | SimPose,
+        *,
+        oracle: SimPose | None = None,
+        localizer: EstimatedPose | None = None,
+    ) -> None:
+        if isinstance(source, SimPose):
+            from coincoin.robot.localization import OraclePose
+
+            source = OraclePose(source)
         self.map = nav_map
-        self.pose_source = pose
+        self.source = source
+        self.oracle = oracle
+        self.localizer = localizer
+        self.obstacles: list[Point] = []
 
     @property
     def places(self) -> dict[str, Point]:
         return self.map.places
 
+    @property
+    def honest(self) -> bool:
+        """Whether the controller steers by what a real duck could know."""
+        return self.source.name != "oracle"
+
+    async def estimate(self) -> PoseEstimate:
+        return await self.source.estimate()
+
     async def pose(self) -> Pose:
-        return await self.pose_source.read()
+        return (await self.estimate()).pose
+
+    async def truth(self) -> Pose | None:
+        """The simulator's true pose, for scoring only; None when there is no oracle."""
+        if self.oracle is None:
+            return None
+        try:
+            return await self.oracle.read()
+        except RobotRefused:
+            return None
+
+    def mark_obstacles(self, points: Sequence[Point]) -> None:
+        """Remember what the ToF found in the way, for planning and for the localizer's map."""
+        self.set_obstacles([*self.obstacles, *points])
+
+    def clear_obstacles(self) -> None:
+        """Forget them: a chair moves and a door opens, so each go_to looks afresh."""
+        if self.obstacles:
+            self.set_obstacles([])
+
+    def set_obstacles(self, points: Sequence[Point]) -> None:
+        """Replace what the ToF has added to the map (to undo marks that proved doubtful)."""
+        self.obstacles = list(points)[-OBSTACLE_MEMORY:]
+        if self.localizer is not None:
+            self.localizer.use_map(
+                self.map.with_obstacles(self.obstacles) if self.obstacles else self.map
+            )
+
+    def plan(self, start: Point, goal: Point) -> list[Point] | None:
+        return self.map.with_obstacles(self.obstacles).plan(start, goal)
+
+    def room(self, point: Point) -> float:
+        return self.map.clearance_m(point)
 
     async def close(self) -> None:
-        await self.pose_source.close()
+        with contextlib.suppress(Exception):
+            await self.source.close()
+        if self.localizer is not None and self.localizer is not self.source:
+            with contextlib.suppress(Exception):
+                await self.localizer.close()
+        if self.oracle is not None:
+            with contextlib.suppress(Exception):
+                await self.oracle.close()

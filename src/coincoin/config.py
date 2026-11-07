@@ -45,9 +45,17 @@ class Settings(BaseSettings):
     # Simulator aid: open walking moves with a stronger starter and raise slow requests to what
     # the walk policy actually follows. Off by default: the starter briefly exceeds max_vx.
     walk_assist: bool = False
-    # Simulator-only room navigation: a map from salon_scan/build_navigation.py and the body
-    # server that reports the duck's true pose. Both empty disables the go_to tool.
+    # Room navigation: a map from salon_scan/build_navigation.py; empty disables the go_to tool.
+    # The pose navigation steers by is `estimated` (MCL from odometry and the ToF depth stream at
+    # tof_link; docs/localization.md) or `oracle` (the simulator body server's true pose at
+    # sim_pose_link, evaluation only). With `estimated`, sim_pose_link is only used for scoring.
+    # nav_start: a place, place@heading_deg, or x,y,heading_deg; empty means unknown. Global
+    # relocalization (a whole-flat match with no prior) can be confidently wrong; it is opt-in.
     nav_map: str = ""
+    nav_pose: Literal["estimated", "oracle"] = "estimated"
+    nav_start: str = ""
+    nav_global_relocalization: bool = False
+    tof_link: str = ""
     sim_pose_link: str = ""
     log_audio: bool = False
     log_retention_days: int = Field(default=30, gt=0)

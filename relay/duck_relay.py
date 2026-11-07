@@ -21,6 +21,8 @@ if __name__ == "__main__":
 from coincoin.robot.methods import ROBOT_METHODS  # noqa: E402
 
 FRAME_METHODS = frozenset({"hello", "media.frame"})
+# tofd's socket: one subscription, then tof.frame notifications flow back.
+TOF_METHODS = frozenset({"tof.stream"})
 MAX_LINE = 64 * 1024
 LOGGER = logging.getLogger("duck-relay")
 
@@ -104,6 +106,7 @@ class DuckRelay:
         host: str = "127.0.0.1",
         robot_port: int = 7810,
         frame_port: int = 7811,
+        tof_port: int | None = None,
         token: str = "",
     ) -> None:
         if not ipaddress.ip_address(host).is_loopback and not token:
@@ -117,6 +120,7 @@ class DuckRelay:
         self.host = host
         self.robot_port = robot_port
         self.frame_port = frame_port
+        self.tof_port = tof_port
         self._token = token.encode()
         self.servers: list[asyncio.Server] = []
         self._clients: set[asyncio.Task[None]] = set()
@@ -125,10 +129,13 @@ class DuckRelay:
     async def start(self) -> None:
         self._closing = False
         try:
-            for port, suffix, methods in (
+            listeners = [
                 (self.robot_port, ".sock", ROBOT_METHODS),
                 (self.frame_port, "-frame.sock", FRAME_METHODS),
-            ):
+            ]
+            if self.tof_port is not None:
+                listeners.append((self.tof_port, "-tof.sock", TOF_METHODS))
+            for port, suffix, methods in listeners:
                 target = self.state_dir / f"{self.duck}{suffix}"
 
                 def handle(
@@ -258,6 +265,7 @@ async def run(args: argparse.Namespace) -> None:
         host=args.host,
         robot_port=args.robot_port,
         frame_port=args.frame_port,
+        tof_port=args.tof_port if args.tof_port >= 0 else None,
         token=args.token,
     )
     stopped = asyncio.Event()
@@ -282,6 +290,7 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--robot-port", type=int, default=7810)
     parser.add_argument("--frame-port", type=int, default=7811)
+    parser.add_argument("--tof-port", type=int, default=7812, help="tofd depth frames; -1 disables")
     parser.add_argument("--token", default=os.environ.get("RELAY_TOKEN", ""))
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
