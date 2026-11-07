@@ -3,17 +3,29 @@
 import asyncio
 import contextlib
 import math
-from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from collections.abc import Callable, Coroutine, Iterable
+from dataclasses import dataclass, replace
 from typing import Any
+
+import numpy as np
 
 from coincoin.clock import Clock
 from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.robot.jsonrpc import JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
+from coincoin.robot.localization import (
+    LOST_XY_M,
+    LOST_YAW_RAD,
+    EstimatedPose,
+    PoseEstimate,
+    Scan,
+    blocking_points,
+    obstacle_points,
+    unexplained_points,
+)
 from coincoin.robot.move_latency import MoveLatency
-from coincoin.robot.navigation import Navigator, Steering
+from coincoin.robot.navigation import Navigator, Pose, Steering
 
 ROBOT_ERRORS = (RobotRefused, LinkDown, JsonRpcError, TimeoutError)
 # Navigation to a named place: a route has its own bound instead of max_move_s, because crossing
@@ -22,6 +34,34 @@ NAV_MAX_S = 300.0
 NAV_STALL_S = 12.0
 NAV_STATIONARY_S = 4.0
 NAV_REPLANS = 3
+# Honest navigation: when the pose estimate is lost, stop, sweep the head and try to relocalize
+# this many times per route before giving up and saying so.
+NAV_RELOCALIZATIONS = 2
+NAV_UNCERTAIN_S = 3.0
+# A relocalization searches around the last estimate within this radius (and heading tolerance),
+# never across the whole flat: a global match can be confidently wrong (docs/localization.md).
+RELOC_RADIUS_M = (0.6, 1.5)
+RELOC_PRIOR_MAX_M = 1.0
+RELOC_HEADING_RAD = (0.35, 1.0)
+# Head sweep for relocalization: wide composites relocalize, narrow wedges do not (microduck#127).
+SWEEP_DEGREES = (-75, -50, -25, 0, 25, 50, 75)
+SWEEP_HOLD_S = 0.9
+# Obstacles the map does not hold: stop when ToF returns sit on the next stretch of route. The
+# stretch covers the duck's radius, the distance walked during the sensor's latency (frame period,
+# state lag and one control tick) and braking, plus a margin. Two scans in a row must agree.
+NAV_TOF_LATENCY_S = 0.3
+NAV_BRAKE_M = 0.1
+NAV_OBSTACLE_MARGIN_M = 0.15
+NAV_OBSTACLE_SCANS = 2
+NAV_OBSTACLE_REPLANS = 4
+# Unmapped returns this far along the path excuse a low map fit for a while.
+NAV_OBSTACLE_VIEW_M = 1.5
+NAV_OBSTACLE_MARK_M = 2.0
+# Any return this close ahead of the body stops the duck, mapped or not.
+NAV_BUMPER_M = 0.06
+# The ToF only sees the near face of a thing; assume it is this deep so a detour clears its back.
+NAV_OBSTACLE_DEPTH_M = 0.3
+NAV_OBSTACLE_UNCERTAIN_S = 8
 ROLLER_MAX_VYAW = 0.3
 # robotd clears `sitting` when the rise starts; the gait ignores twists until it ends.
 STAND_SETTLE_S = 1.5
@@ -654,7 +694,12 @@ class Governor:
         return list(self.navigator.places) if self.navigator is not None else []
 
     async def go_to(self, place: str, mode: str | None = None) -> ToolResult:
-        """Plan a route to a named place and follow it with the simulator's true pose."""
+        """Plan a route to a named place and follow it with the navigator's pose source.
+
+        With the default (estimated) source the duck must know where it is before it sets off: an
+        unconverged estimate gets one head-sweep relocalization, and if that does not settle it
+        the request is refused with the reason, rather than walking on a guess.
+        """
         navigator = self.navigator
         if navigator is None:
             return self._refuse("go_to", "navigation is not configured")
@@ -662,6 +707,11 @@ class Governor:
             return self._refuse("go_to", f"unknown place; known: {', '.join(navigator.places)}")
         if mode is not None and mode not in ("walk", "roller"):
             return self._refuse("go_to", "mode must be walk or roller")
+        if navigator.honest and mode == "roller":
+            return self._refuse(
+                "go_to",
+                "roller navigation needs the simulator pose: contact odometry cannot see a glide",
+            )
         generation = self._stop_generation
         try:
             await self.start()
@@ -679,13 +729,30 @@ class Governor:
                         return switched
                 if generation != self._stop_generation:
                     return self._refuse("go_to", "action cancelled by stop")
+            if navigator.honest:
+                await self._refresh_mode()
+                if self._mode == "roller":
+                    return self._refuse(
+                        "go_to",
+                        "roller navigation needs the simulator pose: "
+                        "contact odometry cannot see a glide; ask for walk mode",
+                    )
             await self._rise_if_sitting(generation, await self._prepare(generation))
-            pose = await navigator.pose()
+            navigator.clear_obstacles()
+            estimate = await navigator.estimate()
+            if navigator.honest and not estimate.converged:
+                estimate = await self._relocalize(generation, navigator, estimate)
+                if not estimate.converged:
+                    raise RobotRefused(
+                        f"I do not know where I am, so I will not walk to {place} "
+                        f"({estimate.describe()})"
+                    )
+            pose = estimate.pose
             goal = navigator.places[place]
             if math.dist((pose.x, pose.y), goal) <= Steering.ROLLER_ARRIVAL_M:
                 self.journal.write("tool_result", method="go_to", place=place, already=True)
                 return ToolResult(True, detail=f"already at {place}")
-            route = await asyncio.to_thread(navigator.map.plan, (pose.x, pose.y), goal)
+            route = await asyncio.to_thread(navigator.plan, (pose.x, pose.y), goal)
             if route is None:
                 raise RobotRefused(f"no known path to {place}")
             locomotion = self._mode
@@ -703,6 +770,7 @@ class Governor:
             mode=locomotion,
             route=route,
             start=[pose.x, pose.y],
+            pose_source=navigator.source.name,
         )
         return ToolResult(True, detail=f"going to {place} ({locomotion})")
 
@@ -716,22 +784,240 @@ class Governor:
     ) -> ToolResult:
         navigator = self.navigator
         assert navigator is not None
+        localizer = navigator.localizer
+        if localizer is not None:
+            localizer.glide = mode == "roller"
         start = self.clock.now()
         deadline = start + NAV_MAX_S
         next_tick = start + 1 / self.settings.move_hz
         goal = route[-1]
-        steering = Steering(route, limits, mode, navigator.map.clearance_m)
+        steering = Steering(route, limits, mode, navigator.room)
         best, best_at, replans = math.inf, start, 0
         stationary_at = start
         observed_pose = None
         last_replan_at: tuple[float, float] | None = None
         last_route: list[tuple[float, float]] | None = None
+        relocalizations = obstacle_replans = 0
+        blocked_checked = False
+        uncertain_since: float | None = None
+        first_scan = localizer.latest_scan() if localizer else None
+        checked_scan_t = first_scan.t_ns if first_scan else 0
+        obstacle_streak: list[tuple[float, float]] = []
+        obstacle_seen_at: float | None = None
+        streak = 0
+        forward = False
+        graze: tuple[float, float] | None = None
+        lookahead = (
+            navigator.map.robot_radius
+            + limits[0] * NAV_TOF_LATENCY_S
+            + NAV_BRAKE_M
+            + NAV_OBSTACLE_MARGIN_M
+        )
         try:
             while True:
                 self._check_safety(generation)
-                pose = await navigator.pose()
+                estimate = await navigator.estimate()
                 self._check_safety(generation)
                 now = self.clock.now()
+                pose = estimate.pose
+                diffuse = estimate.std_xy > LOST_XY_M or estimate.std_yaw > LOST_YAW_RAD
+                scan = localizer.latest_scan() if localizer is not None else None
+                if (
+                    localizer is not None
+                    and scan is not None
+                    and scan.t_ns > checked_scan_t
+                    and not diffuse
+                ):
+                    checked_scan_t = scan.t_ns
+                    scan_pose = self._scan_pose(estimate, scan, localizer)
+                    points = obstacle_points(scan)
+                    path = [(pose.x, pose.y), *steering.route[steering.index :]]
+                    half_width = navigator.map.robot_radius + 0.05
+                    in_view = blocking_points(
+                        localizer.field,
+                        scan_pose,
+                        points,
+                        path,
+                        lookahead_m=NAV_OBSTACLE_VIEW_M,
+                        half_width_m=half_width,
+                        explained_m=0.15,
+                    )
+                    obstacle_seen_at = now if len(in_view) else obstacle_seen_at
+                    radius = navigator.map.robot_radius
+                    close = points[
+                        (points[:, 0] > 0)
+                        & (points[:, 0] < radius + NAV_BUMPER_M)
+                        & (np.abs(points[:, 1]) < 0.75 * radius)
+                    ]
+                    # Mapped surfaces only: unmapped ones are the obstacle check's business.
+                    bumped = forward and len(close) > len(
+                        unexplained_points(localizer.field, scan_pose, close, explained_m=0.15)
+                    )
+                    ahead = blocking_points(
+                        localizer.field,
+                        scan_pose,
+                        points,
+                        path,
+                        lookahead_m=lookahead,
+                        half_width_m=half_width,
+                        explained_m=0.15,
+                    )
+                    gap = float(
+                        localizer.field.lookup(np.array([scan_pose.x]), np.array([scan_pose.y]))[0]
+                    )
+                    if (
+                        bumped
+                        and not len(ahead)
+                        and gap - radius <= NAV_BUMPER_M + 0.03
+                        and (graze is None or math.dist(graze, (pose.x, pose.y)) > 0.3)
+                    ):
+                        # The map agrees the duck is grazing a wall: steering cut a corner.
+                        self.journal.write("navigation", place=place, event="too_close")
+                        graze = (pose.x, pose.y)
+                        await self.link.call("robot.stop", timeout=0.1)
+                        self._check_safety(generation)
+                        replanned = await asyncio.to_thread(navigator.plan, (pose.x, pose.y), goal)
+                        self._check_safety(generation)
+                        if replanned is None or replans >= NAV_REPLANS:
+                            raise RobotRefused(f"stuck against a wall on the way to {place}")
+                        replans += 1
+                        steering = Steering(replanned, limits, mode, navigator.room)
+                        forward = False
+                        now = self.clock.now()
+                        best, best_at = math.inf, now
+                        observed_pose, stationary_at = pose, now
+                        next_tick = now + 1 / self.settings.move_hz
+                        continue
+                    if bumped and not len(ahead) and navigator.honest:
+                        # A mapped surface is right in front of the duck where the map says there
+                        # is room: the pose is off, whatever its uncertainty says.
+                        self.journal.write("navigation", place=place, event="pose_contradicted")
+                        estimate = replace(estimate, converged=False)
+                        diffuse = True
+                    elif len(ahead):
+                        streak += 1
+                        # Mark all of it, not just the part across the path: a closed door seen
+                        # where the path meets it would otherwise leave the rest of it open.
+                        seen = unexplained_points(
+                            localizer.field,
+                            scan_pose,
+                            points,
+                            explained_m=0.15,
+                            max_range_m=NAV_OBSTACLE_MARK_M,
+                        )
+                        obstacle_streak.extend(
+                            _with_depth(seen, (scan_pose.x, scan_pose.y), NAV_OBSTACLE_DEPTH_M)
+                        )
+                    else:
+                        streak, obstacle_streak = 0, []
+                    if streak >= NAV_OBSTACLE_SCANS:
+                        await self.link.call("robot.stop", timeout=0.1)
+                        self._check_safety(generation)
+                        known = list(navigator.obstacles)
+                        navigator.mark_obstacles(obstacle_streak)
+                        self.journal.write(
+                            "navigation",
+                            place=place,
+                            obstacle=[[round(x, 2), round(y, 2)] for x, y in obstacle_streak[:20]],
+                        )
+                        streak, obstacle_streak = 0, []
+                        replanned = None
+                        if obstacle_replans < NAV_OBSTACLE_REPLANS:
+                            replanned = await asyncio.to_thread(
+                                navigator.plan, (pose.x, pose.y), goal
+                            )
+                        self._check_safety(generation)
+                        if (
+                            replanned is None
+                            and navigator.honest
+                            and not blocked_checked
+                            and relocalizations < NAV_RELOCALIZATIONS
+                        ):
+                            # A pose a few centimetres off makes mapped walls look unmapped, and
+                            # those "obstacles" close the corridor. Before calling the way
+                            # blocked, relocalize, forget what this stop marked, and look again.
+                            self.journal.write("navigation", place=place, event="verify_blocked")
+                            relocalizations += 1
+                            blocked_checked = True
+                            estimate = await self._relocalize(generation, navigator, estimate)
+                            if not estimate.converged:
+                                raise RobotRefused(
+                                    f"the way to {place} looks blocked by something that is not "
+                                    "on my map (a closed door?) and I could not confirm where I "
+                                    "am; I stopped"
+                                )
+                            navigator.set_obstacles(known)
+                            replanned = await asyncio.to_thread(
+                                navigator.plan, (estimate.x, estimate.y), goal
+                            )
+                            if replanned is None:
+                                raise RobotRefused(f"no known path to {place} from where I am")
+                            steering = Steering(replanned, limits, mode, navigator.room)
+                            latest = localizer.latest_scan()
+                            checked_scan_t = latest.t_ns if latest else checked_scan_t
+                            now = self.clock.now()
+                            best, best_at, uncertain_since = math.inf, now, None
+                            observed_pose, stationary_at = estimate.pose, now
+                            next_tick = now + 1 / self.settings.move_hz
+                            continue
+                        if replanned is None:
+                            raise RobotRefused(
+                                f"the way to {place} is blocked by something that is not on my "
+                                "map (a closed door?); I stopped"
+                            )
+                        obstacle_replans += 1
+                        blocked_checked = False
+                        self.journal.write(
+                            "navigation",
+                            place=place,
+                            obstacle_replan=obstacle_replans,
+                            route=replanned,
+                        )
+                        steering = Steering(replanned, limits, mode, navigator.room)
+                        now = self.clock.now()
+                        best, best_at = math.inf, now
+                        observed_pose, stationary_at = pose, now
+                        next_tick = now + 1 / self.settings.move_hz
+                        continue
+                if navigator.honest and not estimate.converged:
+                    uncertain_since = now if uncertain_since is None else uncertain_since
+                else:
+                    uncertain_since = None
+                # Something unmapped filling the view lowers the map fit without the duck being
+                # lost: give the obstacle check time to reach it before calling that lost.
+                patience = (
+                    NAV_OBSTACLE_UNCERTAIN_S
+                    if obstacle_seen_at is not None and now - obstacle_seen_at <= 1
+                    else NAV_UNCERTAIN_S
+                )
+                if navigator.honest and (
+                    diffuse or (uncertain_since is not None and now - uncertain_since >= patience)
+                ):
+                    await self.link.call("robot.stop", timeout=0.1)
+                    self._check_safety(generation)
+                    if relocalizations >= NAV_RELOCALIZATIONS:
+                        raise RobotRefused(
+                            f"I lost track of where I am on the way to {place} and stopped "
+                            f"({estimate.describe()})"
+                        )
+                    relocalizations += 1
+                    estimate = await self._relocalize(generation, navigator, estimate)
+                    if not estimate.converged:
+                        raise RobotRefused(
+                            f"I lost track of where I am on the way to {place} and stopped "
+                            f"({estimate.describe()})"
+                        )
+                    replanned = await asyncio.to_thread(
+                        navigator.plan, (estimate.x, estimate.y), goal
+                    )
+                    if replanned is None:
+                        raise RobotRefused(f"no known path to {place} from where I am")
+                    steering = Steering(replanned, limits, mode, navigator.room)
+                    now = self.clock.now()
+                    best, best_at, uncertain_since = math.inf, now, None
+                    observed_pose, stationary_at = estimate.pose, now
+                    next_tick = now + 1 / self.settings.move_hz
+                    continue
                 command = steering.update(pose, now)
                 if command is None:
                     break
@@ -752,9 +1038,7 @@ class Governor:
                     self._check_safety(generation)
                     replanned = None
                     if replans < NAV_REPLANS:
-                        replanned = await asyncio.to_thread(
-                            navigator.map.plan, (pose.x, pose.y), goal
-                        )
+                        replanned = await asyncio.to_thread(navigator.plan, (pose.x, pose.y), goal)
                     self._check_safety(generation)
                     here = (pose.x, pose.y)
                     if replanned is None or (
@@ -765,12 +1049,13 @@ class Governor:
                         raise RobotRefused(f"stuck on the way to {place}")
                     replans += 1
                     self.journal.write("navigation", place=place, replan=replans, route=replanned)
-                    steering = Steering(replanned, limits, mode, navigator.map.clearance_m)
+                    steering = Steering(replanned, limits, mode, navigator.room)
                     last_replan_at, last_route = here, replanned
                     best, best_at = math.inf, now
                     observed_pose, stationary_at = pose, now
                     continue
                 self._last_motion_command_at = now
+                forward = command["vx"] > 0.05
                 await self.link.notify("robot.move", command)
                 next_tick = await self._tick(next_tick, deadline)
             await self.link.call("robot.stop", timeout=0.1)
@@ -782,12 +1067,104 @@ class Governor:
                 place=place,
                 elapsed_s=round(elapsed, 1),
                 pose=[pose.x, pose.y, pose.yaw],
+                pose_source=navigator.source.name,
+                relocalizations=relocalizations,
+                obstacle_replans=obstacle_replans,
             )
             return ToolResult(True, detail=f"arrived at {place} in {elapsed:.0f} s")
         except ROBOT_ERRORS as error:
             result = self._failure("go_to", error)
             await self.stop(result.reason)
             return result
+
+    @staticmethod
+    def _scan_pose(estimate: PoseEstimate, scan: Scan, localizer: EstimatedPose) -> Pose:
+        """The pose at the scan's instant: the current pose minus odometry since the scan."""
+        latest = localizer.latest_odom()
+        if latest is None:
+            return estimate.pose
+        dx, dy = latest.x - scan.odom.x, latest.y - scan.odom.y
+        c, s = math.cos(-latest.yaw), math.sin(-latest.yaw)
+        fx, fy = c * dx - s * dy, s * dx + c * dy
+        c, s = math.cos(estimate.yaw), math.sin(estimate.yaw)
+        return Pose(
+            estimate.x - (c * fx - s * fy),
+            estimate.y - (s * fx + c * fy),
+            estimate.yaw - math.remainder(latest.yaw - scan.odom.yaw, 2 * math.pi),
+        )
+
+    async def _relocalize(
+        self, generation: int, navigator: Navigator, prior: PoseEstimate
+    ) -> PoseEstimate:
+        """Stand still, sweep the head, and match the composite near the last estimate."""
+        localizer = navigator.localizer
+        if localizer is None:
+            return prior
+        self.journal.write("localization", event="sweep", prior=prior.describe())
+        scans = await self._sweep(generation, localizer)
+        centre = heading = None
+        radius = heading_tolerance = None
+        if localizer.initialized and prior.std_xy <= RELOC_PRIOR_MAX_M:
+            centre = (prior.x, prior.y)
+            radius = min(max(RELOC_RADIUS_M[0], 3 * prior.std_xy), RELOC_RADIUS_M[1])
+            if prior.std_yaw <= RELOC_HEADING_RAD[1] / 2:
+                heading = prior.yaw
+                heading_tolerance = min(
+                    max(RELOC_HEADING_RAD[0], 3 * prior.std_yaw), RELOC_HEADING_RAD[1]
+                )
+        elif not self.settings.nav_global_relocalization:
+            self.journal.write("localization", event="no_prior", scans=len(scans))
+            return prior
+        localizer.relocalizing = True
+        try:
+            hypotheses = await asyncio.to_thread(
+                localizer.relocalize,
+                scans,
+                centre=centre,
+                radius=radius,
+                heading=heading,
+                heading_tolerance=heading_tolerance if heading_tolerance is not None else math.pi,
+            )
+        finally:
+            localizer.relocalizing = False
+        self._check_safety(generation)
+        await self.clock.sleep(0.3)
+        estimate = await navigator.estimate()
+        if (
+            centre is not None
+            and radius is not None
+            and math.dist(centre, (estimate.x, estimate.y)) > radius + 0.2
+        ):
+            # The match wandered off the prior: a look-alike, not a correction.
+            estimate = replace(estimate, converged=False)
+        self.journal.write(
+            "localization",
+            event="relocalized" if estimate.converged else "relocalization_failed",
+            scans=len(scans),
+            hypotheses=len(hypotheses),
+            estimate=estimate.describe(),
+        )
+        return estimate
+
+    async def _sweep(self, generation: int, localizer: EstimatedPose) -> list[Scan]:
+        """Look across the room and return the ToF scans gathered on the way."""
+        since = localizer.latest_t_ns() or 0
+        names = ("neck_pitch", "head_pitch", "head_yaw", "head_roll")
+        await self._cancel(self._look)
+        self._look = None
+        for degrees in (*SWEEP_DEGREES, 0):
+            point = {"x": 1.0, "y": math.tan(math.radians(degrees)), "z": 0.0}
+            result = await self._action_call(generation, "robot.look", point)
+            head = result.get("head") if isinstance(result, dict) else None
+            if not isinstance(head, dict) or not _finite(*(head.get(name) for name in names)):
+                raise RobotRefused("robot.look returned invalid head joints")
+            joints = {name: head[name] for name in names}
+            hold_until = self.clock.now() + SWEEP_HOLD_S
+            while self.clock.now() < hold_until:
+                self._check_safety(generation)
+                await self.link.notify("robot.head", joints)
+                await self.clock.sleep(0.15)
+        return localizer.recent_scans(since)
 
     async def look(
         self,
@@ -1001,3 +1378,20 @@ class Governor:
             True,
             detail=summary,
         )
+
+
+def _with_depth(
+    points: Iterable[Any], origin: tuple[float, float], depth_m: float
+) -> list[tuple[float, float]]:
+    """The seen surface points plus where the object probably continues behind them."""
+    out: list[tuple[float, float]] = []
+    for x, y in points:
+        dx, dy = float(x) - origin[0], float(y) - origin[1]
+        reach = math.hypot(dx, dy)
+        out.append((float(x), float(y)))
+        if reach < 1e-6:
+            continue
+        for k in range(1, round(depth_m / 0.1) + 1):
+            scale = 1 + 0.1 * k / reach
+            out.append((origin[0] + dx * scale, origin[1] + dy * scale))
+    return out

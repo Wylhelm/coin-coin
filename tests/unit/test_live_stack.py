@@ -60,6 +60,12 @@ def test_places_enable_simulator_navigation(
     env = live_stack.environment(args)
     assert env["NAV_MAP"] == str(tmp_path / "nav.json")
     assert env["SIM_POSE_LINK"] == f"tcp://127.0.0.1:{env['DUCK_SIM_PORT']}"
+    assert env["TOF_LINK"] == "tcp://127.0.0.1:7812"
+    assert env["NAV_POSE"] == "estimated" and env["NAV_START"] == ""
+    env = live_stack.environment(
+        live_stack.parse_args(["--places", "nav.json", "--start", "départ@0", "--oracle-pose"])
+    )
+    assert env["NAV_START"] == "départ@0" and env["NAV_POSE"] == "oracle"
     monkeypatch.setattr(live_stack.sys, "platform", "linux")
     with pytest.raises(RuntimeError, match="Navigation map does not exist"):
         live_stack.preflight(args, env)

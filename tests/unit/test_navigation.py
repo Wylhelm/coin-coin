@@ -5,6 +5,7 @@ import base64
 import json
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.realtime.tools.robot import schemas
 from coincoin.robot.governor import Governor
+from coincoin.robot.localization import PoseEstimate
 from coincoin.robot.navigation import NavigationMap, Navigator, Pose, Steering
 from tests.fakes.fake_robotd import FakeRobotLink
 
@@ -224,10 +226,20 @@ def test_go_to_schema_only_exists_with_places() -> None:
 
 
 class FakeNavigator(Navigator):
+    """Steers by the fake link's odometry, as the oracle source would by the simulator's truth."""
+
     def __init__(self, link: FakeRobotLink, nav: NavigationMap) -> None:
         self.link = link
         self.map = nav
+        self.source = SimpleNamespace(name="oracle")
+        self.oracle = None
+        self.localizer = None
+        self.obstacles = []
         self.closed = False
+
+    async def estimate(self) -> PoseEstimate:
+        pose = await self.pose()
+        return PoseEstimate(pose.x, pose.y, pose.yaw, 0.0, 0.0, True, source="oracle")
 
     async def pose(self) -> Pose:
         state = self.link.state()

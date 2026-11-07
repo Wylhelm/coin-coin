@@ -21,6 +21,7 @@ from coincoin.robot.governor import (
     turn_time_limit_s,
 )
 from coincoin.robot.link import RobotLink
+from coincoin.robot.localization import EstimatedPose, OraclePose, TcpTofStream
 from coincoin.robot.navigation import NavigationMap, Navigator, SimPose
 from coincoin.robot.quack import QuackSink, QuackUnavailable
 
@@ -84,7 +85,11 @@ class _RobotRuntime:
             )
         )
         self.governor = Governor(
-            self.link, app.settings, app.clock, app.journal, navigator=self._navigator(app)
+            self.link,
+            app.settings,
+            app.clock,
+            app.journal,
+            navigator=self._navigator(app, self.link),
         )
         self.quack = self._provided_quack or NullQuack(app)
         self.contracts = install_tools(app, self.dispatch, places=self.governor.places())
@@ -98,17 +103,49 @@ class _RobotRuntime:
         self._spawn(self._connect())
 
     @staticmethod
-    def _navigator(app: App) -> Navigator | None:
+    def _navigator(app: App, link: RobotLink) -> Navigator | None:
         settings = app.settings
-        if not settings.nav_map or not settings.sim_pose_link:
+        if not settings.nav_map:
             return None
         try:
             nav_map = NavigationMap.load(Path(settings.nav_map))
         except (OSError, ValueError, KeyError) as error:
             app.journal.write("error", component="navigation", reason=str(error))
             return None
-        app.journal.write("state", navigation=sorted(nav_map.places))
-        return Navigator(nav_map, SimPose(settings.sim_pose_link))
+        oracle = SimPose(settings.sim_pose_link) if settings.sim_pose_link else None
+        localizer = None
+        start = ""
+        if settings.tof_link:
+            localizer = EstimatedPose(
+                nav_map,
+                link.state,
+                TcpTofStream(settings.tof_link, settings.relay_token.get_secret_value()),
+                clock=app.clock.now,
+            )
+            try:
+                start = localizer.start_at(settings.nav_start)
+            except ValueError as error:
+                app.journal.write("error", component="navigation", reason=str(error))
+                return None
+            localizer.start()
+        if settings.nav_pose == "oracle":
+            if oracle is None:
+                app.journal.write(
+                    "error", component="navigation", reason="NAV_POSE=oracle needs SIM_POSE_LINK"
+                )
+                return None
+            source = OraclePose(SimPose(settings.sim_pose_link))
+        elif localizer is None:
+            app.journal.write(
+                "error", component="navigation", reason="NAV_POSE=estimated needs TOF_LINK"
+            )
+            return None
+        else:
+            source = localizer
+        app.journal.write(
+            "state", navigation=sorted(nav_map.places), pose_source=source.name, start=start
+        )
+        return Navigator(nav_map, source, oracle=oracle, localizer=localizer)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(work)

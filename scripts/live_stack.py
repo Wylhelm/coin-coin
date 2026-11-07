@@ -60,6 +60,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="navigation map from salon_scan/build_navigation.py; enables the go_to tool",
     )
     parser.add_argument(
+        "--start",
+        default="",
+        help="where the duck spawns, e.g. départ@0 (a place@heading_deg); empty means unknown",
+    )
+    parser.add_argument(
+        "--oracle-pose",
+        action="store_true",
+        help="steer by the simulator's true pose instead of odometry + ToF localization",
+    )
+    parser.add_argument(
         "--language", help="default response language, e.g. English, French or auto"
     )
     parser.add_argument(
@@ -118,9 +128,12 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
     if args.places is not None:
         env["NAV_MAP"] = str(args.places.expanduser().resolve())
         env["SIM_POSE_LINK"] = f"tcp://127.0.0.1:{env['DUCK_SIM_PORT']}"
+        env["TOF_LINK"] = "tcp://127.0.0.1:7812"
+        env["NAV_START"] = args.start
+        env["NAV_POSE"] = "oracle" if args.oracle_pose else "estimated"
     else:
-        env.pop("NAV_MAP", None)
-        env.pop("SIM_POSE_LINK", None)
+        for name in ("NAV_MAP", "SIM_POSE_LINK", "TOF_LINK", "NAV_START", "NAV_POSE"):
+            env.pop(name, None)
     return env
 
 
