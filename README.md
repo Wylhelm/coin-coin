@@ -157,16 +157,24 @@ uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml \
 
 `--places` loads a navigation map (clearance grid and named places, produced by
 `salon_scan/build_navigation.py`) and enables the `go_to` tool: "Va dans ma
-chambre", "Va au salon en patins" or "Reviens" plan a route around obstacles with
-A* and follow it on foot or on skates. The route is followed in closed loop with
-the duck's **true pose read from the simulator**, so this is simulator-only: a
-real robot would need its own validated localisation and obstacle avoidance.
+chambre" or "Reviens" plan a route around obstacles with A* and follow it in
+closed loop. By default the duck steers by an **estimated pose** built only from
+what a real duck has: contact odometry, the IMU and the head's 8x8 ToF depth
+frames, matched against the map by a particle filter. `--start départ@0` gives
+the known start (the apartment scene spawns the duck at the dock); without it the
+duck sweeps its head and refuses if it cannot place itself. The simulator's true
+pose is read only to score the estimate, or to steer when `--oracle-pose` is
+given. The duck stops before unmapped obstacles seen by the ToF, marks them and
+replans, sweeps its head to relocalize when uncertain, and stops and says so when
+it is lost or the way is blocked (a closed door). Skates are refused in honest
+mode. See [honest localization](docs/localization.md) for the model, measured
+errors and limits; nothing is validated on hardware.
 Room navigation refuses to start unless `robot.policies` explicitly reports a
-simulated robot; it must not drive hardware using a simulated pose. The
-duck commands a stop before replanning after four seconds without movement or
-rotation, or twelve seconds without progress. It gives up if the same route fails
-again from the same spot or after at most three replans, and stops after 300 s at
-most. Voice or browser STOP, falls and stale state stop it as for any other motion.
+simulated robot. The duck commands a stop before replanning after four seconds
+without movement or rotation, or twelve seconds without progress. It gives up if
+the same route fails again from the same spot or after at most three replans,
+and stops after 300 s at most. Voice or browser STOP, falls and stale state stop
+it as for any other motion.
 
 The optional `--preload-equipment` compiles walking and roller equipment models
 for the single duck at startup. This uses more memory and startup time, but
@@ -270,6 +278,8 @@ Restart the service after changing them.
 | `MAX_VX`, `MAX_VY`, `MAX_VYAW` | Walk limits: `0.25 m/s`, `0.2 m/s`, `1 rad/s`. |
 | `MAX_MOVE_S`, `MOVE_HZ` | Maximum command duration `5 s`; command streaming `20 Hz`. |
 | `NAV_MAP`, `SIM_POSE_LINK` | Empty: no `go_to`. Navigation map and simulator body-server address; set together by `--places`. |
+| `NAV_POSE`, `NAV_START`, `TOF_LINK` | `estimated` (odometry + ToF, default) or `oracle` (simulator truth, evaluation only); known start such as `départ@0` (empty: unknown); relay ToF endpoint. `--places` sets them. |
+| `NAV_GLOBAL_RELOCALIZATION` | `false`: relocalize only near the last estimate; a whole-flat match can be confidently wrong. |
 | `WAKE_ENGINE`, `WAKE_THRESHOLD` | `vosk`, `0.9`; threshold remains provisional. |
 | `FOLLOWUP_S` | Conversation follow-up timeout, `420 s`. |
 | `QUACK_SINK` | `stream` (browser output) or `robot`. |
@@ -320,8 +330,15 @@ apartment assets available, the room-navigation rehearsal is opt-in:
 
 ```sh
 DUCK_TEST_NAVIGATION_SIM=1 uv run --no-sync pytest -q -s \
-  tests/integration/test_navigation_simulation.py -p no:cacheprovider --no-cov
+  tests/integration/test_navigation_simulation.py \
+  tests/integration/test_navigation_honest_simulation.py \
+  -p no:cacheprovider --no-cov --basetemp="$HOME/.cache/nvt/t"
 ```
+
+The honest run prints estimated-vs-true pose error per leg and appends a JSON line
+per leg to `$DUCK_NAV_RESULTS` if set. A short `--basetemp` keeps robotd's Unix
+socket path under the kernel limit. Hold the shared simulator lock if other agents
+use the machine (`flock /tmp/microduck-sim-agents.lock ...`).
 
 GitHub Actions runs these offline checks on pull requests and pushes to `main`,
 using Python 3.12 and Node.js 22 without OpenAI or robot credentials. CI does not
