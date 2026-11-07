@@ -32,6 +32,86 @@ def test_language_and_duration_are_opt_in_overrides(monkeypatch: pytest.MonkeyPa
     assert custom["MAX_MOVE_S"] == "30.0"
 
 
+def test_custom_scene_is_opt_in_and_resolved_from_invocation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DUCK_SIM_SCENE", "untrusted-environment")
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert default["DUCK_SIM_SCENE"] == "backlash"
+    assert default["DUCK_SIM_PRELOAD_EQUIPMENT"] == "0"
+    custom = live_stack.environment(live_stack.parse_args(["--scene", "my room/scene.xml"]))
+    assert custom["DUCK_SIM_SCENE"] == str(tmp_path / "my room/scene.xml")
+    assert custom["DUCK_SIM_PRELOAD_EQUIPMENT"] == "0"
+    preloaded = live_stack.environment(
+        live_stack.parse_args(["--scene", "my room/scene.xml", "--preload-equipment"])
+    )
+    assert preloaded["DUCK_SIM_PRELOAD_EQUIPMENT"] == "1"
+
+
+def test_places_enable_simulator_navigation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NAV_MAP", "untrusted")
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert "NAV_MAP" not in default and "SIM_POSE_LINK" not in default
+    args = live_stack.parse_args(["--places", "nav.json"])
+    env = live_stack.environment(args)
+    assert env["NAV_MAP"] == str(tmp_path / "nav.json")
+    assert env["SIM_POSE_LINK"] == f"tcp://127.0.0.1:{env['DUCK_SIM_PORT']}"
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="Navigation map does not exist"):
+        live_stack.preflight(args, env)
+
+
+def test_missing_custom_scene_fails_before_starting_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    args = live_stack.parse_args(["--scene", str(tmp_path / "missing.xml")])
+    with pytest.raises(RuntimeError, match="Custom simulator scene does not exist"):
+        live_stack.preflight(args, live_stack.environment(args))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_custom_scene_reports_compile_error_before_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coin = tmp_path / "coin"
+    runtime = tmp_path / "runtime"
+    rl = tmp_path / "rl"
+    scene = tmp_path / "scene.xml"
+    scene.write_text("invalid")
+    for path in (
+        coin / ".venv/bin/python",
+        coin / "relay/duck_relay.py",
+        runtime / "scripts/duck-sim",
+        rl / ".venv/bin/python",
+        coin / "assets/models/silero_vad.onnx",
+        coin / "assets/models/vosk-model-small-fr/am/final.mdl",
+        coin / "assets/models/vosk-model-small-en-us/am/final.mdl",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    monkeypatch.setattr(live_stack, "COIN", coin)
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    commands: list[list[str]] = []
+
+    def fail_compile(argv, **kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "", "invalid MJCF")
+
+    monkeypatch.setattr(live_stack.subprocess, "run", fail_compile)
+    args = live_stack.parse_args(
+        ["--scene", str(scene), "--runtime", str(runtime), "--rl", str(rl)]
+    )
+    with pytest.raises(RuntimeError, match="invalid MJCF"):
+        live_stack.preflight(args, live_stack.environment(args))
+    assert len(commands) == 1
+    assert commands[0][-1] == str(scene)
+
+
 def test_check_mode_does_not_start_services(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(live_stack, "preflight", lambda *_: None)
 

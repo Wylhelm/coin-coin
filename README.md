@@ -146,7 +146,33 @@ uv run --no-sync python scripts/live_stack.py --max-move-s 30 --language French
 # Different checkout locations / no viewer:
 uv run --no-sync python scripts/live_stack.py \
   --runtime /path/to/microduck --rl /path/to/microduck_rl --headless
+
+# Use a detailed custom scene and preload both equipment models:
+uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml --preload-equipment
+
+# Add named places so the duck can be sent to rooms of that scene:
+uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml \
+  --preload-equipment --places /path/to/navigation.json
 ```
+
+`--places` loads a navigation map (clearance grid and named places, produced by
+`salon_scan/build_navigation.py`) and enables the `go_to` tool: "Va dans ma
+chambre", "Va au salon en patins" or "Reviens" plan a route around obstacles with
+A* and follow it on foot or on skates. The route is followed in closed loop with
+the duck's **true pose read from the simulator**, so this is simulator-only: a
+real robot would need its own validated localisation and obstacle avoidance.
+Room navigation refuses to start unless `robot.policies` explicitly reports a
+simulated robot; it must not drive hardware using a simulated pose. The
+duck commands a stop before replanning after four seconds without movement or
+rotation, or twelve seconds without progress. It gives up if the same route fails
+again from the same spot or after at most three replans, and stops after 300 s at
+most. Voice or browser STOP, falls and stale state stop it as for any other motion.
+
+The optional `--preload-equipment` compiles walking and roller equipment models
+for the single duck at startup. This uses more memory and startup time, but
+avoids recompiling a detailed scene during a mode change. The runtime and
+simulator checkouts must support `DUCK_SIM_PRELOAD_EQUIPMENT` and
+`--preload-equipment`.
 
 Open <http://localhost:8765/> once **LIVE READY** appears. Enable the microphone,
 say **"Coin coin"**, then try "Introduce yourself", "Look left" or "What do you see?".
@@ -194,7 +220,10 @@ balance or equipment-changing skill. The local policy set must contain `roller.o
 `roller_crouch.onnx`; `duck-sim` selects it with `[policy] directory` rather than a
 walking-slot override. Restart the local stack once after updating both checkouts.
 On real hardware, mode selection does **not** physically fit or remove skates;
-that equipment must be changed by a person before selecting its mode.
+that equipment must be changed by a person before selecting its mode. The upstream
+[LAN WebRTC route](https://github.com/pollen-robotics/microduck/blob/main/mediad/src/route.rs)
+currently refuses remote `robot.setMode`, so the physical robot may require a
+local mode selection; confirm the procedure for its installed release.
 
 If the simulated duck has fallen, **"Releve-toi"** retries its current mode's
 assisted home ramp; **"Reviens a la marche"** also removes the skates. Success
@@ -240,6 +269,7 @@ Restart the service after changing them.
 | `RELAY_TOKEN` | Shared TCP relay token. Empty is permitted for loopback-only simulation, not remote exposure. |
 | `MAX_VX`, `MAX_VY`, `MAX_VYAW` | Walk limits: `0.25 m/s`, `0.2 m/s`, `1 rad/s`. |
 | `MAX_MOVE_S`, `MOVE_HZ` | Maximum command duration `5 s`; command streaming `20 Hz`. |
+| `NAV_MAP`, `SIM_POSE_LINK` | Empty: no `go_to`. Navigation map and simulator body-server address; set together by `--places`. |
 | `WAKE_ENGINE`, `WAKE_THRESHOLD` | `vosk`, `0.9`; threshold remains provisional. |
 | `FOLLOWUP_S` | Conversation follow-up timeout, `420 s`. |
 | `QUACK_SINK` | `stream` (browser output) or `robot`. |
@@ -285,6 +315,13 @@ node --test tests/js/play_worklet.test.mjs
 Node.js is needed only for the browser audio tests above. Simulator/model-dependent
 tests require their explicit prerequisites; skipped tests are not evidence of
 live behavior. Keep genuine failed measurements instead of relaxing thresholds.
+With the sibling runtime and simulator prepared, a built `robotd` and the scanned
+apartment assets available, the room-navigation rehearsal is opt-in:
+
+```sh
+DUCK_TEST_NAVIGATION_SIM=1 uv run --no-sync pytest -q -s \
+  tests/integration/test_navigation_simulation.py -p no:cacheprovider --no-cov
+```
 
 GitHub Actions runs these offline checks on pull requests and pushes to `main`,
 using Python 3.12 and Node.js 22 without OpenAI or robot credentials. CI does not

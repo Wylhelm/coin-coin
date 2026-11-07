@@ -26,6 +26,9 @@ def test_master_defaults() -> None:
         "max_vyaw": 1.0,
         "max_move_s": 5,
         "move_hz": 20,
+        "walk_assist": False,
+        "nav_map": "",
+        "sim_pose_link": "",
         "log_audio": False,
         "log_retention_days": 30,
     }

@@ -45,6 +45,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="prepared microduck_rl checkout",
     )
     parser.add_argument(
+        "--scene",
+        type=Path,
+        help="custom MuJoCo XML scene; otherwise use the built-in backlash scene",
+    )
+    parser.add_argument(
+        "--preload-equipment",
+        action="store_true",
+        help="compile both equipment models at startup for faster mode changes",
+    )
+    parser.add_argument(
+        "--places",
+        type=Path,
+        help="navigation map from salon_scan/build_navigation.py; enables the go_to tool",
+    )
+    parser.add_argument(
         "--language", help="default response language, e.g. English, French or auto"
     )
     parser.add_argument(
@@ -78,7 +93,8 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
         DUCK_SIM_DUCK="duck-a",
         DUCK_SIM_VIEWER="0" if args.headless else "1",
         DUCK_SIM_CAMERAS="a",
-        DUCK_SIM_SCENE="backlash",
+        DUCK_SIM_SCENE=str(args.scene.expanduser().resolve()) if args.scene else "backlash",
+        DUCK_SIM_PRELOAD_EQUIPMENT="1" if args.preload_equipment else "0",
         DUCK_SIM_KEYFRAME="SIT",
         ROBOT_LINK="tcp://127.0.0.1:7810",
         FRAME_LINK="tcp://127.0.0.1:7811",
@@ -88,6 +104,7 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
         LOG_AUDIO="false",
         QUACK_SINK="stream",
         WAKE_ENGINE="vosk",
+        WALK_ASSIST="true",
         PYTHONUNBUFFERED="1",
     )
     plugin_dir = Path("/opt/gst-plugins-rs/lib/gstreamer-1.0")
@@ -98,12 +115,24 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
         env["RESPONSE_LANGUAGE"] = args.language
     if args.max_move_s is not None:
         env["MAX_MOVE_S"] = str(args.max_move_s)
+    if args.places is not None:
+        env["NAV_MAP"] = str(args.places.expanduser().resolve())
+        env["SIM_POSE_LINK"] = f"tcp://127.0.0.1:{env['DUCK_SIM_PORT']}"
+    else:
+        env.pop("NAV_MAP", None)
+        env.pop("SIM_POSE_LINK", None)
     return env
 
 
 def preflight(args: argparse.Namespace, env: dict[str, str]) -> None:
     if sys.platform != "linux":
         raise RuntimeError("Run this script on Linux, or inside WSL2 on Windows.")
+    if args.scene is not None:
+        scene = Path(env["DUCK_SIM_SCENE"])
+        if not scene.is_file():
+            raise RuntimeError(f"Custom simulator scene does not exist: {scene}")
+    if args.places is not None and not Path(env["NAV_MAP"]).is_file():
+        raise RuntimeError(f"Navigation map does not exist: {env['NAV_MAP']}")
     required = (
         COIN / ".venv/bin/python",
         COIN / "relay/duck_relay.py",
@@ -116,6 +145,29 @@ def preflight(args: argparse.Namespace, env: dict[str, str]) -> None:
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise RuntimeError("Missing prerequisites:\n  " + "\n  ".join(missing))
+    if args.scene is not None:
+        scene_code = (
+            "import mujoco, sys\n"
+            "model = mujoco.MjModel.from_xml_path(sys.argv[1])\n"
+            "floor = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, 'floor')\n"
+            "if floor < 0 or model.geom_type[floor] != mujoco.mjtGeom.mjGEOM_PLANE:\n"
+            "    raise SystemExit(\"Scene needs a plane named 'floor'\")\n"
+            "if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, 'SIT') < 0:\n"
+            "    raise SystemExit(\"Scene needs a keyframe named 'SIT'\")\n"
+        )
+        result = subprocess.run(
+            [str(required[3]), "-c", scene_code, str(scene)],
+            cwd=COIN,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError(
+                f"Cannot load custom simulator scene {scene}: {detail or result.returncode}"
+            )
     for tool in ("cargo", "setpriv", "gst-inspect-1.0"):
         if shutil.which(tool, path=env["PATH"]) is None:
             raise RuntimeError(f"Missing executable: {tool}. See README.md.")

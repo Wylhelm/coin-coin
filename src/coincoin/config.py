@@ -42,6 +42,13 @@ class Settings(BaseSettings):
     max_vyaw: float = Field(default=1.0, gt=0)
     max_move_s: float = Field(default=5, gt=0)
     move_hz: float = Field(default=20, gt=0)
+    # Simulator aid: open walking moves with a stronger starter and raise slow requests to what
+    # the walk policy actually follows. Off by default: the starter briefly exceeds max_vx.
+    walk_assist: bool = False
+    # Simulator-only room navigation: a map from salon_scan/build_navigation.py and the body
+    # server that reports the duck's true pose. Both empty disables the go_to tool.
+    nav_map: str = ""
+    sim_pose_link: str = ""
     log_audio: bool = False
     log_retention_days: int = Field(default=30, gt=0)
     relay_token: SecretStr = SecretStr("")

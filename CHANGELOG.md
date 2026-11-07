@@ -6,6 +6,19 @@
 > commits mentionnés dans les relevés correspondent à l'historique local
 > d'origine, dont les identifiants diffèrent de l'historique public.
 
+## Navigation entre pièces en simulation
+
+- Add `go_to`: plan an A* route on a scanned navigation map and follow it with the
+  simulator's true pose, on foot or on skates, with replanning when stalled.
+  Skating controls measured speed (push, coast, brake) and turns in slow arcs,
+  because the roller policy was not trained to spin in place.
+- Add `live_stack.py --places`, the `NAV_MAP` and `SIM_POSE_LINK` settings, and
+  `coincoin-appartement.sh` places for « ma chambre », « salon » and « départ ».
+- Follow each segment closely on skates, avoid diagonal shortcut corner cuts, and
+  stop before replanning when a route stalls rather than repeatedly pushing.
+- Refuse room navigation unless the connected robot explicitly identifies as
+  simulated, so a simulated pose cannot drive physical hardware.
+
 ## Public configuration and reproducible live stack — 2026-11-06
 
 - Replace French-only instructions with English source instructions and a

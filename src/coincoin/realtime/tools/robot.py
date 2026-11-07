@@ -19,7 +19,11 @@ def _number(low: float, high: float) -> dict[str, Any]:
 
 
 def schemas(
-    max_vx: float, max_vy: float, max_vyaw: float, max_move_s: float
+    max_vx: float,
+    max_vy: float,
+    max_vyaw: float,
+    max_move_s: float,
+    places: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     properties: dict[str, dict[str, Any]] = {
         "move": {
@@ -56,6 +60,11 @@ def schemas(
         },
         "status": {},
     }
+    if places:
+        properties["go_to"] = {
+            "place": {"type": "string", "enum": list(places)},
+            "mode": {"type": "string", "enum": ["walk", "roller"]},
+        }
     result = {
         name: {
             "type": "object",
@@ -66,12 +75,17 @@ def schemas(
         for name, fields in properties.items()
     }
     result["quack"]["required"] = ["tag"]
+    if "go_to" in result:
+        result["go_to"]["required"] = ["place"]
     return result
 
 
 DESCRIPTIONS = {
     "move": (
-        "Move for duration_s seconds, then stop; returns once the movement has finished "
+        "Move for duration_s seconds, then stop. Velocities: vx m/s, positive = forward "
+        "(avancer), negative = backward (reculer); vy m/s, positive = left; vyaw rad/s, "
+        "positive = turn left. At least one velocity must be non-zero; to go forward use "
+        "vx about 0.2. Returns once the movement has finished "
         "or was interrupted. Robot actions run one at a time in call order, so for a "
         "multi-step request call each step in order (e.g. move, turn, move, sit)."
     ),
@@ -84,7 +98,8 @@ DESCRIPTIONS = {
         "Switch locomotion: roller = skate/glide on skates (patiner, glisser, mettre les patins); "
         "walk = walk on feet (marcher, retirer les patins, revenir a la marche). "
         "This stops motion and waits for the mode change. It does not move: "
-        "call move afterwards if requested. The mode persists until changed again."
+        "call move afterwards if requested. The mode persists until changed again. On a real "
+        "robot a person must fit or remove skates; the robot may require local mode selection."
     ),
     "look": (
         "Look: provide either direction alone or all of x, y, z, never both. "
@@ -97,6 +112,14 @@ DESCRIPTIONS = {
     "do_skill": "Perform one currently available skill.",
     "quack": "Quack; wheee can be held for at most 3 seconds.",
     "status": "Short robot posture, safety, mode and health summary.",
+    "go_to": (
+        "Walk or skate by itself to a named room of the apartment, avoiding walls and furniture, "
+        "then stop there (aller dans ma chambre, aller au salon). To come back (reviens, "
+        "retourne, rentre) use place départ, the starting point. mode is optional: roller = on "
+        "skates, faster (en patins, en patinant); walk = on feet (à pied, sans patins, en "
+        "marchant); omit it to keep the current mode. Returns once arrived, which can take a "
+        "minute or more; stop interrupts it."
+    ),
 }
 
 
@@ -131,9 +154,13 @@ def invalid_arguments(name: str, arguments: dict[str, Any], schema: dict[str, An
     return None
 
 
-def install_tools(app: App, handler: RobotHandler) -> dict[str, dict[str, Any]]:
+def install_tools(
+    app: App, handler: RobotHandler, places: list[str] | None = None
+) -> dict[str, dict[str, Any]]:
     settings = app.settings
-    contracts = schemas(settings.max_vx, settings.max_vy, settings.max_vyaw, settings.max_move_s)
+    contracts = schemas(
+        settings.max_vx, settings.max_vy, settings.max_vyaw, settings.max_move_s, places
+    )
     for name, schema in contracts.items():
 
         async def dispatch(

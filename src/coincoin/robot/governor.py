@@ -13,9 +13,43 @@ from coincoin.journal import Journal
 from coincoin.robot.jsonrpc import JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.move_latency import MoveLatency
+from coincoin.robot.navigation import Navigator, Steering
 
 ROBOT_ERRORS = (RobotRefused, LinkDown, JsonRpcError, TimeoutError)
+# Navigation to a named place: a route has its own bound instead of max_move_s, because crossing
+# the apartment takes longer than one move. Stop, safety and link checks still run every tick.
+NAV_MAX_S = 300.0
+NAV_STALL_S = 12.0
+NAV_STATIONARY_S = 4.0
+NAV_REPLANS = 3
 ROLLER_MAX_VYAW = 0.3
+# robotd clears `sitting` when the rise starts; the gait ignores twists until it ends.
+STAND_SETTLE_S = 1.5
+STAND_TIMEOUT_S = 6.0
+# The walk policy (velstand) stays put from standstill under small commands: it only starts
+# stepping above roughly vx 0.15, vx -0.4, vyaw 1.0, and sideways only with a yaw nudge. Each
+# walking move therefore opens with a short, stronger starter (still inside the policy's trained
+# range of vx +-0.4, vy +-0.3, vyaw +-1.0), and slower requests are raised to what it sustains.
+WALK_START_S = 0.5
+WALK_MIN = {"vx": (0.1, 0.2), "vy": (0.15, 0.15), "vyaw": (0.3, 0.3)}
+
+
+def walk_starter(params: dict[str, float]) -> dict[str, float]:
+    vx, vy, vyaw = params["vx"], params["vy"], params["vyaw"]
+    starter = dict(params)
+    if vx > 0:
+        starter["vx"] = max(vx, 0.25)
+    elif vx < 0:
+        starter["vx"] = -0.4
+    if vy:
+        starter["vy"] = math.copysign(0.3, vy)
+        if not vx and not vyaw:
+            starter["vyaw"] = math.copysign(0.6, vy)
+    if vyaw:
+        starter["vyaw"] = math.copysign(max(abs(vyaw), 1.0), vyaw)
+    return starter
+
+
 LOOK_POINTS = {
     "centre": (1.0, 0.0, 0.0),
     "gauche": (1.0, 1.0, 0.0),
@@ -51,11 +85,19 @@ def turn_time_limit_s(degrees: float, max_rate: float) -> float:
 
 
 class Governor:
-    def __init__(self, link: RobotLink, settings: Settings, clock: Clock, journal: Journal):
+    def __init__(
+        self,
+        link: RobotLink,
+        settings: Settings,
+        clock: Clock,
+        journal: Journal,
+        navigator: Navigator | None = None,
+    ):
         self.link = link
         self.settings = settings
         self.clock = clock
         self.journal = journal
+        self.navigator = navigator
         self._motion: asyncio.Task[ToolResult] | None = None
         self._look: asyncio.Task[ToolResult] | None = None
         self._monitor: asyncio.Task[None] | None = None
@@ -87,6 +129,8 @@ class Governor:
                     await task
         self._monitor = self._mode_task = None
         await self.stop("governor closed")
+        if self.navigator is not None:
+            await self.navigator.close()
         self._closed = True
 
     @property
@@ -357,6 +401,30 @@ class Governor:
         self._check_safety(generation)
         return policies
 
+    async def _rise_if_sitting(self, generation: int, policies: dict[str, Any]) -> None:
+        """Stand a seated duck up first: a seated gait ignores walking commands."""
+        if policies.get("sitting") is not True:
+            return
+        async with self._action_lock:
+            await self._cancel(self._motion)
+            self._motion = None
+            await self._action_call(generation, "robot.stop", timeout=0.1)
+            await self._action_call(generation, "robot.do", {"skill": "sit_toggle"})
+        deadline = self.clock.now() + STAND_TIMEOUT_S
+        retry_at = self.clock.now() + 0.5
+        while (await self._policies(generation)).get("sitting") is True:
+            if self.clock.now() >= deadline:
+                raise RobotRefused(f"robot did not stand up within {STAND_TIMEOUT_S:g} s")
+            if self.clock.now() >= retry_at:
+                # robotd refuses the toggle while it is still settling into the seat.
+                async with self._action_lock:
+                    await self._action_call(generation, "robot.do", {"skill": "sit_toggle"})
+                retry_at = self.clock.now() + 0.5
+            await self.clock.sleep(0.1)
+        await self.clock.sleep(STAND_SETTLE_S)
+        self._check_safety(generation)
+        self.journal.write("tool_result", method="stand", automatic=True)
+
     async def _cancel(self, task: asyncio.Task[Any] | None) -> None:
         if task is not None and task is not asyncio.current_task():
             task.cancel()
@@ -403,9 +471,13 @@ class Governor:
         requested_at = self.clock.now()
         if not _finite(vx, vy, vyaw, duration_s) or duration_s <= 0:
             return self._refuse("move", "velocities and positive duration must be finite")
+        if vx == vy == vyaw == 0:
+            return self._refuse(
+                "move", "no velocity: use vx > 0 to go forward, vx < 0 back, vy sideways"
+            )
         generation = self._stop_generation
         try:
-            await self._prepare(generation)
+            await self._rise_if_sitting(generation, await self._prepare(generation))
             limits = self._limits()
             requested = {"vx": vx, "vy": vy, "vyaw": vyaw, "duration_s": duration_s}
             actual = {
@@ -414,6 +486,13 @@ class Governor:
                 "vyaw": _clamp(vyaw, -limits[2], limits[2]),
                 "duration_s": min(duration_s, self.settings.max_move_s),
             }
+            starter = None
+            if self._mode == "walk" and self.settings.walk_assist:
+                for (key, (forward, backward)), limit in zip(WALK_MIN.items(), limits, strict=True):
+                    minimum = min(forward if actual[key] > 0 else backward, limit)
+                    if actual[key] and abs(actual[key]) < minimum:
+                        actual[key] = math.copysign(minimum, actual[key])
+                starter = walk_starter({key: actual[key] for key in ("vx", "vy", "vyaw")})
             clamped = {key: value for key, value in actual.items() if requested[key] != value}
             params = {key: actual[key] for key in ("vx", "vy", "vyaw")}
             self._move_id += 1
@@ -421,13 +500,24 @@ class Governor:
             await self._replace_motion(
                 generation,
                 lambda replacing: self._run_move(
-                    params, actual["duration_s"], generation, requested_at, move_id, replacing
+                    params,
+                    actual["duration_s"],
+                    generation,
+                    requested_at,
+                    move_id,
+                    replacing,
+                    starter,
                 ),
             )
         except ROBOT_ERRORS as error:
             return self._failure("move", error)
         self.journal.write(
-            "tool_call", method="move", move_id=move_id, requested=requested, actual=actual
+            "tool_call",
+            method="move",
+            move_id=move_id,
+            requested=requested,
+            actual=actual,
+            starter=starter,
         )
         return ToolResult(True, detail="movement started", clamped=clamped or None)
 
@@ -444,15 +534,18 @@ class Governor:
         requested_at: float,
         move_id: int,
         replacing: bool,
+        starter: dict[str, float] | None = None,
     ) -> ToolResult:
         start = self.clock.now()
         deadline = start + duration
+        starter_until = start + min(WALK_START_S, duration) if starter else start
         next_tick = start + 1 / self.settings.move_hz
         observation: MoveLatency | None = None
         end_reason = "cancelled"
         try:
             while self.clock.now() < deadline:
                 self._check_safety(generation)
+                command = starter if starter and self.clock.now() < starter_until else params
                 if observation is None:
                     observation = MoveLatency(
                         self.link,
@@ -460,7 +553,7 @@ class Governor:
                         self.journal,
                         move_id=move_id,
                         requested_at=requested_at,
-                        params=params,
+                        params=command,
                         duration=duration,
                         replacing=replacing,
                         baseline_after=self._last_motion_command_at,
@@ -468,7 +561,7 @@ class Governor:
                 else:
                     observation.observe()
                 self._last_motion_command_at = self.clock.now()
-                await self.link.notify("robot.move", params)
+                await self.link.notify("robot.move", command)
                 self._check_safety(generation)
                 if next_tick == start + 1 / self.settings.move_hz:
                     self.journal.write(
@@ -511,7 +604,7 @@ class Governor:
         generation = self._stop_generation
         angle = _clamp(degrees, -360, 360)
         try:
-            await self._prepare(generation)
+            await self._rise_if_sitting(generation, await self._prepare(generation))
             yaw = self._yaw()
             max_rate = self._limits()[2]
             await self._replace_motion(
@@ -554,6 +647,145 @@ class Governor:
             return ToolResult(True, detail=f"turned {math.degrees(progress):.1f} degrees")
         except ROBOT_ERRORS as error:
             result = self._failure("turn", error)
+            await self.stop(result.reason)
+            return result
+
+    def places(self) -> list[str]:
+        return list(self.navigator.places) if self.navigator is not None else []
+
+    async def go_to(self, place: str, mode: str | None = None) -> ToolResult:
+        """Plan a route to a named place and follow it with the simulator's true pose."""
+        navigator = self.navigator
+        if navigator is None:
+            return self._refuse("go_to", "navigation is not configured")
+        if place not in navigator.places:
+            return self._refuse("go_to", f"unknown place; known: {', '.join(navigator.places)}")
+        if mode is not None and mode not in ("walk", "roller"):
+            return self._refuse("go_to", "mode must be walk or roller")
+        generation = self._stop_generation
+        try:
+            await self.start()
+            self._check_safety(generation)
+            policies = await self._policies(generation)
+            if policies.get("simulated") is not True:
+                return self._refuse(
+                    "go_to", "room navigation requires a simulated robot and simulated pose"
+                )
+            if mode is not None:
+                await self._refresh_mode()
+                if self._mode != mode:
+                    switched = await self.set_mode(mode)
+                    if not switched.ok:
+                        return switched
+                if generation != self._stop_generation:
+                    return self._refuse("go_to", "action cancelled by stop")
+            await self._rise_if_sitting(generation, await self._prepare(generation))
+            pose = await navigator.pose()
+            goal = navigator.places[place]
+            if math.dist((pose.x, pose.y), goal) <= Steering.ROLLER_ARRIVAL_M:
+                self.journal.write("tool_result", method="go_to", place=place, already=True)
+                return ToolResult(True, detail=f"already at {place}")
+            route = await asyncio.to_thread(navigator.map.plan, (pose.x, pose.y), goal)
+            if route is None:
+                raise RobotRefused(f"no known path to {place}")
+            locomotion = self._mode
+            limits = self._limits()
+            await self._replace_motion(
+                generation,
+                lambda replacing: self._run_route(place, route, limits, locomotion, generation),
+            )
+        except ROBOT_ERRORS as error:
+            return self._failure("go_to", error)
+        self.journal.write(
+            "tool_call",
+            method="go_to",
+            place=place,
+            mode=locomotion,
+            route=route,
+            start=[pose.x, pose.y],
+        )
+        return ToolResult(True, detail=f"going to {place} ({locomotion})")
+
+    async def _run_route(
+        self,
+        place: str,
+        route: list[tuple[float, float]],
+        limits: tuple[float, float, float],
+        mode: str | None,
+        generation: int,
+    ) -> ToolResult:
+        navigator = self.navigator
+        assert navigator is not None
+        start = self.clock.now()
+        deadline = start + NAV_MAX_S
+        next_tick = start + 1 / self.settings.move_hz
+        goal = route[-1]
+        steering = Steering(route, limits, mode, navigator.map.clearance_m)
+        best, best_at, replans = math.inf, start, 0
+        stationary_at = start
+        observed_pose = None
+        last_replan_at: tuple[float, float] | None = None
+        last_route: list[tuple[float, float]] | None = None
+        try:
+            while True:
+                self._check_safety(generation)
+                pose = await navigator.pose()
+                self._check_safety(generation)
+                now = self.clock.now()
+                command = steering.update(pose, now)
+                if command is None:
+                    break
+                if now >= deadline:
+                    raise RobotRefused(f"did not reach {place} within {NAV_MAX_S:g} s")
+                if observed_pose is None:
+                    observed_pose = pose
+                elif (
+                    math.dist((pose.x, pose.y), (observed_pose.x, observed_pose.y)) >= 0.04
+                    or abs(math.remainder(pose.yaw - observed_pose.yaw, 2 * math.pi)) >= 0.2
+                ):
+                    observed_pose, stationary_at = pose, now
+                remaining = steering.remaining(pose)
+                if remaining < best - 0.1:
+                    best, best_at = remaining, now
+                if now - best_at >= NAV_STALL_S or now - stationary_at >= NAV_STATIONARY_S:
+                    await self.link.call("robot.stop", timeout=0.1)
+                    self._check_safety(generation)
+                    replanned = None
+                    if replans < NAV_REPLANS:
+                        replanned = await asyncio.to_thread(
+                            navigator.map.plan, (pose.x, pose.y), goal
+                        )
+                    self._check_safety(generation)
+                    here = (pose.x, pose.y)
+                    if replanned is None or (
+                        replanned == last_route
+                        and last_replan_at is not None
+                        and math.dist(here, last_replan_at) < 0.1
+                    ):
+                        raise RobotRefused(f"stuck on the way to {place}")
+                    replans += 1
+                    self.journal.write("navigation", place=place, replan=replans, route=replanned)
+                    steering = Steering(replanned, limits, mode, navigator.map.clearance_m)
+                    last_replan_at, last_route = here, replanned
+                    best, best_at = math.inf, now
+                    observed_pose, stationary_at = pose, now
+                    continue
+                self._last_motion_command_at = now
+                await self.link.notify("robot.move", command)
+                next_tick = await self._tick(next_tick, deadline)
+            await self.link.call("robot.stop", timeout=0.1)
+            await self.mouth(0)
+            elapsed = self.clock.now() - start
+            self.journal.write(
+                "tool_result",
+                method="go_to",
+                place=place,
+                elapsed_s=round(elapsed, 1),
+                pose=[pose.x, pose.y, pose.yaw],
+            )
+            return ToolResult(True, detail=f"arrived at {place} in {elapsed:.0f} s")
+        except ROBOT_ERRORS as error:
+            result = self._failure("go_to", error)
             await self.stop(result.reason)
             return result
 

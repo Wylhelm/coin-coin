@@ -99,6 +99,48 @@ async def test_configurable_walk_bounds(rig):
     }
 
 
+@pytest.mark.parametrize(
+    ("request_", "starter", "sustained"),
+    [
+        ((0.05, 0, 0), {"vx": 0.25, "vy": 0, "vyaw": 0}, {"vx": 0.1, "vy": 0, "vyaw": 0}),
+        ((-0.1, 0, 0), {"vx": -0.4, "vy": 0, "vyaw": 0}, {"vx": -0.2, "vy": 0, "vyaw": 0}),
+        ((0, -0.2, 0), {"vx": 0, "vy": -0.3, "vyaw": -0.6}, {"vx": 0, "vy": -0.2, "vyaw": 0}),
+        ((0, 0, 0.1), {"vx": 0, "vy": 0, "vyaw": 1.0}, {"vx": 0, "vy": 0, "vyaw": 0.3}),
+    ],
+)
+async def test_walk_assist_starts_the_gait_then_sustains_it(rig, request_, starter, sustained):
+    governor, link, clock = rig
+    governor.settings = Settings(walk_assist=True)
+    result = await governor.move(*request_, 2)
+    assert result.ok
+    raised = {
+        key: value
+        for (key, value), asked in zip(sustained.items(), request_, strict=True)
+        if value != asked
+    }
+    assert result.clamped == (raised or None)
+    await advance(clock, 2.1)
+    sent = parameters(link, "robot.move")
+    assert sent[0] == starter
+    assert sent[-1] == sustained
+    assert all(params == starter for params in sent[:9])
+
+
+async def test_walk_assist_is_off_by_default_and_in_roller_mode(rig):
+    governor, link, clock = rig
+    assert (await governor.move(0.05, 0, 0, 1)).clamped is None
+    await pump()
+    assert parameters(link, "robot.move")[0] == {"vx": 0.05, "vy": 0, "vyaw": 0}
+    await advance(clock, 1.1)
+    governor.settings = Settings(walk_assist=True)
+    link.mode = "roller"
+    await advance(clock, 30)
+    link.records.clear()
+    assert (await governor.move(0.05, 0, 0, 1)).clamped is None
+    await pump()
+    assert parameters(link, "robot.move")[0] == {"vx": 0.05, "vy": 0, "vyaw": 0}
+
+
 @pytest.mark.parametrize("duration", [10, 30, 45])
 async def test_long_moves_respect_configured_duration(rig, duration):
     governor, link, clock = rig
@@ -147,6 +189,8 @@ async def test_invalid_duration_and_direction(rig):
     governor, _, _ = rig
     assert not (await governor.move(0, 0, 0, 0)).ok
     assert not (await governor.move(0, 0, 0, -1)).ok
+    stopped = await governor.move(0, 0, 0, 1)
+    assert not stopped.ok and "vx" in stopped.reason
     assert not (await governor.look("inconnue")).ok
     assert not (await governor.look("centre", x=1)).ok
     assert not (await governor.look(x=1, y=0)).ok
@@ -413,6 +457,23 @@ async def test_sit_stand_idempotence_and_missing_sitting(rig):
     assert not commands(link, "robot.init")
 
 
+@pytest.mark.parametrize("action", ["move", "turn"])
+async def test_motion_stands_a_seated_duck_up_first(rig, action):
+    governor, link, clock = rig
+    assert (await governor.sit()).ok
+    started = asyncio.create_task(
+        governor.move(0.2, 0, 0, 1) if action == "move" else governor.turn(30)
+    )
+    await advance(clock, 2)
+    assert (await started).ok
+    assert link.policies["sitting"] is False
+    assert [record.params for record in commands(link, "robot.do")] == [
+        {"skill": "sit_toggle"},
+        {"skill": "sit_toggle"},
+    ]
+    await governor.stop()
+
+
 async def test_skills_replace_motion(rig):
     governor, link, _ = rig
     await governor.move(0.1, 0, 0, 5)
@@ -431,11 +492,11 @@ async def test_invalid_policies_mode_and_status(rig):
     assert "standing" in (await governor.status()).detail
     link.responses["robot.policies"] = None
     assert not (await governor.status()).ok
-    assert not (await governor.move(0, 0, 0, 1)).ok
+    assert not (await governor.move(0.1, 0, 0, 1)).ok
     link.responses.pop("robot.policies")
     link.mode = "unknown"
     await advance(clock, 30)
-    assert not (await governor.move(0, 0, 0, 1)).ok
+    assert not (await governor.move(0.1, 0, 0, 1)).ok
     link.have_state = False
     assert "unknown" in (await governor.status()).detail
 
@@ -451,7 +512,7 @@ async def test_reconnection_refreshes_mode_and_closes_mouth(rig):
     result = await governor.move(1, 1, 1, 1)
     assert result.clamped["vy"] == 0
     await governor.close()
-    assert not (await governor.move(0, 0, 0, 1)).ok
+    assert not (await governor.move(0.1, 0, 0, 1)).ok
 
 
 async def test_mode_change_stops_active_motion(rig):

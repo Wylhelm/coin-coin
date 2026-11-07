@@ -6,12 +6,14 @@ import asyncio
 import math
 from collections.abc import Coroutine
 from dataclasses import asdict, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from coincoin.realtime.tools.robot import install_tools, invalid_arguments
 from coincoin.realtime.tools.vision import install_tools as install_vision_tools
 from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import (
+    NAV_MAX_S,
     ROBOT_ERRORS,
     ROLLER_MAX_VYAW,
     Governor,
@@ -19,13 +21,14 @@ from coincoin.robot.governor import (
     turn_time_limit_s,
 )
 from coincoin.robot.link import RobotLink
+from coincoin.robot.navigation import NavigationMap, Navigator, SimPose
 from coincoin.robot.quack import QuackSink, QuackUnavailable
 
 if TYPE_CHECKING:
     from coincoin.app import App
 
 LINK_LOST = "je ne sens plus mes pattes"
-_AWAITED_MOTIONS = frozenset({"move", "turn"})
+_AWAITED_MOTIONS = frozenset({"move", "turn", "go_to"})
 
 
 class NullQuack:
@@ -80,9 +83,11 @@ class _RobotRuntime:
                 on_down=self._down,
             )
         )
-        self.governor = Governor(self.link, app.settings, app.clock, app.journal)
+        self.governor = Governor(
+            self.link, app.settings, app.clock, app.journal, navigator=self._navigator(app)
+        )
         self.quack = self._provided_quack or NullQuack(app)
-        self.contracts = install_tools(app, self.dispatch)
+        self.contracts = install_tools(app, self.dispatch, places=self.governor.places())
         install_vision_tools(app, self.link)
         app.instructions_context("skills", self.skills_context)
         app.on("stop", self.stop)
@@ -91,6 +96,19 @@ class _RobotRuntime:
         app.on("shutdown", self.close)
         await self.governor.start()
         self._spawn(self._connect())
+
+    @staticmethod
+    def _navigator(app: App) -> Navigator | None:
+        settings = app.settings
+        if not settings.nav_map or not settings.sim_pose_link:
+            return None
+        try:
+            nav_map = NavigationMap.load(Path(settings.nav_map))
+        except (OSError, ValueError, KeyError) as error:
+            app.journal.write("error", component="navigation", reason=str(error))
+            return None
+        app.journal.write("state", navigation=sorted(nav_map.places))
+        return Navigator(nav_map, SimPose(settings.sim_pose_link))
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(work)
@@ -229,4 +247,7 @@ class _RobotRuntime:
             angle = min(abs(arguments["degrees"]), 360)
             slowest_rate = min(self.app.settings.max_vyaw, ROLLER_MAX_VYAW)
             timeout_s += turn_time_limit_s(angle, slowest_rate)
+        elif name == "go_to":
+            # A mode change, standing up and the whole route all fit inside this bound.
+            timeout_s += NAV_MAX_S + 20
         return timeout_s
