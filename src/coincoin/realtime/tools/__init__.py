@@ -21,6 +21,7 @@ class ToolDefinition:
     description: str
     schema: dict[str, Any]
     handler: ToolHandler
+    manages_timeout: bool = False
 
 
 _DEFAULT_TOOLS: dict[str, ToolDefinition] = {}
@@ -43,7 +44,7 @@ def tool(
 
 
 class ToolRegistry:
-    """Hold tool contracts and convert malformed calls, exceptions, and timeouts to results."""
+    """Dispatch tools with a deadline unless a handler manages its own bounded execution."""
 
     def __init__(self, timeout_s: float = 10) -> None:
         if timeout_s <= 0:
@@ -57,12 +58,14 @@ class ToolRegistry:
         description: str,
         schema: dict[str, Any],
         handler: ToolHandler,
+        *,
+        manages_timeout: bool = False,
     ) -> None:
         if not name or not description or schema.get("type") != "object":
             raise ValueError("Tools require a name, description, and object JSON schema")
         if name in self._tools:
             raise ValueError(f"Tool already registered: {name}")
-        self._tools[name] = ToolDefinition(name, description, schema, handler)
+        self._tools[name] = ToolDefinition(name, description, schema, handler, manages_timeout)
 
     def definitions(self) -> list[dict[str, object]]:
         return [
@@ -86,7 +89,8 @@ class ToolRegistry:
         if not isinstance(arguments, dict):
             return {"ok": False, "reason": "Tool arguments must be a JSON object"}
         try:
-            async with asyncio.timeout(self.timeout_s):
+            timeout_s = None if definition.manages_timeout else self.timeout_s
+            async with asyncio.timeout(timeout_s):
                 result = await definition.handler(context, arguments)
         except TimeoutError:
             _LOGGER.warning("Realtime tool %s exceeded its %.1f s deadline", name, self.timeout_s)

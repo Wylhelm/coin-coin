@@ -30,6 +30,7 @@ def schemas(
         },
         "turn": {"degrees": _number(-360, 360)},
         "stop": {},
+        "set_mode": {"mode": {"type": "string", "enum": ["walk", "roller"]}},
         "look": {
             "direction": {"type": "string", "enum": list(LOOK_POINTS)},
             "x": {"type": "number"},
@@ -70,11 +71,21 @@ def schemas(
 
 DESCRIPTIONS = {
     "move": (
-        "Move: returns immediately; movement lasts duration_s seconds, then stops. "
-        "A new move or turn replaces the previous motion; do not chain them before it finishes."
+        "Move for duration_s seconds, then stop; returns once the movement has finished "
+        "or was interrupted. Robot actions run one at a time in call order, so for a "
+        "multi-step request call each step in order (e.g. move, turn, move, sit)."
     ),
-    "turn": "Turn degrees, positive = left; a left quarter-turn is +90. Returns immediately.",
-    "stop": "Stop all robot motion immediately.",
+    "turn": (
+        "Turn degrees, positive = left; a left quarter-turn is +90. "
+        "Returns once the turn has finished."
+    ),
+    "stop": "Stop all robot motion immediately and cancel any pending steps.",
+    "set_mode": (
+        "Switch locomotion: roller = skate/glide on skates (patiner, glisser, mettre les patins); "
+        "walk = walk on feet (marcher, retirer les patins, revenir a la marche). "
+        "This stops motion and waits for the mode change. It does not move: "
+        "call move afterwards if requested. The mode persists until changed again."
+    ),
     "look": (
         "Look: provide either direction alone or all of x, y, z, never both. "
         "Coordinates are x forward, y left, z up (metres, body frame). hold_s is optional."
@@ -136,5 +147,6 @@ def install_tools(app: App, handler: RobotHandler) -> dict[str, dict[str, Any]]:
             "If clamped is present, explain the limited values, including duration.",
             schema,
             dispatch,
+            manages_timeout=name not in {"stop", "status", "quack"},
         )
     return contracts

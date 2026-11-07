@@ -177,6 +177,31 @@ detected if present.
 
 ### Controls and movement limits
 
+Ask **"Coin coin, mets tes patins et patine vers l'avant pendant deux secondes"**
+to select `roller` and then move, or **"Reviens a la marche"** to select `walk`.
+Switching modes stops motion first, waits for confirmation, and keeps that mode
+until another request changes it. You can alternate repeatedly in one session.
+Skating uses the roller safety limits (no lateral command, yaw at most 0.3 rad/s).
+For manual diagnostics, use `coincoin-cli mode roller` or `coincoin-cli mode walk`.
+
+The simulation needs matching runtime and RL checkouts with **body protocol 2**:
+the runtime selects the correct policy bundle and the simulator swaps the actual
+foot/skate models, including passive wheels and collisions. During the transition,
+the simulator steadies the trunk through the home ramp and briefly while the new
+gait takes over, then releases it. Walking and skating use real contact physics,
+without that support. This is an assisted simulation transition, not an autonomous
+balance or equipment-changing skill. The local policy set must contain `roller.onnx` and
+`roller_crouch.onnx`; `duck-sim` selects it with `[policy] directory` rather than a
+walking-slot override. Restart the local stack once after updating both checkouts.
+On real hardware, mode selection does **not** physically fit or remove skates;
+that equipment must be changed by a person before selecting its mode.
+
+If the simulated duck has fallen, **"Releve-toi"** retries its current mode's
+assisted home ramp; **"Reviens a la marche"** also removes the skates. Success
+requires fresh upright state and a completed ramp, not just an accepted request.
+This recovery is available only when `robot.policies` reports `simulated: true`;
+real-robot fall, pickup, stale-state and STOP protections remain in force.
+
 | Action | Behavior |
 |---|---|
 | Say "Coin coin" | Wakes local listening and opens a Realtime conversation. |
@@ -192,6 +217,13 @@ to the launcher, to allow ten- or thirty-second moves. The same value is exposed
 in the model's tool schema and enforced by the governor; over-limit requests are
 bounded and reported. The governor still stops at the deadline, on STOP, on stale
 safety state or on a detected hazard. Longer commands do not make walking more reliable.
+
+For multi-step requests, `move` and `turn` finish before the next queued robot
+action begins; time spent waiting in the queue does not consume an action's
+execution deadline. Voice or browser STOP bypasses the queue and cancels pending
+steps. A completed movement means the commanded interval or turn ended; it does
+not prove how far a physical robot travelled. Other actions such as skills may
+only report that they were accepted.
 
 ## Configuration
 

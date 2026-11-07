@@ -22,6 +22,7 @@ from tests.fakes.fake_robotd import FakeRobotLink
         ),
         (["sit"], "robot.do", {"skill": "sit_toggle"}),
         (["stand"], "robot.policies", None),
+        (["mode", "roller"], "robot.setMode", {"mode": "roller"}),
         (["do", "ground_pick"], "robot.do", {"skill": "ground_pick"}),
         (["skills"], "robot.skills", None),
         (["status"], "robot.health", None),

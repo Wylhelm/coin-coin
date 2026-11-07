@@ -367,9 +367,10 @@ async def test_joint_features_browser_protocol_and_shutdown(
 
         browser.ack_playback = True
         await realtime.tools("moving", [("move", {"vx": 0.1, "vy": 0, "vyaw": 0, "duration_s": 5})])
-        await _until(lambda: sum(e["type"] == "response.create" for e in realtime.received) == 2)
-        assert len(browser.packets) == before + 10  # Interrupted audio did not escape.
         await _until(lambda: robot.twist[0] == 0.1)
+        # The move result is withheld until the motion ends, so no continuation yet.
+        assert sum(e["type"] == "response.create" for e in realtime.received) == 1
+        assert len(browser.packets) == before + 10  # Interrupted audio did not escape.
         stop_at = len(robot.records)
         packets_at_sleep = len(browser.packets)
         flushes_at_sleep = browser.generation

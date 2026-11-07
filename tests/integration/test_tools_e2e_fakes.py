@@ -9,6 +9,7 @@ import pytest
 from aiohttp import WSMsgType, web
 
 from coincoin.app import App
+from coincoin.clock import FakeClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.realtime.events import ResponseDone, ResponseStarted, SpeechStarted, ToolCall
@@ -20,8 +21,8 @@ from tests.fakes.fake_robotd import FakeRobotd, FakeRobotLink
 from tests.integration.test_s4_regressions import _Audio, _settings
 
 
-async def _until(predicate) -> None:
-    async with asyncio.timeout(3):
+async def _until(predicate, *, timeout_s: float = 3) -> None:
+    async with asyncio.timeout(timeout_s):
         while not predicate():  # noqa: ASYNC110 - observe the actual TCP/WebSocket peers
             await asyncio.sleep(0.005)
 
@@ -159,6 +160,70 @@ async def test_scripted_move_then_turn_over_both_real_transports(rig) -> None:
         await fake.close()
 
 
+@pytest.mark.parametrize("rig", [30], indirect=True)
+@pytest.mark.parametrize("duration_s", [11, 30])
+async def test_long_move_and_queued_actions_complete_on_realtime_wire(rig, duration_s) -> None:
+    app, feature, robot, _ = rig
+    fake = ScriptedRealtime(
+        [
+            [
+                ("move", {"vx": 0.1, "vy": 0, "vyaw": 0, "duration_s": duration_s}),
+                ("turn", {"degrees": 45}),
+                ("move", {"vx": 0.15, "vy": 0, "vyaw": 0, "duration_s": 0.2}),
+                ("sit", {}),
+            ]
+        ]
+    )
+    await fake.start()
+    session = RealtimeSession(app.settings, base_url=fake.websocket_url)
+    app._session = session
+
+    async def events() -> None:
+        async for event in session.events():
+            await app._handle_realtime_event(event)
+
+    consumer = None
+    try:
+        context = await feature.skills_context()
+        await session.open(context, app.tools.definitions())
+        consumer = asyncio.create_task(events())
+        await session.send_audio(bytes(960))
+        await _until(lambda: feature.governor.moving)
+        await asyncio.sleep(10.1)
+        assert feature.governor.moving
+        assert not any(e["type"] == "conversation.item.create" for e in fake.received)
+        await _until(
+            lambda: sum(e["type"] == "response.create" for e in fake.received) == 1,
+            timeout_s=duration_s - 10.1 + 8,
+        )
+        outputs = [
+            (e["item"]["call_id"], json.loads(e["item"]["output"]))
+            for e in fake.received
+            if e["type"] == "conversation.item.create"
+        ]
+        assert [call_id for call_id, _ in outputs] == [f"call-0-{i}" for i in range(4)]
+        assert all(result["ok"] for _, result in outputs)
+        assert outputs[0][1]["detail"] == "movement completed"
+        first = [c for c in robot.records if c.method == "robot.move" and c.params["vx"] == 0.1]
+        turns = [c for c in robot.records if c.method == "robot.move" and c.params["vyaw"] > 0]
+        second = [c for c in robot.records if c.method == "robot.move" and c.params["vx"] == 0.15]
+        sits = [c for c in robot.records if c.method == "robot.do"]
+        assert first and turns and second and sits
+        completions = [
+            e for e in _entries(app) if e["type"] == "tool_result" and e.get("method") == "move"
+        ]
+        assert completions[0]["duration_s"] >= duration_s
+        assert turns[0].t - first[0].t >= duration_s - 0.1
+        assert first[-1].t < turns[0].t <= turns[-1].t < second[0].t <= second[-1].t < sits[0].t
+    finally:
+        if consumer is not None:
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+        await session.close()
+        app._session = None
+        await fake.close()
+
+
 async def test_wire_refusal_preserved_and_unknown_skill_lists_names(rig) -> None:
     app, _, robot, controls = rig
     robot.refusals["robot.look"] = "motor refuses this angle"
@@ -201,12 +266,116 @@ async def test_configured_duration_is_shared_by_tool_schema_and_governor(rig) ->
     app, feature, _, _ = rig
     move = next(d for d in app.tools.definitions() if d["name"] == "move")
     assert move["parameters"]["properties"]["duration_s"]["maximum"] == 30
-    result = await app.tools.dispatch("move", '{"vx":0.1,"vy":0,"vyaw":0,"duration_s":10}', app)
-    assert result["ok"] and not result.get("clamped")
-    await feature.governor.stop()
-    result = await app.tools.dispatch("move", '{"vx":0.1,"vy":0,"vyaw":0,"duration_s":45}', app)
-    assert result["ok"] and result["clamped"] == {"duration_s": 30}
-    await feature.governor.stop()
+    for duration in (10, 45):
+        arguments = json.dumps({"vx": 0.1, "vy": 0, "vyaw": 0, "duration_s": duration})
+        pending = asyncio.create_task(app.tools.dispatch("move", arguments, app))
+        await _until(lambda: feature.governor.moving)
+        await asyncio.sleep(0.05)
+        assert not pending.done()
+        await feature.governor.stop()
+        assert await pending == {"ok": False, "reason": "motion interrupted"}
+        entry = [e for e in _entries(app) if e.get("method") == "move" and "actual" in e][-1]
+        assert entry["requested"]["duration_s"] == duration
+        assert entry["actual"]["duration_s"] == min(duration, 30)
+
+
+async def test_chained_motions_run_in_order_and_report_completion(rig) -> None:
+    app, feature, robot, _ = rig
+    order: list[str] = []
+
+    async def call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = await app.tools.dispatch(name, json.dumps(arguments), app)
+        order.append(name)
+        return result
+
+    move = {"vx": 2, "vy": 0, "vyaw": 0, "duration_s": 0.2}
+    started = asyncio.get_running_loop().time()
+    first, sit = await asyncio.gather(call("move", move), call("sit", {}))
+    elapsed = asyncio.get_running_loop().time() - started
+    assert first == {"ok": True, "detail": "movement completed", "clamped": {"vx": 0.25}}
+    assert sit["ok"] and order == ["move", "sit"]
+    assert elapsed >= 0.2
+    moves = [i for i, c in enumerate(robot.records) if c.method == "robot.move"]
+    sits = [i for i, c in enumerate(robot.records) if c.method == "robot.do"]
+    assert moves and sits and max(moves) < min(sits)
+
+
+async def test_stop_cancels_queued_steps(rig) -> None:
+    app, feature, robot, _ = rig
+    app.tools.timeout_s = 0.2
+    move = json.dumps({"vx": 0.2, "vy": 0, "vyaw": 0, "duration_s": 5})
+    walking = asyncio.create_task(app.tools.dispatch("move", move, app))
+    turning = asyncio.create_task(app.tools.dispatch("turn", '{"degrees":90}', app))
+    await _until(lambda: feature.governor.moving)
+    await asyncio.sleep(0.25)
+    assert not walking.done() and not turning.done()
+    assert (await app.tools.dispatch("stop", "{}", app))["ok"]
+    assert await walking == {"ok": False, "reason": "motion interrupted"}
+    assert await turning == {"ok": False, "reason": "cancelled by stop"}
+    assert not feature.governor.moving
+    assert not any(c.method == "robot.move" and c.params["vyaw"] for c in robot.records)
+
+
+async def test_robot_action_timeout_stops_motion_and_cancels_queue(rig, monkeypatch) -> None:
+    app, feature, robot, _ = rig
+    monkeypatch.setattr(feature, "_execution_timeout_s", lambda _name, _arguments: 0.3)
+    move = json.dumps({"vx": 0.2, "vy": 0, "vyaw": 0, "duration_s": 5})
+    walking = asyncio.create_task(app.tools.dispatch("move", move, app))
+    await _until(lambda: any(c.method == "robot.move" for c in robot.records))
+    sitting = asyncio.create_task(app.tools.dispatch("sit", "{}", app))
+    assert await walking == {"ok": False, "reason": "Tool move timed out"}
+    assert await sitting == {"ok": False, "reason": "cancelled by stop"}
+    assert not feature.governor.moving
+    assert robot.twist == [0, 0, 0]
+    assert not any(c.method == "robot.do" for c in robot.records)
+    assert any(e.get("reason") == "Tool move timed out" for e in _entries(app))
+
+
+async def test_slow_turn_gets_a_deadline_longer_than_default_tool_timeout(rig) -> None:
+    app, _, _, _ = rig
+    app.tools.timeout_s = 0.1
+    app.settings.max_vyaw = 0.3
+    started = asyncio.get_running_loop().time()
+    result = await app.tools.dispatch("turn", '{"degrees":20}', app)
+    assert result["ok"] and result["detail"].startswith("turned ")
+    assert asyncio.get_running_loop().time() - started > app.tools.timeout_s
+
+
+async def test_thirty_second_move_finishes_at_configured_ceiling(tmp_path: Path) -> None:
+    clock = FakeClock()
+    link = FakeRobotLink(clock)
+    settings = _settings()
+    settings.max_move_s = 30
+    feature = RobotFeature(link=link)
+    app = App(settings, _Audio(), Journal(tmp_path), clock=clock, features=())
+    await feature.install(app)
+    runtime = feature.runtime
+    assert runtime is not None
+    app.state = State(Mode.AWAKE)
+    try:
+        arguments = json.dumps({"vx": 0.1, "vy": 0, "vyaw": 0, "duration_s": 45})
+        walking = asyncio.create_task(app.tools.dispatch("move", arguments, app))
+        await _until(lambda: runtime.governor.moving)
+        for _ in range(299):
+            clock.advance(0.1)
+            for _ in range(8):
+                await asyncio.sleep(0)
+        assert not walking.done()
+        for _ in range(3):
+            clock.advance(0.1)
+            for _ in range(8):
+                await asyncio.sleep(0)
+        result = await walking
+        assert result == {
+            "ok": True,
+            "detail": "movement completed",
+            "clamped": {"duration_s": 30},
+        }
+        stops = [record for record in link.records if record.method == "robot.stop"]
+        assert stops[-1].t == pytest.approx(30, abs=0.2)
+        assert link.twist == [0, 0, 0]
+    finally:
+        await app.stop()
 
 
 @pytest.mark.parametrize(
@@ -237,9 +406,15 @@ async def test_bad_arguments_refused_before_transport(rig, name: str, arguments:
 
 
 async def test_governor_clamps_even_when_caller_ignores_schema(rig) -> None:
-    app, _, _, _ = rig
-    result = await app.tools.dispatch("move", '{"vx":2,"vy":0,"vyaw":0,"duration_s":10}', app)
-    assert result["ok"] and result["clamped"] == {"vx": 0.25, "duration_s": 5}
+    app, feature, _, _ = rig
+    pending = asyncio.create_task(
+        app.tools.dispatch("move", '{"vx":2,"vy":0,"vyaw":0,"duration_s":10}', app)
+    )
+    await _until(lambda: feature.governor.moving)
+    entry = [e for e in _entries(app) if e.get("method") == "move" and "actual" in e][-1]
+    assert entry["actual"] == {"vx": 0.25, "vy": 0, "vyaw": 0, "duration_s": 5}
+    await feature.governor.stop()
+    assert not (await pending)["ok"]
     pose = await app.tools.dispatch("set_pose", '{"z":1,"roll":1,"pitch":-1}', app)
     assert pose["ok"] and pose["clamped"] == {"z": 0.01, "roll": 0.26, "pitch": -0.26}
 
@@ -268,9 +443,8 @@ async def test_pose_sitting_look_status_and_stub_quack(rig) -> None:
 
 async def test_page_stop_precedes_blocked_flush_and_cancels_motion(rig) -> None:
     app, feature, robot, _ = rig
-    assert (await app.tools.dispatch("move", '{"vx":0.2,"vy":0,"vyaw":0,"duration_s":5}', app))[
-        "ok"
-    ]
+    move = '{"vx":0.2,"vy":0,"vyaw":0,"duration_s":5}'
+    walking = asyncio.create_task(app.tools.dispatch("move", move, app))
     await _until(lambda: any(c.method == "robot.move" for c in robot.records))
     app.audio.release_flush.clear()
     before = len(robot.records)
@@ -280,6 +454,7 @@ async def test_page_stop_precedes_blocked_flush_and_cancels_motion(rig) -> None:
         assert not task.done()
         await _until(lambda: not feature.governor.moving)
         assert robot.twist == [0, 0, 0]
+        assert await walking == {"ok": False, "reason": "motion interrupted"}
     finally:
         app.audio.release_flush.set()
         await task

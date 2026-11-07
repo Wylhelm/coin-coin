@@ -153,6 +153,7 @@ class App:
                 definition.description,
                 definition.schema,
                 definition.handler,
+                manages_timeout=definition.manages_timeout,
             )
 
     @property
@@ -169,9 +170,11 @@ class App:
         description: str,
         schema: dict[str, Any],
         handler: Callable[["App", dict[str, Any]], Awaitable[dict[str, Any]]],
+        *,
+        manages_timeout: bool = False,
     ) -> None:
-        """Register a model-callable feature tool."""
-        self.tools.register(name, description, schema, handler)
+        """Register a tool; handlers managing timeouts must bound their own execution."""
+        self.tools.register(name, description, schema, handler, manages_timeout=manages_timeout)
 
     def on(self, event: str, handler: EventHandler) -> None:
         """Register a handler for a lifecycle event exposed to feature modules."""

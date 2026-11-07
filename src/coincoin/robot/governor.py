@@ -15,6 +15,7 @@ from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.move_latency import MoveLatency
 
 ROBOT_ERRORS = (RobotRefused, LinkDown, JsonRpcError, TimeoutError)
+ROLLER_MAX_VYAW = 0.3
 LOOK_POINTS = {
     "centre": (1.0, 0.0, 0.0),
     "gauche": (1.0, 1.0, 0.0),
@@ -44,6 +45,11 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(high, max(low, value))
 
 
+def turn_time_limit_s(degrees: float, max_rate: float) -> float:
+    """Return the governor's maximum turning time for an angle and angular rate."""
+    return abs(math.radians(degrees)) / max_rate * 1.5 + 1
+
+
 class Governor:
     def __init__(self, link: RobotLink, settings: Settings, clock: Clock, journal: Journal):
         self.link = link
@@ -60,6 +66,7 @@ class Governor:
         self._action_lock = asyncio.Lock()
         self._action_calls: set[asyncio.Task[Any]] = set()
         self._stop_generation = 0
+        self._mode_recovery_generation: int | None = None
         self._move_id = 0
         self._last_motion_command_at = -math.inf
         self._closed = False
@@ -81,6 +88,10 @@ class Governor:
         self._monitor = self._mode_task = None
         await self.stop("governor closed")
         self._closed = True
+
+    @property
+    def stop_generation(self) -> int:
+        return self._stop_generation
 
     @property
     def moving(self) -> bool:
@@ -136,16 +147,16 @@ class Governor:
             or type(safety.get("picked_up", False)) is not bool
         ):
             return "robot safety state unavailable"
-        if safety["fallen"]:
-            return "robot fallen"
         if safety.get("picked_up", False):
             return "robot picked up"
+        if safety["fallen"]:
+            return "robot fallen"
         return None
 
-    def _check_safety(self, generation: int) -> None:
+    def _check_safety(self, generation: int, *, allow_fallen: bool = False) -> None:
         if generation != self._stop_generation or self._closed:
             raise RobotRefused("action cancelled by stop")
-        if reason := self._safety_reason():
+        if (reason := self._safety_reason()) and not (allow_fallen and reason == "robot fallen"):
             raise RobotRefused(reason)
 
     async def _refresh_mode(self) -> None:
@@ -171,6 +182,91 @@ class Governor:
             self._failure("robot.mode", error)
             await self.stop("robot mode unavailable")
 
+    async def set_mode(self, mode: str) -> ToolResult:
+        if mode not in ("walk", "roller"):
+            return self._refuse("set_mode", "mode must be walk or roller")
+        generation = self._stop_generation
+        recovering = False
+        try:
+            await self.start()
+            async with self._action_lock, self._mode_lock:
+                before = await self._policies()
+                simulated = before.get("simulated") is True
+                self._check_safety(generation, allow_fallen=simulated)
+                recovering = simulated and self._safety_reason() == "robot fallen"
+                if recovering:
+                    self._mode_recovery_generation = generation
+
+                async def call(method: str, params: dict[str, Any] | None = None) -> Any:
+                    return await self._action_call(
+                        generation, method, params, allow_fallen=simulated
+                    )
+
+                await self._cancel(self._motion)
+                self._motion = None
+                await self._action_call(
+                    generation, "robot.stop", timeout=0.1, allow_fallen=simulated
+                )
+                current = await call("robot.mode")
+                if not isinstance(current, dict) or current.get("mode") not in ("walk", "roller"):
+                    raise RobotRefused("unsupported or unavailable robot mode")
+                if current["mode"] != mode or recovering:
+                    was_sitting = before.get("sitting")
+                    self._mode = None
+                    await call("robot.setMode", {"mode": mode})
+                    deadline = self.clock.now() + 10
+                    settled_at: float | None = None
+                    while True:
+                        self._check_safety(generation, allow_fallen=simulated)
+                        current = await call("robot.mode")
+                        if not isinstance(current, dict) or current.get("mode") not in (
+                            "walk",
+                            "roller",
+                        ):
+                            raise RobotRefused("unsupported or unavailable robot mode")
+                        policies = await call("robot.policies")
+                        if (
+                            not isinstance(policies, dict)
+                            or type(policies.get("enabled")) is not bool
+                        ):
+                            raise RobotRefused("robot policies unavailable")
+                        state = self.link.state()
+                        if (
+                            current.get("mode") == mode
+                            and (not policies["enabled"] or policies.get("homed") is True)
+                            and policies.get("sitting") == was_sitting
+                            and (state is not None and state.get("policy") != "rise")
+                            and self._safety_reason() is None
+                        ):
+                            if settled_at is None:
+                                settled_at = self.clock.now()
+                            if not recovering or self.clock.now() - settled_at >= 0.5:
+                                health = await call("robot.health")
+                                if (
+                                    not isinstance(health, dict)
+                                    or health.get("healthy") is not True
+                                ):
+                                    raise RobotRefused("robot unhealthy after mode change")
+                                break
+                        else:
+                            settled_at = None
+                        if self.clock.now() >= deadline:
+                            raise RobotRefused("robot mode change did not complete within 10 s")
+                        await self.clock.sleep(0.1)
+                self._mode = mode
+                self._mode_at = self.clock.now()
+        except ROBOT_ERRORS as error:
+            self._mode = None
+            self._mode_at = -math.inf
+            outcome = self._failure("set_mode", error)
+            await self.stop("mode change failed")
+            return outcome
+        finally:
+            if recovering and self._mode_recovery_generation == generation:
+                self._mode_recovery_generation = None
+        self.journal.write("tool_result", method="set_mode", mode=mode)
+        return ToolResult(True, detail=f"locomotion mode: {mode}")
+
     async def _watch(self) -> None:
         last_reason: str | None = None
         was_connected = False
@@ -184,7 +280,10 @@ class Governor:
                 except LinkDown as error:
                     self._failure("robot.mouth", error)
             reason = self._safety_reason()
-            if reason is not None and reason != last_reason:
+            recovering = (
+                reason == "robot fallen" and self._mode_recovery_generation == self._stop_generation
+            )
+            if reason is not None and reason != last_reason and not recovering:
                 await self.stop(reason)
             last_reason = reason
             was_connected = connected
@@ -198,7 +297,7 @@ class Governor:
 
     def _limits(self) -> tuple[float, float, float]:
         if self._mode == "roller":
-            return 0.3, 0.0, 0.3
+            return 0.3, 0.0, ROLLER_MAX_VYAW
         if self._mode != "walk":
             raise RobotRefused("robot mode unavailable")
         return self.settings.max_vx, self.settings.max_vy, self.settings.max_vyaw
@@ -209,12 +308,14 @@ class Governor:
         method: str,
         params: dict[str, Any] | None = None,
         timeout: float = 2.0,  # noqa: ASYNC109 - RobotLink contract
+        *,
+        allow_fallen: bool = False,
     ) -> Any:
         async def send() -> Any:
-            self._check_safety(generation)
+            self._check_safety(generation, allow_fallen=allow_fallen)
             return await self.link.call(method, params, timeout=timeout)
 
-        self._check_safety(generation)
+        self._check_safety(generation, allow_fallen=allow_fallen)
         task = asyncio.create_task(send())
         self._action_calls.add(task)
         try:
@@ -225,7 +326,7 @@ class Governor:
             raise
         finally:
             self._action_calls.discard(task)
-        self._check_safety(generation)
+        self._check_safety(generation, allow_fallen=allow_fallen)
         return result
 
     async def _policies(self, generation: int | None = None) -> dict[str, Any]:
@@ -427,7 +528,7 @@ class Governor:
         self, degrees: float, yaw: float, max_rate: float, generation: int
     ) -> ToolResult:
         target = math.radians(degrees)
-        deadline = self.clock.now() + abs(target) / max_rate * 1.5 + 1
+        deadline = self.clock.now() + turn_time_limit_s(degrees, max_rate)
         next_tick = self.clock.now() + 1 / self.settings.move_hz
         progress = 0.0
         try:
@@ -613,6 +714,16 @@ class Governor:
         return await self._set_sitting(True)
 
     async def stand(self) -> ToolResult:
+        if self._safety_reason() == "robot fallen":
+            try:
+                policies = await self._policies()
+                if policies.get("simulated") is True:
+                    mode = await self.link.call("robot.mode")
+                    if not isinstance(mode, dict) or mode.get("mode") not in ("walk", "roller"):
+                        raise RobotRefused("unsupported or unavailable robot mode")
+                    return await self.set_mode(mode["mode"])
+            except ROBOT_ERRORS as error:
+                return self._failure("stand", error)
         return await self._set_sitting(False)
 
     async def status(self) -> ToolResult:

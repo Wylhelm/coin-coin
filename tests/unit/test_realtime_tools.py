@@ -59,6 +59,18 @@ async def test_registry_converts_handler_errors_and_timeouts() -> None:
     assert (await registry.dispatch("slow", "{}", object()))["reason"] == "Tool slow timed out"
 
 
+async def test_registry_allows_a_handler_to_manage_its_own_deadline() -> None:
+    registry = ToolRegistry(timeout_s=0.01)
+
+    async def managed(_context, _arguments):
+        async with asyncio.timeout(1):
+            await asyncio.sleep(0.03)
+        return {"ok": True}
+
+    registry.register("managed", "Managed test", SCHEMA, managed, manages_timeout=True)
+    assert await registry.dispatch("managed", "{}", object()) == {"ok": True}
+
+
 async def test_registry_preserves_valid_refusal_results() -> None:
     registry = ToolRegistry()
 

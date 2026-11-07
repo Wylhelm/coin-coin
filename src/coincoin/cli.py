@@ -29,6 +29,7 @@ def parser() -> argparse.ArgumentParser:
             command.add_argument(field, type=float)
     commands.add_parser("look").add_argument("direction")
     commands.add_parser("do").add_argument("name")
+    commands.add_parser("mode").add_argument("mode", choices=("walk", "roller"))
     for name in ("sit", "stand", "skills", "status", "stop"):
         commands.add_parser(name)
     raw = commands.add_parser("raw", help="Diagnostic RPC with the S1 method filter")
@@ -73,6 +74,8 @@ async def execute(
                 result = await governor.sit()
             case "stand":
                 result = await governor.stand()
+            case "mode":
+                result = await governor.set_mode(args.mode)
             case "do":
                 result = await governor.do_skill(args.name)
             case "skills":
