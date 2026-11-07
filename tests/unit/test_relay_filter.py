@@ -4,13 +4,21 @@ from pathlib import Path
 
 import pytest
 
-from relay.duck_relay import FRAME_METHODS, MAX_LINE, ROBOT_METHODS, DuckRelay, filter_line
+from relay.duck_relay import (
+    FRAME_METHODS,
+    MAX_LINE,
+    ROBOT_METHODS,
+    TOF_METHODS,
+    DuckRelay,
+    filter_line,
+)
 
 
 @pytest.mark.parametrize(
     ("methods", "method"),
     [(ROBOT_METHODS, name) for name in ROBOT_METHODS]
-    + [(FRAME_METHODS, name) for name in FRAME_METHODS],
+    + [(FRAME_METHODS, name) for name in FRAME_METHODS]
+    + [(TOF_METHODS, name) for name in TOF_METHODS],
 )
 def test_every_permitted_method_passes_exactly(methods, method):
     wire = json.dumps({"jsonrpc": "2.0", "id": 42, "method": method, "params": {}}).encode() + b"\n"
@@ -120,3 +128,18 @@ def test_refused_notification_is_dropped_without_params_in_log(caplog):
 def test_unsafe_configuration_refused(tmp_path: Path, kwargs):
     with pytest.raises(ValueError):
         DuckRelay(tmp_path, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "method", ["tof.frame", "tof.config", "robot.move", "robot.subscribe", "hello", "media.frame"]
+)
+def test_tof_port_only_subscribes_to_depth_frames(method):
+    wire = json.dumps({"jsonrpc": "2.0", "id": 7, "method": method}).encode() + b"\n"
+    forward, error = filter_line(wire, TOF_METHODS)
+    assert forward is None
+    assert error is not None and json.loads(error)["error"]["code"] == -32601
+
+
+def test_tof_stream_is_not_a_robot_method():
+    assert "tof.stream" not in ROBOT_METHODS
+    assert {"tof.stream"} == TOF_METHODS
