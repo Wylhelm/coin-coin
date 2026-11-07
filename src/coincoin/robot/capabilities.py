@@ -11,7 +11,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from coincoin.robot.jsonrpc import API_VERSION, JsonRpcError
+from coincoin.robot.jsonrpc import API_VERSION, MIN_API_VERSION, JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 
 LOGGER = logging.getLogger(__name__)
@@ -46,7 +46,7 @@ class Capabilities:
 
     @property
     def api_compatible(self) -> bool:
-        return self.api_version is not None and self.api_version >= API_VERSION
+        return self.api_version is not None and self.api_version >= MIN_API_VERSION
 
     @property
     def mode_switch_needs_person(self) -> bool:

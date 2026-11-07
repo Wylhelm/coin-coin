@@ -23,7 +23,7 @@ from coincoin.config import Settings
 from coincoin.robot.capabilities import Capabilities, probe
 from coincoin.robot.factory import create_robot_link
 from coincoin.robot.frames import FrameError
-from coincoin.robot.jsonrpc import API_VERSION, JsonRpcError
+from coincoin.robot.jsonrpc import API_VERSION, MIN_API_VERSION, JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.webrtc_link import signalling_url
 
@@ -276,12 +276,13 @@ class Doctor:
         if version is None:
             fix = "robotd did not answer hello; check `systemctl status robotd` on the duck"
             self.report.add(Step("api version", FAIL, "no hello answer", fix))
-        elif version < API_VERSION:
+        elif version < MIN_API_VERSION:
             self.report.add(
                 Step(
                     "api version",
                     FAIL,
-                    f"robot API {version} ({daemon}) is older than Coin-Coin's {API_VERSION}",
+                    f"robot API {version} ({daemon}) is older than Coin-Coin's minimum "
+                    f"{MIN_API_VERSION}",
                     "update the duck (console Updates page via `duckctl open`)",
                 )
             )
@@ -292,7 +293,15 @@ class Doctor:
                     WARN,
                     f"robot API {version} ({daemon}) is newer than Coin-Coin's {API_VERSION}",
                     "robotd does not refuse a version mismatch; the methods Coin-Coin uses are "
-                    "unchanged up to API 51, re-run the tests if the duck is newer",
+                    f"unchanged up to API {API_VERSION}, re-run the tests if the duck is newer",
+                )
+            )
+        elif version < API_VERSION:
+            self.report.add(
+                Step(
+                    "api version",
+                    OK,
+                    f"API {version}, robotd {daemon} (supported: {MIN_API_VERSION}-{API_VERSION})",
                 )
             )
         else:
@@ -396,7 +405,10 @@ class Doctor:
         if health.get("healthy") is False and health.get("degraded") is True:
             # API v48+: a board condition (e.g. no servo power), not a broken release.
             status = WARN if status == OK else status
-            fix = fix or "robot degraded: read the reason (servo power, configuration)"
+            fix = fix or (
+                "robot degraded: Coin-Coin refuses motion until it reports healthy; read the "
+                "reason (servo power, configuration)"
+            )
         elif health.get("healthy") is False:
             status = FAIL
             fix = fix or "robot unhealthy: read the reason; check motors and `journalctl -u robotd`"

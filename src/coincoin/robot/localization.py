@@ -701,6 +701,92 @@ class TcpTofStream:
         await self._drop()
 
 
+class NotifyingLink(Protocol):
+    """The part of WebRtcLink that LinkTofStream needs."""
+
+    generation: int
+
+    @property
+    def connected(self) -> bool: ...
+
+    async def call(
+        self,
+        method: str,
+        params: dict[str, Any] | None = None,
+        timeout: float = 2.0,  # noqa: ASYNC109 - RobotLink contract
+    ) -> Any: ...
+
+    def add_notification_listener(
+        self, method: str, callback: Callable[[Any], None]
+    ) -> Callable[[], None]: ...
+
+
+class LinkTofStream:
+    """Subscribe to tofd over the robot link itself (WebRTC: mediad routes tof.stream to tofd).
+
+    tof.frame notifications come back on the control channel. A subscription dies with its
+    channel, so a new channel (link.generation) is subscribed again; so is a silent one.
+    """
+
+    def __init__(self, link: NotifyingLink, retry_s: float = 1.0, silence_s: float = 5.0) -> None:
+        self._link = link
+        self._retry_s = retry_s
+        self._silence_s = silence_s
+        self._closed = False
+        self._wake = asyncio.Event()
+        self.errors = 0
+
+    async def frames(self) -> AsyncGenerator[TofFrame, None]:
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=8)
+
+        def push(params: Any) -> None:
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(params)
+
+        remove = self._link.add_notification_listener("tof.frame", push)
+        subscribed = -1
+        try:
+            while not self._closed:
+                if not self._link.connected:
+                    await self._sleep(self._retry_s)
+                    continue
+                if subscribed != self._link.generation:
+                    generation = self._link.generation
+                    try:
+                        result = await self._link.call("tof.stream", timeout=3.0)
+                    except Exception:
+                        self.errors += 1
+                        await self._sleep(self._retry_s)
+                        continue
+                    if isinstance(result, dict) and not result.get("accepted", True):
+                        self.errors += 1
+                        await self._sleep(self._retry_s)
+                        continue
+                    subscribed = generation
+                try:
+                    params = await asyncio.wait_for(queue.get(), self._silence_s)
+                except TimeoutError:
+                    self.errors += 1
+                    # Same channel, no frames: tofd answers one stream per lane, so only a new
+                    # channel can restart it; nothing to resend until the generation changes.
+                    continue
+                try:
+                    yield parse_tof_frame(params or {})
+                except ValueError:
+                    self.errors += 1
+        finally:
+            remove()
+
+    async def _sleep(self, seconds: float) -> None:
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._wake.wait(), seconds)
+
+    async def close(self) -> None:
+        self._closed = True
+        self._wake.set()
+
+
 def _odom(state: Mapping[str, Any]) -> Odom | None:
     odom = state.get("odom")
     if not isinstance(odom, dict):

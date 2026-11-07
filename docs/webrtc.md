@@ -145,10 +145,12 @@ canard est assis le fait tomber : faire `stand` d'abord.
   = 6 derniers chiffres du numéro de série. BLE refuse aussi `robot.setMode`
   et `robot.stop`.
 - Métadonnées du producteur : `simulated: "true"` seulement en sim.
-- API : Coin-Coin parle la v47 ; `main` est en v51 (la v48 ajoute la santé
-  `degraded`). `hello` ne refuse pas un écart de version.
-- `tof.stream` n'est pas dans `ROBOT_METHODS` ; le relais ToF par la route
-  réelle n'est pas vérifié.
+- API : Coin-Coin parle la v52 (runtime 0.18.9) et accepte la v47 et plus ;
+  `doctor` échoue sous 47 et avertit au-dessus de 52 (la v48 ajoute la santé
+  `degraded`, qui arrête et refuse le mouvement). `hello` ne refuse pas un
+  écart de version.
+- `tof.stream` est dans `ROBOT_METHODS` ; avec `TOF_LINK=link`, les trames
+  `tof.frame` arrivent sur le canal de contrôle (vérifié en sim, ~15 Hz).
 
 ## Revalidation unique après SIMWALK — 2026-11-05
 

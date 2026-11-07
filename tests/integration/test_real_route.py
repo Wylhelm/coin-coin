@@ -19,6 +19,7 @@ from coincoin.robot.capabilities import probe
 from coincoin.robot.feature import LINK_LOST, RobotFeature
 from coincoin.robot.frames import FrameError
 from coincoin.robot.governor import Governor
+from coincoin.robot.jsonrpc import API_VERSION
 from coincoin.robot.webrtc_link import FRAME_STALE_S, STATE_LOST_S, WebRtcLink
 from tests.integration.test_s4_regressions import _Audio
 from tests.integration.test_webrtc_link import LocalMediad, until
@@ -30,7 +31,7 @@ async def test_probe_over_webrtc_sees_the_route_refusal_and_producer(mediad: Loc
     try:
         await link.connect()
         assert link.producer_meta["simulated"] == "true"
-        assert link.hello is not None and link.hello["api_version"] == 47
+        assert link.hello is not None and link.hello["api_version"] == API_VERSION
         capabilities = await probe(link)
     finally:
         await link.close()

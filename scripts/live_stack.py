@@ -89,6 +89,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="tcp: development relay (default); webrtc: mediad, as with the delivered robot",
     )
     parser.add_argument(
+        "--realism",
+        choices=("off", "real", "hard"),
+        default="off",
+        help="simulator imperfections (DUCK_SIM_REALISM): off is the ideal twin, real is the "
+        "trained envelope, hard is past it",
+    )
+    parser.add_argument(
+        "--realism-seed", type=int, default=0, help="seed for every realism draw (repeatable)"
+    )
+    parser.add_argument(
+        "--no-assist",
+        action="store_true",
+        help="no simulation-only hand: equipment must be fitted (equipment.fit), as on a robot",
+    )
+    parser.add_argument(
+        "--obstacles", type=Path, help="JSON obstacles placed at launch (DUCK_SIM_OBSTACLES)"
+    )
+    parser.add_argument(
+        "--obstacle-slots",
+        type=int,
+        help="obstacles that can exist at once, for obstacle.add at runtime",
+    )
+    parser.add_argument(
+        "--maploc",
+        action="store_true",
+        help="turn on robotd's mapping & localization (DUCK_SIM_MAPLOC=1)",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="check prerequisites and ports without starting services or calling APIs",
@@ -116,6 +144,9 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
         DUCK_SIM_SCENE=str(args.scene.expanduser().resolve()) if args.scene else "backlash",
         DUCK_SIM_PRELOAD_EQUIPMENT="1" if args.preload_equipment else "0",
         DUCK_SIM_KEYFRAME="SIT",
+        DUCK_SIM_REALISM=args.realism,
+        DUCK_SIM_REALISM_SEED=str(args.realism_seed),
+        DUCK_SIM_MAPLOC="1" if args.maploc else "0",
         ROBOT_LINK="tcp://127.0.0.1:7810" if args.link == "tcp" else "webrtc://127.0.0.1:8443",
         FRAME_LINK="tcp://127.0.0.1:7811",
         # Forced empty so a delivery profile in .env cannot point this run at a real robot.
@@ -130,6 +161,22 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
         WALK_ASSIST="true",
         PYTHONUNBUFFERED="1",
     )
+    # Forced either way, like everything above: a shell's leftover export must not change the run.
+    for name, value in (
+        ("DUCK_SIM_NO_ASSIST", "1" if args.no_assist else ""),
+        (
+            "DUCK_SIM_OBSTACLES",
+            str(args.obstacles.expanduser().resolve()) if args.obstacles else "",
+        ),
+        (
+            "DUCK_SIM_OBSTACLE_SLOTS",
+            str(args.obstacle_slots) if args.obstacle_slots is not None else "",
+        ),
+    ):
+        if value:
+            env[name] = value
+        else:
+            env.pop(name, None)
     plugin_dir = Path("/opt/gst-plugins-rs/lib/gstreamer-1.0")
     if plugin_dir.is_dir() and not env.get("GST_PLUGIN_PATH"):
         env["GST_PLUGIN_PATH"] = str(plugin_dir)
@@ -141,7 +188,8 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
     if args.places is not None:
         env["NAV_MAP"] = str(args.places.expanduser().resolve())
         env["SIM_POSE_LINK"] = f"tcp://127.0.0.1:{env['DUCK_SIM_PORT']}"
-        env["TOF_LINK"] = "tcp://127.0.0.1:7812"
+        # Over WebRTC the depth stream rides the robot link (mediad routes tof.stream to tofd).
+        env["TOF_LINK"] = "tcp://127.0.0.1:7812" if args.link == "tcp" else "link"
         env["NAV_START"] = args.start
         env["NAV_POSE"] = "oracle" if args.oracle_pose else "estimated"
     else:
@@ -157,6 +205,8 @@ def preflight(args: argparse.Namespace, env: dict[str, str]) -> None:
         scene = Path(env["DUCK_SIM_SCENE"])
         if not scene.is_file():
             raise RuntimeError(f"Custom simulator scene does not exist: {scene}")
+    if args.obstacles is not None and not Path(env["DUCK_SIM_OBSTACLES"]).is_file():
+        raise RuntimeError(f"Obstacles file does not exist: {env['DUCK_SIM_OBSTACLES']}")
     if args.places is not None and not Path(env["NAV_MAP"]).is_file():
         raise RuntimeError(f"Navigation map does not exist: {env['NAV_MAP']}")
     required = (

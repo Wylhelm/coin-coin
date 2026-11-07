@@ -157,6 +157,12 @@ recovered, **L** is cosmetic or slow.
 
 ## 4. Required changes in existing files (not made here, to avoid conflicts)
 
+> **Integration status:** done — API 52 with 47 as minimum (doctor range check),
+> `tof.stream` in `ROBOT_METHODS` with ToF over the WebRTC channel (verified in sim),
+> `robot.health` polled every 5 s with `degraded` stopping and refusing motion,
+> `robot.setMode` refusal handled as a person step (real-link). Upstream items are in
+> `docs/upstream-requests.md`.
+
 - `src/coincoin/robot/jsonrpc.py`: `API_VERSION = 47`. After the fork rebase, raise it to 51.
   Optionally log `daemon_version` and `revision` from the `hello` result for the bring-up
   report.

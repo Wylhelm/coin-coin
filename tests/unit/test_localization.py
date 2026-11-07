@@ -3,15 +3,18 @@
 import asyncio
 import json
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from coincoin.clock import FakeClock
+from coincoin.robot.jsonrpc import JsonRpcConnection
 from coincoin.robot.localization import (
     CONVERGED_XY_M,
     EstimatedPose,
     LikelihoodField,
+    LinkTofStream,
     Odom,
     OraclePose,
     PoseEstimate,
@@ -415,3 +418,113 @@ async def test_sim_pose_prefers_oracle_pose_and_falls_back_to_read(has_oracle_op
         await server.wait_closed()
     expected = ["oracle.pose"] * 2 if has_oracle_op else ["oracle.pose", "read", "read"]
     assert asked == expected
+
+
+class NotifyingFake:
+    """WebRtcLink's notification surface: listeners, generation, call."""
+
+    def __init__(self) -> None:
+        self.generation = 1
+        self.connected = True
+        self.listeners: dict[str, list] = {}
+        self.calls: list[tuple[str, int]] = []
+        self.accept = [False, True]
+
+    async def call(self, method, params=None, timeout=2.0):  # noqa: ASYNC109 - RobotLink contract
+        self.calls.append((method, self.generation))
+        return {"accepted": self.accept.pop(0) if self.accept else True}
+
+    def add_notification_listener(self, method, callback):
+        self.listeners.setdefault(method, []).append(callback)
+        return lambda: self.listeners[method].remove(callback)
+
+    def emit(self, method, params) -> None:
+        for callback in list(self.listeners.get(method, ())):
+            callback(params)
+
+
+async def eventually(predicate) -> None:
+    for _ in range(400):
+        if predicate():
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError("condition not reached")
+
+
+async def test_link_tof_stream_subscribes_per_channel_generation() -> None:
+    link = NotifyingFake()
+    stream = LinkTofStream(link, retry_s=0.01, silence_s=0.05)
+    frames = stream.frames()
+    try:
+        first = asyncio.ensure_future(anext(frames))
+        await eventually(lambda: len(link.calls) >= 2)
+        link.emit("tof.frame", {"rows": 2})  # malformed: counted, skipped
+        link.emit("tof.frame", frame_params(seq=7))
+        assert (await asyncio.wait_for(first, 2)).seq == 7
+        assert link.calls == [("tof.stream", 1), ("tof.stream", 1)]
+        assert stream.errors == 2  # one refusal, one malformed frame
+        # Silence on the same channel does not resubscribe; a new channel does.
+        nxt = asyncio.ensure_future(anext(frames))
+        await asyncio.sleep(0.12)
+        assert len(link.calls) == 2 and stream.errors >= 3
+        link.generation = 2
+        await eventually(lambda: len(link.calls) >= 3)
+        assert link.calls[-1] == ("tof.stream", 2)
+        link.emit("tof.frame", frame_params(seq=8))
+        assert (await asyncio.wait_for(nxt, 2)).seq == 8
+    finally:
+        await stream.close()
+        await frames.aclose()
+    assert link.listeners["tof.frame"] == []
+
+
+async def test_jsonrpc_connection_forwards_other_server_notifications() -> None:
+    reader = asyncio.StreamReader()
+    seen: list[tuple[str, object]] = []
+
+    class Sink:
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+        async def wait_closed(self) -> None:
+            pass
+
+    connection = JsonRpcConnection(
+        reader, Sink(), on_notification=lambda method, params: seen.append((method, params))
+    )
+    try:
+        for message in (
+            {"jsonrpc": "2.0", "method": "robot.state", "params": {"t": 1}},
+            {"jsonrpc": "2.0", "method": "tof.frame", "params": {"seq": 1}},
+        ):
+            reader.feed_data(json.dumps(message).encode() + b"\n")
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert seen == [("tof.frame", {"seq": 1})]
+        assert connection.state() == {"t": 1}
+    finally:
+        await connection.close()
+
+
+def test_tof_link_mode_needs_a_webrtc_link(tmp_path: Path, monkeypatch) -> None:
+    from coincoin.config import Settings
+    from coincoin.journal import Journal
+    from coincoin.robot.feature import _RobotRuntime
+    from tests.fakes.fake_robotd import FakeRobotLink
+
+    monkeypatch.setattr(NavigationMap, "load", staticmethod(lambda path: MAP))
+
+    class _App:
+        settings = Settings(nav_map="map.json", tof_link="link")
+        journal = Journal(tmp_path)
+        clock = FakeClock()
+
+    assert _RobotRuntime._navigator(_App(), FakeRobotLink()) is None  # type: ignore[arg-type]
+    logged = "".join(path.read_text() for path in tmp_path.glob("**/*.jsonl"))
+    assert "TOF_LINK=link needs a WebRTC ROBOT_LINK" in logged

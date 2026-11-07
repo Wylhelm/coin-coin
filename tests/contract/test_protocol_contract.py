@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-from coincoin.robot.jsonrpc import API_VERSION
+from coincoin.robot.jsonrpc import API_VERSION, MIN_API_VERSION
 from coincoin.robot.methods import ROBOT_METHODS
 from coincoin.robot.quack import TAGS
 
@@ -270,11 +270,27 @@ def test_webrtc_refusals_are_exactly_the_known_set() -> None:
 def test_api_version_gap_is_reported(record_property: Callable[[str, object], None]) -> None:
     proto = protocol()
     record_property("coincoin_api_version", API_VERSION)
+    record_property("coincoin_min_api_version", MIN_API_VERSION)
     record_property("robot_api_version", proto.api_version)
-    # Additive versions are accepted by robotd's hello; a client older than the robot still
-    # works. A client newer than the robot it talks to is the real failure.
-    assert proto.api_version >= API_VERSION, (
-        f"coin-coin speaks v{API_VERSION}, duck-ipc-proto@{proto.ref} is v{proto.api_version}"
+    # Additive versions are accepted by robotd's hello (it does not gate on the number); what
+    # matters is that the robot is at least the oldest API Coin-Coin drives. Coin-Coin is built
+    # against the newest runtime (v52, maploc) and still drives released robots back to v47.
+    assert proto.api_version >= MIN_API_VERSION, (
+        f"coin-coin needs v{MIN_API_VERSION}+, duck-ipc-proto@{proto.ref} is v{proto.api_version}"
+    )
+
+
+def test_supported_api_range_covers_the_local_runtime() -> None:
+    root = _checkout()
+    if root is None:
+        pytest.skip("no MicroDuck checkout (set MICRODUCK_DIR)")
+    file = root / LIB
+    if not file.is_file():
+        pytest.skip(f"{LIB} not checked out in {root}")
+    local = parse_protocol(file.read_text(encoding="utf-8"), None, "worktree")
+    assert MIN_API_VERSION <= local.api_version <= API_VERSION, (
+        f"local runtime speaks v{local.api_version}; coin-coin supports "
+        f"v{MIN_API_VERSION}-v{API_VERSION}"
     )
 
 

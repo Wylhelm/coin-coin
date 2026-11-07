@@ -8,6 +8,7 @@ from relay.duck_relay import (
     FRAME_METHODS,
     MAX_LINE,
     ROBOT_METHODS,
+    ROBOTD_METHODS,
     TOF_METHODS,
     DuckRelay,
     filter_line,
@@ -16,7 +17,7 @@ from relay.duck_relay import (
 
 @pytest.mark.parametrize(
     ("methods", "method"),
-    [(ROBOT_METHODS, name) for name in ROBOT_METHODS]
+    [(ROBOTD_METHODS, name) for name in ROBOTD_METHODS]
     + [(FRAME_METHODS, name) for name in FRAME_METHODS]
     + [(TOF_METHODS, name) for name in TOF_METHODS],
 )
@@ -140,6 +141,9 @@ def test_tof_port_only_subscribes_to_depth_frames(method):
     assert error is not None and json.loads(error)["error"]["code"] == -32601
 
 
-def test_tof_stream_is_not_a_robot_method():
-    assert "tof.stream" not in ROBOT_METHODS
+def test_tof_stream_goes_to_tofd_not_robotd():
+    # Over WebRTC mediad routes tof.stream to tofd; the relay's robotd port must not forward it.
+    assert "tof.stream" in ROBOT_METHODS
+    assert "tof.stream" not in ROBOTD_METHODS
     assert {"tof.stream"} == TOF_METHODS
+    assert ROBOTD_METHODS | TOF_METHODS == ROBOT_METHODS

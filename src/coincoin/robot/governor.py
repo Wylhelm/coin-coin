@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import logging
 import math
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, replace
@@ -28,7 +29,11 @@ from coincoin.robot.localization import (
 from coincoin.robot.move_latency import MoveLatency
 from coincoin.robot.navigation import Navigator, Pose, Steering
 
+LOGGER = logging.getLogger(__name__)
 ROBOT_ERRORS = (RobotRefused, LinkDown, JsonRpcError, TimeoutError)
+# robot.health is polled this often while connected; a degraded or unhealthy verdict refuses
+# motion (and stops a running one) until the robot reports healthy again.
+HEALTH_POLL_S = 5.0
 # Navigation to a named place: a route has its own bound instead of max_move_s, because crossing
 # the apartment takes longer than one move. Stop, safety and link checks still run every tick.
 NAV_MAX_S = 300.0
@@ -67,12 +72,27 @@ ROLLER_MAX_VYAW = 0.3
 # robotd clears `sitting` when the rise starts; the gait ignores twists until it ends.
 STAND_SETTLE_S = 1.5
 STAND_TIMEOUT_S = 6.0
-# The walk policy (velstand) stays put from standstill under small commands: it only starts
-# stepping above roughly vx 0.15, vx -0.4, vyaw 1.0, and sideways only with a yaw nudge. Each
-# walking move therefore opens with a short, stronger starter (still inside the policy's trained
-# range of vx +-0.4, vy +-0.3, vyaw +-1.0), and slower requests are raised to what it sustains.
+# The walk policy (velstand, policy set v9) stays put under small commands: it does not step
+# below roughly vx 0.2 m/s or vyaw 0.8 rad/s. Non-zero walking commands below Settings.min_vx /
+# min_vy / min_vyaw are therefore raised to those floors (never above the maximum caps), and the
+# tool result says so. With walk_assist (simulator aid) each walking move also opens with a
+# short, stronger starter (still inside the policy's trained range of vx +-0.4, vy +-0.3,
+# vyaw +-1.0).
 WALK_START_S = 0.5
-WALK_MIN = {"vx": (0.1, 0.2), "vy": (0.15, 0.15), "vyaw": (0.3, 0.3)}
+# A turn at the yaw floor can overshoot its 5 degree tolerance; accept a small overshoot rather
+# than hunting back and forth at a rate the gait cannot reduce.
+TURN_TOLERANCE_DEG = 5.0
+TURN_OVERSHOOT_DEG = 12.0
+UNITS = {"vx": "m/s", "vy": "m/s", "vyaw": "rad/s"}
+
+
+def raised_note(raised: dict[str, float]) -> str:
+    """Tell the model/user that a speed was raised to the walking gait's minimum."""
+    values = ", ".join(f"{key} {abs(value):g} {UNITS[key]}" for key, value in raised.items())
+    return (
+        f"speed raised to the minimum the walking gait follows ({values}): "
+        "slower commands leave the duck standing still"
+    )
 
 
 def walk_starter(params: dict[str, float]) -> dict[str, float]:
@@ -126,6 +146,8 @@ class ToolResult:
     detail: str = ""
     reason: str = ""
     clamped: dict[str, Any] | None = None
+    # Non-zero speeds raised to the gait's minimum (Settings.min_*), with their sent values.
+    raised: dict[str, float] | None = None
 
 
 def _finite(*values: object) -> bool:
@@ -178,6 +200,9 @@ class Governor:
         self.on_notice: Callable[[str], Awaitable[None]] | None = None
         self._person_target: str | None = None
         self._person_task: asyncio.Task[None] | None = None
+        self._health_problem: str | None = None
+        self._health_at = -math.inf
+        self._health_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         if self._closed:
@@ -188,12 +213,12 @@ class Governor:
     async def close(self) -> None:
         if self._closed:
             return
-        for task in (self._monitor, self._mode_task, self._person_task):
+        for task in (self._monitor, self._mode_task, self._person_task, self._health_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-        self._monitor = self._mode_task = self._person_task = None
+        self._monitor = self._mode_task = self._person_task = self._health_task = None
         self._person_target = None
         await self.stop("governor closed")
         if self.navigator is not None:
@@ -262,7 +287,29 @@ class Governor:
             return "robot picked up"
         if safety["fallen"]:
             return "robot fallen"
-        return None
+        return self._health_problem
+
+    async def _update_health(self) -> None:
+        """Poll robot.health; degraded or unhealthy refuses motion until it clears."""
+        try:
+            health = await self.link.call("robot.health", timeout=2.0)
+        except ROBOT_ERRORS as error:
+            # Unknown is not a verdict: keep the last one, the state stream still gates motion.
+            LOGGER.debug("robot.health poll failed: %s", error)
+            return
+        finally:
+            self._health_at = self.clock.now()
+        problem = None
+        if isinstance(health, dict) and health.get("healthy") is False:
+            reason = health.get("reason")
+            verdict = "degraded" if health.get("degraded") is True else "unhealthy"
+            problem = f"robot {verdict}" + (f" ({reason})" if isinstance(reason, str) else "")
+            problem += "; motion refused until it reports healthy"
+        if problem != self._health_problem:
+            self.journal.write("robot_health", problem=problem, health=health)
+            if problem:
+                LOGGER.warning("%s", problem)
+        self._health_problem = problem
 
     def _check_safety(self, generation: int, *, allow_fallen: bool = False) -> None:
         if generation != self._stop_generation or self._closed:
@@ -508,6 +555,7 @@ class Governor:
             if connected and not was_connected:
                 self._mode = None
                 self._mode_at = -math.inf
+                self._health_at = -math.inf
                 try:
                     await self.mouth(0)
                 except LinkDown as error:
@@ -526,6 +574,12 @@ class Governor:
                 and (self._mode_task is None or self._mode_task.done())
             ):
                 self._mode_task = asyncio.create_task(self._update_mode())
+            if (
+                connected
+                and self.clock.now() - self._health_at >= HEALTH_POLL_S
+                and (self._health_task is None or self._health_task.done())
+            ):
+                self._health_task = asyncio.create_task(self._update_health())
             await self.clock.sleep(0.1)
 
     def _limits(self) -> tuple[float, float, float]:
@@ -534,6 +588,21 @@ class Governor:
         if self._mode != "walk":
             raise RobotRefused("robot mode unavailable")
         return self.settings.max_vx, self.settings.max_vy, self.settings.max_vyaw
+
+    def _floors(self, limits: tuple[float, float, float]) -> tuple[float, float, float]:
+        """Smallest non-zero speeds the current gait follows, never above the caps.
+
+        Walk only: the skating policy's yaw cap (ROLLER_MAX_VYAW) is below the walk yaw floor and
+        its forward command is a push, not a speed, so roller commands are sent as asked.
+        """
+        if self._mode != "walk":
+            return 0.0, 0.0, 0.0
+        settings = self.settings
+        return (
+            min(settings.min_vx, limits[0]),
+            min(settings.min_vy, limits[1]),
+            min(settings.min_vyaw, limits[2]),
+        )
 
     async def _action_call(
         self,
@@ -669,20 +738,21 @@ class Governor:
             await self._rise_if_sitting(generation, await self._prepare(generation))
             limits = self._limits()
             requested = {"vx": vx, "vy": vy, "vyaw": vyaw, "duration_s": duration_s}
-            actual = {
+            capped = {
                 "vx": _clamp(vx, -limits[0], limits[0]),
                 "vy": _clamp(vy, -limits[1], limits[1]),
                 "vyaw": _clamp(vyaw, -limits[2], limits[2]),
                 "duration_s": min(duration_s, self.settings.max_move_s),
             }
+            actual = dict(capped)
+            raised: dict[str, float] = {}
+            for key, floor in zip(("vx", "vy", "vyaw"), self._floors(limits), strict=True):
+                if actual[key] and abs(actual[key]) < floor:
+                    actual[key] = raised[key] = math.copysign(floor, actual[key])
             starter = None
             if self._mode == "walk" and self.settings.walk_assist:
-                for (key, (forward, backward)), limit in zip(WALK_MIN.items(), limits, strict=True):
-                    minimum = min(forward if actual[key] > 0 else backward, limit)
-                    if actual[key] and abs(actual[key]) < minimum:
-                        actual[key] = math.copysign(minimum, actual[key])
                 starter = walk_starter({key: actual[key] for key in ("vx", "vy", "vyaw")})
-            clamped = {key: value for key, value in actual.items() if requested[key] != value}
+            clamped = {key: value for key, value in capped.items() if requested[key] != value}
             params = {key: actual[key] for key in ("vx", "vy", "vyaw")}
             self._move_id += 1
             move_id = self._move_id
@@ -707,8 +777,13 @@ class Governor:
             requested=requested,
             actual=actual,
             starter=starter,
+            raised=raised or None,
         )
-        return ToolResult(True, detail="movement started", clamped=clamped or None)
+        detail = "movement started"
+        if raised:
+            LOGGER.info("move %d: %s (requested %s)", move_id, raised_note(raised), requested)
+            detail += f"; {raised_note(raised)}"
+        return ToolResult(True, detail=detail, clamped=clamped or None, raised=raised or None)
 
     async def _tick(self, next_tick: float, deadline: float) -> float:
         next_tick = max(next_tick, self.clock.now())
@@ -795,19 +870,35 @@ class Governor:
         try:
             await self._rise_if_sitting(generation, await self._prepare(generation))
             yaw = self._yaw()
-            max_rate = self._limits()[2]
+            limits = self._limits()
+            max_rate = limits[2]
+            min_rate = self._floors(limits)[2]
             await self._replace_motion(
-                generation, lambda replacing: self._run_turn(angle, yaw, max_rate, generation)
+                generation,
+                lambda replacing: self._run_turn(angle, yaw, max_rate, generation, min_rate),
             )
         except ROBOT_ERRORS as error:
             return self._failure("turn", error)
-        self.journal.write("tool_call", method="turn", degrees=angle)
+        # The fine approach normally slows to 0.3 x max rate; the gait floor may forbid it.
+        raised = {"vyaw": min_rate} if min_rate > 0.3 * max_rate else None
+        self.journal.write("tool_call", method="turn", degrees=angle, raised=raised)
+        detail = "turn started"
+        if raised:
+            detail += f"; {raised_note(raised)}"
         return ToolResult(
-            True, detail="turn started", clamped={"degrees": angle} if angle != degrees else None
+            True,
+            detail=detail,
+            clamped={"degrees": angle} if angle != degrees else None,
+            raised=raised,
         )
 
     async def _run_turn(
-        self, degrees: float, yaw: float, max_rate: float, generation: int
+        self,
+        degrees: float,
+        yaw: float,
+        max_rate: float,
+        generation: int,
+        min_rate: float = 0.0,
     ) -> ToolResult:
         target = math.radians(degrees)
         deadline = self.clock.now() + turn_time_limit_s(degrees, max_rate)
@@ -820,11 +911,18 @@ class Governor:
                 progress += math.atan2(math.sin(current - yaw), math.cos(current - yaw))
                 yaw = current
                 remaining = target - progress
-                if abs(remaining) <= math.radians(5):
+                if abs(remaining) <= math.radians(TURN_TOLERANCE_DEG):
+                    break
+                if (
+                    min_rate > 0
+                    and remaining * target < 0
+                    and abs(remaining) <= math.radians(TURN_OVERSHOOT_DEG)
+                ):
                     break
                 if self.clock.now() >= deadline:
                     raise RobotRefused("turn timed out")
                 rate = (0.3 if abs(remaining) < math.radians(15) else 0.8) * max_rate
+                rate = max(rate, min_rate)
                 self._last_motion_command_at = self.clock.now()
                 await self.link.notify(
                     "robot.move", {"vx": 0.0, "vy": 0.0, "vyaw": math.copysign(rate, remaining)}

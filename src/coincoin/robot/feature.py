@@ -24,12 +24,20 @@ from coincoin.robot.governor import (
     ROLLER_MAX_VYAW,
     Governor,
     ToolResult,
+    raised_note,
     turn_time_limit_s,
 )
 from coincoin.robot.link import RobotLink
-from coincoin.robot.localization import EstimatedPose, OraclePose, TcpTofStream
+from coincoin.robot.localization import (
+    DepthSource,
+    EstimatedPose,
+    LinkTofStream,
+    OraclePose,
+    TcpTofStream,
+)
 from coincoin.robot.navigation import NavigationMap, Navigator, SimPose
 from coincoin.robot.quack import QuackSink, QuackUnavailable
+from coincoin.robot.webrtc_link import WebRtcLink
 
 if TYPE_CHECKING:
     from coincoin.app import App
@@ -125,10 +133,22 @@ class _RobotRuntime:
         localizer = None
         start = ""
         if settings.tof_link:
+            depth: DepthSource
+            if settings.tof_link == "link":
+                if not isinstance(link, WebRtcLink):
+                    app.journal.write(
+                        "error",
+                        component="navigation",
+                        reason="TOF_LINK=link needs a WebRTC ROBOT_LINK",
+                    )
+                    return None
+                depth = LinkTofStream(link)
+            else:
+                depth = TcpTofStream(settings.tof_link, settings.relay_token.get_secret_value())
             localizer = EstimatedPose(
                 nav_map,
                 link.state,
-                TcpTofStream(settings.tof_link, settings.relay_token.get_secret_value()),
+                depth,
                 clock=app.clock.now,
             )
             try:
@@ -297,6 +317,8 @@ class _RobotRuntime:
         text = f"{name}: {result.get('detail') if result['ok'] else result.get('reason')}"
         if result.get("clamped"):
             text += f" (clamped: {result['clamped']})"
+        if result.get("raised"):
+            text += f" (raised: {result['raised']})"
         self.app.journal.write("robot_action", name=name, result=result)
         await self.app.notify_action(text, ok=result["ok"])
         return result
@@ -321,7 +343,13 @@ class _RobotRuntime:
                     finished = await self.governor.wait_motion()
                     if finished is None:
                         return ToolResult(False, reason="motion interrupted")
-                    return replace(finished, clamped=outcome.clamped) if finished.ok else finished
+                    if not finished.ok:
+                        return finished
+                    finished = replace(finished, clamped=outcome.clamped, raised=outcome.raised)
+                    if outcome.raised:
+                        detail = f"{finished.detail}; {raised_note(outcome.raised)}"
+                        finished = replace(finished, detail=detail)
+                    return finished
             except TimeoutError:
                 reason = f"Tool {name} timed out"
                 self.app.journal.write("error", component="robot", method=name, reason=reason)

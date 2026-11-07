@@ -175,6 +175,28 @@ class WebRtcLink:
         self.hello: dict[str, Any] | None = None
         self.last_error = ""
         self._session_id = ""
+        self._listeners: dict[str, list[Callable[[Any], None]]] = {}
+        # Bumped on every new control channel: stream subscriptions die with the old one.
+        self.generation = 0
+
+    def add_notification_listener(
+        self, method: str, callback: Callable[[Any], None]
+    ) -> Callable[[], None]:
+        """Receive `method` notifications' params (e.g. tof.frame); returns the remover."""
+        self._listeners.setdefault(method, []).append(callback)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._listeners.get(method, []).remove(callback)
+
+        return remove
+
+    def _on_notification(self, method: str, params: Any) -> None:
+        for callback in tuple(self._listeners.get(method, ())):
+            try:
+                callback(params)
+            except Exception:
+                LOGGER.exception("%s listener failed", method)
 
     @property
     def connected(self) -> bool:
@@ -372,8 +394,11 @@ class WebRtcLink:
                 stream = self._stream
                 if stream is None:
                     raise LinkDown("mediad did not open the control datachannel")
-                connection = JsonRpcConnection(stream, stream, clock=self._clock)
+                connection = JsonRpcConnection(
+                    stream, stream, clock=self._clock, on_notification=self._on_notification
+                )
                 self._connection = connection
+                self.generation += 1
                 self.hello = None
                 try:
                     hello = await connection.call("hello", {"api_version": API_VERSION})

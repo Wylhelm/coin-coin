@@ -83,6 +83,53 @@ def test_places_enable_simulator_navigation(
     monkeypatch.setattr(live_stack.sys, "platform", "linux")
     with pytest.raises(RuntimeError, match="Navigation map does not exist"):
         live_stack.preflight(args, env)
+    webrtc = live_stack.environment(
+        live_stack.parse_args(["--places", "nav.json", "--link", "webrtc"])
+    )
+    assert webrtc["TOF_LINK"] == "link"
+
+
+def test_simulator_realism_options_are_forced_and_passed_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name, value in (
+        ("DUCK_SIM_REALISM", "hard"),
+        ("DUCK_SIM_NO_ASSIST", "1"),
+        ("DUCK_SIM_OBSTACLES", "/leftover.json"),
+        ("DUCK_SIM_OBSTACLE_SLOTS", "9"),
+        ("DUCK_SIM_MAPLOC", "1"),
+    ):
+        monkeypatch.setenv(name, value)
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert default["DUCK_SIM_REALISM"] == "off" and default["DUCK_SIM_REALISM_SEED"] == "0"
+    assert default["DUCK_SIM_MAPLOC"] == "0"
+    for name in ("DUCK_SIM_NO_ASSIST", "DUCK_SIM_OBSTACLES", "DUCK_SIM_OBSTACLE_SLOTS"):
+        assert name not in default
+    args = live_stack.parse_args(
+        [
+            "--realism",
+            "real",
+            "--realism-seed",
+            "7",
+            "--no-assist",
+            "--obstacles",
+            "flat.json",
+            "--obstacle-slots",
+            "4",
+            "--maploc",
+        ]
+    )
+    env = live_stack.environment(args)
+    assert env["DUCK_SIM_REALISM"] == "real" and env["DUCK_SIM_REALISM_SEED"] == "7"
+    assert env["DUCK_SIM_NO_ASSIST"] == "1" and env["DUCK_SIM_MAPLOC"] == "1"
+    assert env["DUCK_SIM_OBSTACLES"] == str(tmp_path / "flat.json")
+    assert env["DUCK_SIM_OBSTACLE_SLOTS"] == "4"
+    with pytest.raises(SystemExit):
+        live_stack.parse_args(["--realism", "ideal"])
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="Obstacles file does not exist"):
+        live_stack.preflight(args, env)
 
 
 def test_missing_custom_scene_fails_before_starting_anything(

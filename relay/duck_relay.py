@@ -23,6 +23,8 @@ from coincoin.robot.methods import ROBOT_METHODS  # noqa: E402
 FRAME_METHODS = frozenset({"hello", "media.frame"})
 # tofd's socket: one subscription, then tof.frame notifications flow back.
 TOF_METHODS = frozenset({"tof.stream"})
+# robotd's socket does not serve the depth stream; the relay keeps it on the tofd port.
+ROBOTD_METHODS = ROBOT_METHODS - TOF_METHODS
 MAX_LINE = 64 * 1024
 LOGGER = logging.getLogger("duck-relay")
 
@@ -130,7 +132,7 @@ class DuckRelay:
         self._closing = False
         try:
             listeners = [
-                (self.robot_port, ".sock", ROBOT_METHODS),
+                (self.robot_port, ".sock", ROBOTD_METHODS),
                 (self.frame_port, "-frame.sock", FRAME_METHODS),
             ]
             if self.tof_port is not None:

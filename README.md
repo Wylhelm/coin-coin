@@ -156,7 +156,18 @@ uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml --prelo
 # Add named places so the duck can be sent to rooms of that scene:
 uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml \
   --preload-equipment --places /path/to/navigation.json
+
+# Closer to a real robot: WebRTC link, a known start, simulator imperfections,
+# obstacles from a file, no simulation-only hand (equipment must be fitted):
+uv run --no-sync python scripts/live_stack.py --link webrtc --scene /path/to/scene.xml \
+  --places /path/to/navigation.json --start départ@0 --realism real --realism-seed 7 \
+  --obstacles /path/to/obstacles.json [--obstacle-slots N] [--no-assist] [--maploc]
 ```
+
+`--realism off|real|hard`, `--realism-seed`, `--no-assist`, `--obstacles` and
+`--obstacle-slots` export the simulator's `DUCK_SIM_*` variables before the body server
+starts (realism is `off` unless asked); `--maploc` turns on robotd's mapping and
+localization. See `microduck_rl` for what each does.
 
 `--places` loads a navigation map (clearance grid and named places, produced by
 `salon_scan/build_navigation.py`) and enables the `go_to` tool: "Va dans ma
@@ -281,9 +292,10 @@ Restart the service after changing them.
 | `PERSON_MODE_TIMEOUT_S` | `120`: how long the duck waits for a person to change its mode when the link refuses `robot.setMode`. |
 | `RELAY_TOKEN` | Shared TCP relay token. Empty is permitted for loopback-only simulation, not remote exposure. |
 | `MAX_VX`, `MAX_VY`, `MAX_VYAW` | Walk limits: `0.25 m/s`, `0.2 m/s`, `1 rad/s`. |
+| `MIN_VX`, `MIN_VY`, `MIN_VYAW` | Walk floors: `0.3 m/s`, `0.15 m/s`, `1 rad/s`. Policy v9 stands still below about 0.2 m/s and 0.8 rad/s, so a nonzero walking speed below its floor is raised to it (never above the limit: with the default `MAX_VX` the forward floor is effectively 0.25 m/s; set `MAX_VX=0.3` to use it). The tool result and the journal say so. Not applied on skates (roller yaw is capped at 0.3 rad/s). `0` disables a floor. |
 | `MAX_MOVE_S`, `MOVE_HZ` | Maximum command duration `5 s`; command streaming `20 Hz`. |
 | `NAV_MAP`, `SIM_POSE_LINK` | Empty: no `go_to`. Navigation map and simulator body-server address; set together by `--places`. |
-| `NAV_POSE`, `NAV_START`, `TOF_LINK` | `estimated` (odometry + ToF, default) or `oracle` (simulator truth, evaluation only); known start such as `départ@0` (empty: unknown); relay ToF endpoint. `--places` sets them. |
+| `NAV_POSE`, `NAV_START`, `TOF_LINK` | `estimated` (odometry + ToF, default) or `oracle` (simulator truth, evaluation only); known start such as `départ@0` (empty: unknown); ToF source: a relay `tcp://` endpoint, or `link` to subscribe to `tof.stream` over the WebRTC robot link itself. `--places` sets them (`link` with `--link webrtc`). |
 | `NAV_GLOBAL_RELOCALIZATION` | `false`: relocalize only near the last estimate; a whole-flat match can be confidently wrong. |
 | `WAKE_ENGINE`, `WAKE_THRESHOLD` | `vosk`, `0.9`; threshold remains provisional. |
 | `FOLLOWUP_S` | Conversation follow-up timeout, `420 s`. |

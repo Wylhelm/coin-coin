@@ -13,6 +13,7 @@ from coincoin.realtime.tools import ToolRegistry
 from coincoin.realtime.tools.robot import tool_availability, tool_description
 from coincoin.robot.capabilities import PROBE_MODE, Capabilities, probe, probe_mode_switch
 from coincoin.robot.governor import Governor
+from coincoin.robot.jsonrpc import API_VERSION, MIN_API_VERSION
 from tests.fakes.fake_robotd import FakeRobotLink
 from tests.unit.test_governor import advance, commands, pump
 
@@ -251,3 +252,18 @@ async def test_doctor_health_follows_robotd_thresholds_and_degraded(
     (step,) = doctor.report.steps
     assert step.name == "health" and step.status == status
     assert (step.fix != "") == (status != "ok")
+
+
+@pytest.mark.parametrize(
+    ("version", "status"),
+    [(None, "fail"), (MIN_API_VERSION - 1, "fail"), (MIN_API_VERSION, "ok"), (API_VERSION, "ok")]
+    + [(API_VERSION + 1, "warn")],
+)
+def test_doctor_accepts_the_supported_api_range(version: int | None, status: str) -> None:
+    doctor = Doctor(Settings(robot_link="webrtc://127.0.0.1:8443"))
+    doctor._version(Capabilities("webrtc", api_version=version, daemon_version="0.18.9"))
+    (step,) = doctor.report.steps
+    assert step.name == "api version" and step.status == status
+    assert Capabilities("webrtc", api_version=version).api_compatible == (
+        version is not None and version >= MIN_API_VERSION
+    )

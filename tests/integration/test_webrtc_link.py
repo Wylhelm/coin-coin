@@ -26,6 +26,7 @@ from coincoin.robot.feature import LINK_LOST, RobotFeature
 from coincoin.robot.governor import Governor
 from coincoin.robot.jsonrpc import API_VERSION, JsonRpcConnection, JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
+from coincoin.robot.localization import LinkTofStream
 from coincoin.robot.methods import ROBOT_METHODS
 from coincoin.robot.tcp_link import TcpLink
 from coincoin.robot.webrtc_link import (
@@ -37,6 +38,21 @@ from coincoin.robot.webrtc_link import (
 from relay.duck_relay import DuckRelay
 from tests.fakes.fake_robotd import FakeRobotd, FakeRobotLink
 from tests.integration.test_s4_regressions import _Audio
+
+TOF_NOTIFICATION = json.dumps(
+    {
+        "jsonrpc": "2.0",
+        "method": "tof.frame",
+        "params": {
+            "rows": 8,
+            "cols": 8,
+            "distance_mm": [1200] * 64,
+            "status": [5] * 64,
+            "t_ns": 1,
+            "seq": 42,
+        },
+    }
+)
 
 
 async def until(predicate) -> None:
@@ -204,6 +220,8 @@ class LocalMediad:
                                 control.send(STATE_NOTIFICATION)
                                 if self.stream_state:
                                     asyncio.create_task(self._stream_state(control))
+                            if method == "tof.stream":
+                                control.send(TOF_NOTIFICATION)
                             if method == "robot.health" and self.disconnect_once:
                                 self.disconnect_once = False
                                 asyncio.create_task(peer.close())
@@ -304,7 +322,7 @@ async def test_control_jsonrpc_video_and_api47_stop_request(mediad: LocalMediad)
         subscribe = next(item for item in mediad.records if item.get("method") == "robot.subscribe")
         stop = next(item for item in mediad.records if item.get("method") == "robot.stop")
         move = next(item for item in mediad.records if item.get("method") == "robot.move")
-        assert hello["params"] == {"api_version": 47}
+        assert hello["params"] == {"api_version": API_VERSION}
         assert isinstance(hello.get("id"), int)
         assert subscribe["params"] == {"hz": 10}
         assert isinstance(subscribe.get("id"), int)
@@ -622,7 +640,7 @@ async def test_governor_stop_barrier_through_jsonrpc_and_datachannel(
     mediad: LocalMediad, tmp_path: Path, resume_before_drain: bool
 ) -> None:
     link = WebRtcLink(mediad.url)
-    governor = Governor(link, Settings(), SystemClock(), Journal(tmp_path))
+    governor = Governor(link, Settings(min_vx=0), SystemClock(), Journal(tmp_path))
     try:
         await link.connect()
         await until(lambda: link.state() is not None)
@@ -739,4 +757,20 @@ async def test_reconnects_when_peer_datachannel_fails(mediad: LocalMediad) -> No
         await until(lambda: events.count("down") >= 1 and events.count("up") >= 2)
         assert events[:3] == ["up", "down", "up"]
     finally:
+        await link.close()
+
+
+async def test_tof_frames_arrive_over_the_control_channel(mediad: LocalMediad) -> None:
+    link = WebRtcLink(mediad.url)
+    stream = LinkTofStream(link, retry_s=0.05)
+    frames = stream.frames()
+    try:
+        await link.connect()
+        frame = await asyncio.wait_for(anext(frames), 10)
+        assert frame.seq == 42 and float(frame.distance_m[0]) == 1.2
+        assert [item["method"] for item in mediad.records].count("tof.stream") == 1
+        assert isinstance(next(i for i in mediad.records if i["method"] == "tof.stream")["id"], int)
+    finally:
+        await stream.close()
+        await frames.aclose()
         await link.close()

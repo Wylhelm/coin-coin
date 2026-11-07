@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     max_vy: float = Field(default=0.2, gt=0)
     max_vyaw: float = Field(default=1.0, gt=0)
     max_move_s: float = Field(default=5, gt=0)
+    # Smallest non-zero walking speeds: the walk policy (set v9) stands still below about
+    # vx 0.2 m/s and vyaw 0.8 rad/s, so slower requests are raised to these (never above the
+    # max_* caps) and the tool result says so. 0 disables a floor. Not applied on skates.
+    min_vx: float = Field(default=0.3, ge=0)
+    min_vy: float = Field(default=0.15, ge=0)
+    min_vyaw: float = Field(default=1.0, ge=0)
     move_hz: float = Field(default=20, gt=0)
     # Simulator aid: open walking moves with a stronger starter and raise slow requests to what
     # the walk policy actually follows. Off by default: the starter briefly exceeds max_vx.
@@ -51,6 +57,8 @@ class Settings(BaseSettings):
     # sim_pose_link, evaluation only). With `estimated`, sim_pose_link is only used for scoring.
     # nav_start: a place, place@heading_deg, or x,y,heading_deg; empty means unknown. Global
     # relocalization (a whole-flat match with no prior) can be confidently wrong; it is opt-in.
+    # tof_link: the relay's tofd port (tcp://host:7812), or `link` to subscribe to tof.stream
+    # over the WebRTC robot link itself (mediad routes it to tofd).
     nav_map: str = ""
     nav_pose: Literal["estimated", "oracle"] = "estimated"
     nav_start: str = ""

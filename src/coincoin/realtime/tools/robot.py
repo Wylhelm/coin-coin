@@ -86,7 +86,9 @@ DESCRIPTIONS = {
         "Move for duration_s seconds, then stop. Velocities: vx m/s, positive = forward "
         "(avancer), negative = backward (reculer); vy m/s, positive = left; vyaw rad/s, "
         "positive = turn left. At least one velocity must be non-zero; to go forward use "
-        "vx about 0.2. Returns once the movement has finished "
+        "vx about 0.25. The walking gait stands still under small speeds, so slower non-zero "
+        "speeds are raised to its minimum and reported in raised. Returns once the movement has "
+        "finished "
         "or was interrupted. Robot actions run one at a time in call order, so for a "
         "multi-step request call each step in order (e.g. move, turn, move, sit)."
     ),
@@ -140,7 +142,9 @@ PERSON_DESCRIPTIONS = {
 
 SUFFIX = (
     " Briefly announce the action in the conversation language. "
-    "If clamped is present, explain the limited values, including duration."
+    "If clamped is present, explain the limited values, including duration. "
+    "If raised is present, say briefly that the speed was raised to the minimum the duck "
+    "can walk at."
 )
 
 

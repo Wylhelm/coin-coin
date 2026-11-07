@@ -75,7 +75,8 @@ async def rig(tmp_path: Path):
     clock = FakeClock()
     link = CachedRobotLink(clock)
     journal = Journal(tmp_path)
-    governor = Governor(link, Settings(), clock, journal)
+    # Latency matching, not the gait's speed floors: commands are sent exactly as asked.
+    governor = Governor(link, Settings(min_vx=0, min_vy=0, min_vyaw=0), clock, journal)
     await governor.start()
     await pump()
     yield governor, link, clock, journal

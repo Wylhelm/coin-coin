@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 from coincoin.clock import FakeClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
-from coincoin.robot.governor import LOOK_POINTS, Governor
+from coincoin.robot.governor import LOOK_POINTS, Governor, person_wait_reason
 from coincoin.robot.link import LinkDown, RobotRefused
 from tests.fakes.fake_robotd import FakeRobotLink
 
@@ -100,25 +101,23 @@ async def test_configurable_walk_bounds(rig):
 
 
 @pytest.mark.parametrize(
-    ("request_", "starter", "sustained"),
+    ("request_", "starter", "sustained", "raised"),
     [
-        ((0.05, 0, 0), {"vx": 0.25, "vy": 0, "vyaw": 0}, {"vx": 0.1, "vy": 0, "vyaw": 0}),
-        ((-0.1, 0, 0), {"vx": -0.4, "vy": 0, "vyaw": 0}, {"vx": -0.2, "vy": 0, "vyaw": 0}),
-        ((0, -0.2, 0), {"vx": 0, "vy": -0.3, "vyaw": -0.6}, {"vx": 0, "vy": -0.2, "vyaw": 0}),
-        ((0, 0, 0.1), {"vx": 0, "vy": 0, "vyaw": 1.0}, {"vx": 0, "vy": 0, "vyaw": 0.3}),
+        ((0.05, 0, 0), {"vx": 0.25, "vy": 0, "vyaw": 0}, {"vx": 0.25, "vy": 0, "vyaw": 0}, "vx"),
+        ((-0.1, 0, 0), {"vx": -0.4, "vy": 0, "vyaw": 0}, {"vx": -0.25, "vy": 0, "vyaw": 0}, "vx"),
+        ((0, -0.2, 0), {"vx": 0, "vy": -0.3, "vyaw": -0.6}, {"vx": 0, "vy": -0.2, "vyaw": 0}, ""),
+        ((0, 0, 0.1), {"vx": 0, "vy": 0, "vyaw": 1.0}, {"vx": 0, "vy": 0, "vyaw": 1.0}, "vyaw"),
     ],
 )
-async def test_walk_assist_starts_the_gait_then_sustains_it(rig, request_, starter, sustained):
+async def test_walk_assist_starts_the_gait_then_sustains_it(
+    rig, request_, starter, sustained, raised
+):
     governor, link, clock = rig
     governor.settings = Settings(walk_assist=True)
     result = await governor.move(*request_, 2)
     assert result.ok
-    raised = {
-        key: value
-        for (key, value), asked in zip(sustained.items(), request_, strict=True)
-        if value != asked
-    }
-    assert result.clamped == (raised or None)
+    assert result.clamped is None
+    assert result.raised == ({raised: sustained[raised]} if raised else None)
     await advance(clock, 2.1)
     sent = parameters(link, "robot.move")
     assert sent[0] == starter
@@ -128,17 +127,72 @@ async def test_walk_assist_starts_the_gait_then_sustains_it(rig, request_, start
 
 async def test_walk_assist_is_off_by_default_and_in_roller_mode(rig):
     governor, link, clock = rig
-    assert (await governor.move(0.05, 0, 0, 1)).clamped is None
+    assert not governor.settings.walk_assist
+    assert (await governor.move(0.25, 0, 0, 1)).raised is None
     await pump()
-    assert parameters(link, "robot.move")[0] == {"vx": 0.05, "vy": 0, "vyaw": 0}
+    assert parameters(link, "robot.move")[0] == {"vx": 0.25, "vy": 0, "vyaw": 0}
     await advance(clock, 1.1)
     governor.settings = Settings(walk_assist=True)
     link.mode = "roller"
     await advance(clock, 30)
     link.records.clear()
-    assert (await governor.move(0.05, 0, 0, 1)).clamped is None
+    result = await governor.move(0.05, 0, 0, 1)
+    assert result.clamped is None and result.raised is None
     await pump()
     assert parameters(link, "robot.move")[0] == {"vx": 0.05, "vy": 0, "vyaw": 0}
+
+
+@pytest.mark.parametrize(
+    ("request_", "sent", "raised"),
+    [
+        ((0.05, 0, 0), {"vx": 0.25, "vy": 0, "vyaw": 0}, {"vx": 0.25}),
+        ((-0.1, 0, 0), {"vx": -0.25, "vy": 0, "vyaw": 0}, {"vx": -0.25}),
+        ((0, 0.05, 0), {"vx": 0, "vy": 0.15, "vyaw": 0}, {"vy": 0.15}),
+        ((0, 0, -0.2), {"vx": 0, "vy": 0, "vyaw": -1.0}, {"vyaw": -1.0}),
+        ((0.1, 0, 0.5), {"vx": 0.25, "vy": 0, "vyaw": 1.0}, {"vx": 0.25, "vyaw": 1.0}),
+        ((0.25, -0.2, 1.0), {"vx": 0.25, "vy": -0.2, "vyaw": 1.0}, None),
+    ],
+)
+async def test_slow_walking_speeds_are_raised_to_the_gait_minimum(rig, request_, sent, raised):
+    governor, link, clock = rig
+    result = await governor.move(*request_, 1)
+    assert result.ok and result.clamped is None
+    assert result.raised == raised
+    if raised:
+        assert "speed raised to the minimum" in result.detail
+        for key, value in raised.items():
+            assert f"{key} {abs(value):g}" in result.detail
+    else:
+        assert "raised" not in result.detail
+    await pump()
+    assert parameters(link, "robot.move")[0] == sent
+    entries = [
+        json.loads(line)
+        for path in governor.journal.log_dir.glob("*.jsonl")
+        for line in path.read_text().splitlines()
+    ]
+    entry = [e for e in entries if e.get("method") == "move" and e["type"] == "tool_call"][-1]
+    assert entry["raised"] == raised
+    await advance(clock, 1.1)
+
+
+async def test_floors_never_exceed_the_caps_and_are_configurable(rig):
+    governor, link, clock = rig
+    # The default vx floor (0.3) is above the default cap (0.25): the cap wins.
+    governor.settings = Settings(max_vx=0.4, min_vx=0.3)
+    assert (await governor.move(0.1, 0, 0, 1)).raised == {"vx": 0.3}
+    await advance(clock, 1.1)
+    governor.settings = Settings(max_vx=0.4, min_vx=0.3)
+    assert (await governor.move(0.6, 0, 0, 1)).clamped == {"vx": 0.4}
+    await advance(clock, 1.1)
+    governor.settings = Settings(min_vx=0, min_vy=0, min_vyaw=0)
+    result = await governor.move(0.05, 0.01, 0.1, 1)
+    assert result.raised is None
+    await pump()
+    assert parameters(link, "robot.move")[-1] == {"vx": 0.05, "vy": 0.01, "vyaw": 0.1}
+    await advance(clock, 1.1)
+    with pytest.raises(ValueError):
+        Settings(min_vx=-0.1)
 
 
 @pytest.mark.parametrize("duration", [10, 30, 45])
@@ -199,13 +253,13 @@ async def test_invalid_duration_and_direction(rig):
 
 async def test_replacement_does_not_send_stop(rig):
     governor, link, clock = rig
-    await governor.move(0.1, 0, 0, 5)
+    await governor.move(0.25, 0, 0, 5)
     await pump()
     await advance(clock, 0.2)
-    await governor.move(-0.1, 0, 0, 1)
+    await governor.move(-0.25, 0, 0, 1)
     await pump()
     assert not commands(link, "robot.stop")
-    assert parameters(link, "robot.move")[-1]["vx"] == -0.1
+    assert parameters(link, "robot.move")[-1]["vx"] == -0.25
     await advance(clock, 1.1)
     assert len(commands(link, "robot.stop")) == 1
 
@@ -313,8 +367,10 @@ async def test_notification_failure_interrupts_motion(rig):
 @pytest.mark.parametrize(("degrees", "start"), [(90, 0), (-90, -170), (360, 170)])
 async def test_turn_closed_loop_wraps_and_slows(rig, degrees, start):
     governor, link, clock = rig
+    governor.settings = Settings(min_vyaw=0)
     link.yaw = math.radians(start)
-    assert (await governor.turn(degrees)).ok
+    result = await governor.turn(degrees)
+    assert result.ok and result.raised is None
     await pump()
     await advance(clock, 10)
     completed = await governor.wait_motion()
@@ -323,6 +379,35 @@ async def test_turn_closed_loop_wraps_and_slows(rig, degrees, start):
     rates = [abs(params["vyaw"]) for params in parameters(link, "robot.move")]
     assert 0.8 in rates and 0.3 in rates
     assert commands(link, "robot.stop")
+
+
+@pytest.mark.parametrize("degrees", [30, -30, 90])
+async def test_turn_holds_the_gait_yaw_floor_and_says_so(rig, degrees):
+    governor, link, clock = rig
+    result = await governor.turn(degrees)
+    assert result.ok and result.raised == {"vyaw": 1.0}
+    assert "speed raised to the minimum" in result.detail and "vyaw 1 rad/s" in result.detail
+    await pump()
+    await advance(clock, 5)
+    completed = await governor.wait_motion()
+    assert completed.ok, completed.reason
+    rates = {abs(params["vyaw"]) for params in parameters(link, "robot.move")}
+    assert rates == {1.0}
+    assert abs(math.degrees(link.yaw) - degrees) <= 12
+    assert commands(link, "robot.stop")
+
+
+async def test_turn_floor_does_not_apply_in_roller_mode(rig):
+    governor, link, clock = rig
+    link.mode = "roller"
+    await advance(clock, 30)
+    link.records.clear()
+    result = await governor.turn(30)
+    assert result.ok and result.raised is None
+    await pump()
+    await advance(clock, 5)
+    rates = {abs(params["vyaw"]) for params in parameters(link, "robot.move")}
+    assert rates and max(rates) <= 0.3
 
 
 async def test_turn_clamp_missing_yaw_and_timeout(rig):
@@ -560,9 +645,9 @@ async def test_request_timeout_and_stop_refusal_surface(rig):
 )
 async def test_stop_preempts_slow_action_rpc(rig, action, method, occurrence, late_reply):
     governor, link, clock = rig
-    assert (await governor.move(0.2, 0, 0, 5)).ok
+    assert (await governor.move(0.25, 0, 0, 5)).ok
     await pump()
-    assert link.twist[0] == 0.2
+    assert link.twist[0] == 0.25
     if action == "stand":
         link.policies["sitting"] = True
     if method == "robot.enable":
@@ -598,7 +683,7 @@ async def test_stop_preempts_slow_action_rpc(rig, action, method, occurrence, la
         case "stand":
             pending = asyncio.create_task(governor.stand())
         case _:
-            pending = asyncio.create_task(governor.move(-0.2, 0, 0, 5))
+            pending = asyncio.create_task(governor.move(-0.25, 0, 0, 5))
     try:
         await asyncio.wait_for(entered.wait(), 1)
         start = len(link.records)
@@ -661,3 +746,51 @@ async def test_watchdog_preempts_slow_look_and_rejects_late_head(rig):
     finally:
         release.set()
         await asyncio.gather(pending, return_exceptions=True)
+
+
+def scripted_health(link: FakeRobotLink, health: dict[str, object]) -> None:
+    real_call = link.call
+
+    async def call(method, params=None, timeout=2.0):  # noqa: ASYNC109 - RobotLink contract
+        if method == "robot.health":
+            link._record(method, params, False)
+            return dict(health)
+        return await real_call(method, params, timeout)
+
+    link.call = call  # type: ignore[method-assign]
+
+
+async def test_degraded_health_refuses_and_stops_motion_until_healthy(rig):
+    governor, link, clock = rig
+    health: dict[str, object] = {"healthy": True}
+    scripted_health(link, health)
+    assert (await governor.move(0.25, 0, 0, 5)).ok
+    health.update(healthy=False, degraded=True, reason="servo power off")
+    await advance(clock, 5.5)
+    assert commands(link, "robot.health")
+    assert not governor.moving and link.twist == [0, 0, 0]
+    assert commands(link, "robot.stop")
+    refused = await governor.move(0.25, 0, 0, 1)
+    assert not refused.ok
+    assert "degraded" in refused.reason and "servo power off" in refused.reason
+    assert "refused" in refused.reason
+    health.clear()
+    health["healthy"] = True
+    await advance(clock, 5.5)
+    assert (await governor.move(0.25, 0, 0, 1)).ok
+    await advance(clock, 1.2)
+
+
+async def test_unhealthy_verdict_and_unknown_poll_keep_last_verdict(rig):
+    governor, link, clock = rig
+    health: dict[str, object] = {"healthy": False, "reason": "control loop stalled"}
+    scripted_health(link, health)
+    await advance(clock, 5.5)
+    refused = await governor.move(0.25, 0, 0, 1)
+    assert not refused.ok and "unhealthy" in refused.reason
+
+
+def test_person_message_stays_generic():
+    for mode in ("walk", "roller"):
+        reason = person_wait_reason(mode)
+        assert mode in reason and "robotctl" not in reason and "configure" not in reason

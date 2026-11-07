@@ -135,6 +135,30 @@ Making the "explained" tolerance looser (0.2 m), or dropping marks near walls, w
 broke the offline door case or let the planner squeeze between a real door and its jambs, so
 neither was kept. The live box test is a documented, non-strict `xfail`.
 
+### Over WebRTC, with realism (integration run)
+
+`live_stack.py --link webrtc --places … --start départ@0 --realism real --realism-seed 7`,
+ToF over the WebRTC control channel (`TOF_LINK=link`), same apartment, no obstacles:
+
+| Scenario | Result | Time | RMS xy | Max xy | Yaw RMS | Converged |
+|---|---|---|---|---|---|---|
+| départ → ma chambre | arrived (0.02 m from goal) | 64.9 s | 0.087 m | 0.204 m | 3.2° | 99 % |
+
+991 ToF frames received over WebRTC, all used. The 0.20 m maximum is the first sample: the
+true start was 5 cm and −5° off `départ@0`.
+
+Same run with `--obstacles …/examples/obstacles_appartement.json` (a chair in the corridor, the
+bedroom door closed, a moving cat):
+
+| Scenario | Result | Time | RMS xy | Max xy | Yaw RMS | Converged |
+|---|---|---|---|---|---|---|
+| départ → ma chambre, door closed | stopped: "blocked by something that is not on my map (a closed door?)" | 82.5 s | 0.309 m | 0.679 m | 10.7° | 92 % |
+
+It went around the chair (about 25 s stalled beside it) and stopped about 0.6 m in front of the
+closed door, without touching it. The error peaks (0.5–0.7 m) came while it was beside the
+unmapped chair, because the ToF saw the chair and not the mapped wall. They fell back to 0.02 m
+in the bedroom corridor.
+
 ## Verdict for this apartment
 
 **Odometry + IMU + one 8x8 ToF on the head is enough for room-to-room navigation from a known start
@@ -169,7 +193,8 @@ It is **not enough** in these cases:
 - **TCP relay:** `relay/duck_relay.py` adds a third listener (`--tof-port`, default 7812) that
   allows only `tof.stream` on tofd's socket and forwards its `tof.frame` notifications. The robot
   listener's allowlist keeps `robot.state`.
-- **WebRTC:** mediad's `route.rs` permits `tof.stream` in both the v47 runtime and the v52
-  runtime-sync. coin-coin's `ROBOT_METHODS` and the WebRTC link do not forward `tof.stream` yet;
-  that belongs to the WebRTC stream. The localizer only depends on a `DepthSource` (async frame
-  iterator), so a WebRTC-backed source can replace `TcpTofStream` without other changes.
+- **WebRTC:** mediad's `route.rs` permits `tof.stream` and sends it to tofd's lane. coin-coin
+  lists it in `ROBOT_METHODS` (the relay still sends it to tofd, never robotd), and
+  `TOF_LINK=link` uses `LinkTofStream`: it subscribes once per control channel and reads the
+  `tof.frame` notifications that come back on it. `live_stack.py --link webrtc --places …` sets
+  it. Measured on the simulator: about 15 frames/s, all used, no errors (see below).
