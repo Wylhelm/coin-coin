@@ -92,6 +92,11 @@ class ToolRegistry:
     def available(self, name: str) -> bool:
         return name in self._tools and name not in self._unavailable
 
+    def manages_timeout(self, name: str) -> bool:
+        """Whether the tool runs a long action that bounds its own duration (a robot motion)."""
+        definition = self._tools.get(name)
+        return definition is not None and definition.manages_timeout
+
     def definitions(self) -> list[dict[str, object]]:
         return [
             {

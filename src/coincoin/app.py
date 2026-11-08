@@ -143,6 +143,8 @@ class App:
         self._session_generation = 0
         self._session_task_generation: int | None = None
         self._tool_tasks: set[asyncio.Task[None]] = set()
+        # Robot motions outlive an interrupted turn: their outcome is announced when they end.
+        self._motion_tool_tasks: set[asyncio.Task[None]] = set()
         self._tool_turns: dict[str | None, _ToolTurn] = {}
         self._speech_end_at: float | None = None
         self._latency_target_ms: int | None = None
@@ -529,7 +531,7 @@ class App:
         for turn in self._tool_turns.values():
             turn.status = "cancelled"
         for task in tuple(self._tool_tasks):
-            if task is not asyncio.current_task():
+            if task is not asyncio.current_task() and task not in self._motion_tool_tasks:
                 task.cancel()
 
     def _start_session_after_brain_start(self) -> None:
@@ -808,6 +810,9 @@ class App:
             task = self._spawn(self._handle_tool_call(event, turn))
             self._tool_tasks.add(task)
             task.add_done_callback(self._tool_tasks.discard)
+            if self.tools.manages_timeout(event.name):
+                self._motion_tool_tasks.add(task)
+                task.add_done_callback(self._motion_tool_tasks.discard)
         elif isinstance(event, ResponseDone):
             self.journal.write(
                 "usage", status=event.status, usage=event.usage, response_id=event.response_id
@@ -867,7 +872,26 @@ class App:
             latency_ms=round((self.clock.now() - started) * 1000, 3),
         )
         turn.results[event.call_id] = result_json
+        if not self._tool_turn_valid(turn) and self.tools.manages_timeout(event.name):
+            await self._announce_late_result(event, result)
+            return
         await self._complete_tool_turn(turn)
+
+    async def _announce_late_result(self, event: ToolCall, result: dict[str, Any]) -> None:
+        """Tell the conversation how an interrupted robot action ended (arrived, refused...)."""
+        if self._stopping or self.state.mode == Mode.SLEEPING:
+            return
+        outcome = (
+            f"it succeeded: {result.get('detail') or 'done'}"
+            if result.get("ok")
+            else f"it failed: {result.get('reason')}"
+        )
+        message = (
+            f"the earlier {event.name} request ({event.arguments}) was interrupted in the "
+            f"conversation but the robot kept going; it has now ended and {outcome}"
+        )
+        self.journal.write("tool_result_late", name=event.name, call_id=event.call_id)
+        await self.announce(message)
 
     async def _complete_tool_turn(self, turn: _ToolTurn) -> None:
         if (
