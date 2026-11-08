@@ -41,7 +41,12 @@ done here, and nothing here depends on maploc.
 - **Correction:** each ToF frame. Each zone becomes a beam from the head's ToF frame, levelled
   with the IMU:
   - **valid** (status 5/9): a hit, scored against a two-sided likelihood field of the map
-    (σ 6 cm plus a random floor). Hits on the floor or above 1.5 m are ignored;
+    (σ 6 cm plus a random floor). Hits on the floor or above 1.5 m are ignored. "On the floor"
+    means below 3 cm in the level frame **or** on the floor plane fitted to that frame's own
+    returns (`FloorTracker`, a sampled-consensus fit within 2.5 m, at most 12° and 6 cm off
+    level): a few degrees of level-frame error lift floor returns 1–2 m ahead to 0.05–0.3 m,
+    where they would otherwise look like obstacles. Only the plane's inliers are reclassified;
+    other returns keep their height;
   - **no target** (255): free space; points sampled along the beam up to 4 m are penalized if they
     fall inside a mapped obstacle below 0.45 m;
   - **other statuses**: ignored.
@@ -63,6 +68,13 @@ done here, and nothing here depends on maploc.
   frames into one composite, which is matched coarse-to-fine around the last estimate (0.6–1.5 m,
   limited heading tolerance). Upstream #127 found that wide composites relocalize while narrow
   wedges do not, and that matches here: a single wedge is never trusted.
+- The filter tracks during every motion (manual `move`/`turn` too), but a manual motion is not
+  checked against a goal, so the next `go_to` first sweeps and relocalizes. The search window
+  also grows with the odometry travelled and turned since the last confirmed fix (10 %, sway
+  under 0.2 rad ignored), because the spread alone can be overconfident.
+- A match that moves the pose more than 0.3 m or 0.2 rad from the tracked one is only taken if
+  it fits the sweep at least 10 points better than the best match near the tracked pose: in the
+  wide rooms, where the ToF reaches few walls, a look-alike a metre off can score as well.
 - A whole-flat search (`NAV_GLOBAL_RELOCALIZATION=1`) is opt-in. It can be confidently wrong.
 - **While walking:** if the estimate stays unconverged for 3 s or is lost, the duck stops and
   sweeps. After two failed relocalizations on a route it gives up and says so: "I lost track of
@@ -84,8 +96,15 @@ done here, and nothing here depends on maploc.
 - **Verify before giving up:** if no path remains, the duck does not trust the marks at once,
   because they could come from a few centimetres of pose error that make a wall look
   "unexplained". It sweeps the head and relocalizes, then retries from the corrected pose with the
-  previous marks. If the way is still blocked, or the pose cannot be confirmed, it stops and says:
-  "the way to X is blocked by something that is not on my map (a closed door?); I stopped".
+  previous marks. If the way is still blocked from a confirmed pose, it stops and says: "the way
+  to X is blocked by something that is not on my map (a closed door?); I stopped". If the sweep
+  cannot confirm the pose, it says it is lost instead: "I lost track of where I am on the way to
+  X: what looked like an obstacle may be a wall seen from a wrong pose…".
+- **Status:** `status` reports the last trip: "navigation: going to X", "arrived at X",
+  "stopped before reaching X: reason" or "did not go to X: reason".
+- **Conversation:** a `go_to` keeps walking when the user talks over it. Its result can no longer
+  answer the cancelled tool call, so it is announced to the conversation when the trip ends
+  (journal `tool_result_late`).
 
 ## Measurements
 
@@ -158,6 +177,62 @@ It went around the chair (about 25 s stalled beside it) and stopped about 0.6 m 
 closed door, without touching it. The error peaks (0.5–0.7 m) came while it was beside the
 unmapped chair, because the ToF saw the chair and not the mapped wall. They fell back to 0.02 m
 in the bedroom corridor.
+
+## The "blocked" incident (2026-11-08)
+
+With `--realism real`, after "move 5 s, turn 180", `go_to salon` and `go_to ma chambre` ended
+with "blocked by something not on my map", and "Reviens au départ" was refused as lost while the
+filter claimed 3 cm / 1°. The scene has no obstacles. Measured with
+`tests/integration/nav_repro.py`, which logs the estimate against the simulator truth; the truth
+is used only for scoring.
+
+Root causes:
+
+- **Floor returns read as obstacles.** The level frame has a pitch error of about +2° (off) or
+  +3.7° (real), plus ±3° of gait sway. At 1–2 m this lifts floor hits above the floor cut. At the
+  true pose, 12% (off) and 26% (real) of low hits matched nothing on the map. The fake obstacles
+  closed the corridor ("blocked") and pulled the heading: the estimate drifted to 138° while
+  odometry said 179°. Fix: each frame fits the floor plane (MSAC, ≤ 2.5 m, ≤ 12° tilt) and
+  treats its inliers as floor. Unexplained low hits drop to about 4% (real) and 1% (off).
+- **Odometry yaw is fine.** It is within about 1° of the truth once the robot has stopped
+  turning. The "30% under" figure was read while the robot was still turning. The realism IMU
+  model matches the LSM6DSV16X datasheet, so microduck_rl is unchanged.
+- **Overconfident filter.** MCL did run during manual motions, but the false floor hits were
+  consistent with each other, so the filter converged on them. In addition, relocalization
+  searched around the wrong prior, and summed gait sway inflated "rotation since fix". Fixes:
+  - before a go_to that follows a manual move or turn (or when the pose is not converged), the
+    duck does a head sweep;
+  - the relocalization window grows with the travel and the net rotation (steps ≥ 0.2 rad) since
+    the last fix;
+  - a relocalization that jumps more than 0.3 m or 0.2 rad from the tracked pose must fit the
+    sweep better than the best nearby match, by a margin of 0.1;
+  - after a stall, a relocalization that does not converge reports "lost", not "blocked".
+- **Outcome never told.** When the user spoke during the trip, barge-in cancelled the go_to tool
+  task while the walk went on, so its result was never sent to the conversation. Motion tool
+  tasks now survive barge-in, and a result that arrives late is announced. `status` now includes
+  the navigation state (going to / arrived at / stopped before reaching … : reason).
+
+Results with `--realism real` and the prelude ("move 5 s, turn 180"), then salon → ma chambre →
+départ. Error is RMS / max, in metres.
+
+| seed | salon | ma chambre | départ |
+|---|---|---|---|
+| 0 | OK 0.10 / 0.15 | OK 0.11 / 0.19 | OK 0.16 / 0.33 |
+| 1 | OK 0.13 / 0.19 | OK 0.12 / 0.24 | "arrived", but 0.70 m from the place (0.52 / 1.02) |
+| 2 | OK 0.06 / 0.09 | OK 0.10 / 0.23 | refused: lost (0.28 / 0.62) |
+
+Direct from the start, real (seed 3): salon OK (0.20 / 0.43), ma chambre OK (0.11 / 0.29).
+
+Both départ failures come from the wide open area at x −4.5…−2. The 8x8 ToF sees almost nothing
+there, so lateral drift is not corrected. In seed 1 a relocalization there matched a pose 0.4 m
+to the side at fit 0.92: the map cannot tell the two poses apart. Seed 2 honestly reported
+"lost".
+
+With `--realism off`, the ideal twin stalls on CCW in-place turns. At vyaw 1.0–2.0 it rotates
+about 8° and stops, while CW in-place turns and CCW turns with forward speed work. The same
+happens at the previous commit, so it is a policy/sim behaviour, not a localization one. As a
+result, "turn 180" times out and `go_to salon` (which starts with a large CCW turn) ends "stuck";
+ma chambre and départ succeed.
 
 ## Verdict for this apartment
 
