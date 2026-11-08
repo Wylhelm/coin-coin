@@ -49,6 +49,8 @@ NAV_UNCERTAIN_S = 3.0
 RELOC_RADIUS_M = (0.6, 1.5)
 RELOC_PRIOR_MAX_M = 1.0
 RELOC_HEADING_RAD = (0.35, 1.0)
+# Share of the odometry travel and rotation since the last fix that the match window allows.
+RELOC_DRIFT_FRACTION = 0.1
 # Head sweep for relocalization: wide composites relocalize, narrow wedges do not (microduck#127).
 SWEEP_DEGREES = (-75, -50, -25, 0, 25, 50, 75)
 SWEEP_HOLD_S = 0.9
@@ -203,6 +205,10 @@ class Governor:
         self._health_problem: str | None = None
         self._health_at = -math.inf
         self._health_task: asyncio.Task[None] | None = None
+        # Navigation state for status: going to / arrived at / failed to reach a place.
+        self.navigation = ""
+        # A move or turn ran outside go_to's checks since the last head-sweep fix.
+        self._unsupervised_motion = False
 
     async def start(self) -> None:
         if self._closed:
@@ -716,7 +722,11 @@ class Governor:
         return result
 
     async def _replace_motion(
-        self, generation: int, run: Callable[[bool], Coroutine[Any, Any, ToolResult]]
+        self,
+        generation: int,
+        run: Callable[[bool], Coroutine[Any, Any, ToolResult]],
+        *,
+        supervised: bool = False,
     ) -> None:
         async with self._action_lock:
             self._check_safety(generation)
@@ -724,6 +734,8 @@ class Governor:
             await self._cancel(self._motion)
             self._check_safety(generation)
             self._motion = asyncio.create_task(run(replacing))
+            if not supervised:
+                self._unsupervised_motion = True
 
     async def move(self, vx: float, vy: float, vyaw: float, duration_s: float) -> ToolResult:
         requested_at = self.clock.now()
@@ -987,13 +999,16 @@ class Governor:
             await self._rise_if_sitting(generation, await self._prepare(generation))
             navigator.clear_obstacles()
             estimate = await navigator.estimate()
-            if navigator.honest and not estimate.converged:
+            # A manual move or turn was only tracked frame by frame, with no check that the
+            # match still holds: confirm with a head sweep before trusting it for a whole trip.
+            if navigator.honest and (not estimate.converged or self._unsupervised_motion):
                 estimate = await self._relocalize(generation, navigator, estimate)
                 if not estimate.converged:
                     raise RobotRefused(
                         f"I do not know where I am, so I will not walk to {place} "
                         f"({estimate.describe()})"
                     )
+                self._unsupervised_motion = False
             pose = estimate.pose
             goal = navigator.places[place]
             if math.dist((pose.x, pose.y), goal) <= Steering.ROLLER_ARRIVAL_M:
@@ -1004,12 +1019,16 @@ class Governor:
                 raise RobotRefused(f"no known path to {place}")
             locomotion = self._mode
             limits = self._limits()
+            self.navigation = f"going to {place}"
             await self._replace_motion(
                 generation,
                 lambda replacing: self._run_route(place, route, limits, locomotion, generation),
+                supervised=True,
             )
         except ROBOT_ERRORS as error:
-            return self._failure("go_to", error)
+            result = self._failure("go_to", error)
+            self.navigation = f"did not go to {place}: {result.reason}"
+            return result
         self.journal.write(
             "tool_call",
             method="go_to",
@@ -1189,9 +1208,10 @@ class Governor:
                             estimate = await self._relocalize(generation, navigator, estimate)
                             if not estimate.converged:
                                 raise RobotRefused(
-                                    f"the way to {place} looks blocked by something that is not "
-                                    "on my map (a closed door?) and I could not confirm where I "
-                                    "am; I stopped"
+                                    f"I lost track of where I am on the way to {place}: what "
+                                    "looked like an obstacle may be a wall seen from a wrong "
+                                    f"pose, and a head sweep did not confirm my position; I "
+                                    f"stopped ({estimate.describe()})"
                                 )
                             navigator.set_obstacles(known)
                             replanned = await asyncio.to_thread(
@@ -1318,11 +1338,16 @@ class Governor:
                 relocalizations=relocalizations,
                 obstacle_replans=obstacle_replans,
             )
+            self.navigation = f"arrived at {place}"
             return ToolResult(True, detail=f"arrived at {place} in {elapsed:.0f} s")
         except ROBOT_ERRORS as error:
             result = self._failure("go_to", error)
+            self.navigation = f"stopped before reaching {place}: {result.reason}"
             await self.stop(result.reason)
             return result
+        except asyncio.CancelledError:
+            self.navigation = f"stopped before reaching {place}: interrupted"
+            raise
 
     @staticmethod
     def _scan_pose(estimate: PoseEstimate, scan: Scan, localizer: EstimatedPose) -> Pose:
@@ -1353,11 +1378,14 @@ class Governor:
         radius = heading_tolerance = None
         if localizer.initialized and prior.std_xy <= RELOC_PRIOR_MAX_M:
             centre = (prior.x, prior.y)
-            radius = min(max(RELOC_RADIUS_M[0], 3 * prior.std_xy), RELOC_RADIUS_M[1])
+            # The window also grows with the unchecked track: the spread can be overconfident.
+            drift_xy = RELOC_DRIFT_FRACTION * localizer.travel_since_fix
+            drift_yaw = RELOC_DRIFT_FRACTION * localizer.rotation_since_fix
+            radius = min(max(RELOC_RADIUS_M[0], 3 * prior.std_xy, drift_xy), RELOC_RADIUS_M[1])
             if prior.std_yaw <= RELOC_HEADING_RAD[1] / 2:
                 heading = prior.yaw
                 heading_tolerance = min(
-                    max(RELOC_HEADING_RAD[0], 3 * prior.std_yaw), RELOC_HEADING_RAD[1]
+                    max(RELOC_HEADING_RAD[0], 3 * prior.std_yaw, drift_yaw), RELOC_HEADING_RAD[1]
                 )
         elif not self.settings.nav_global_relocalization:
             self.journal.write("localization", event="no_prior", scans=len(scans))
@@ -1371,6 +1399,7 @@ class Governor:
                 radius=radius,
                 heading=heading,
                 heading_tolerance=heading_tolerance if heading_tolerance is not None else math.pi,
+                prior=prior.pose if centre is not None else None,
             )
         finally:
             localizer.relocalizing = False
@@ -1623,6 +1652,8 @@ class Governor:
         summary += "tout va bien" if all_clear else "etat a verifier"
         if self.moving:
             summary += ", mouvement en cours / motion active"
+        if self.navigation:
+            summary += f", navigation: {self.navigation}"
         if self._person_target is not None:
             summary += f", {person_wait_reason(self._person_target)}"
         return ToolResult(

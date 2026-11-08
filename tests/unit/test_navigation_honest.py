@@ -205,3 +205,31 @@ async def test_kidnapped_duck_stops_and_says_it_is_lost(tmp_path: Path) -> None:
 @pytest.mark.parametrize("pose", ["estimated", "oracle"])
 def test_settings_choose_the_pose_source(pose: str) -> None:
     assert Settings(nav_pose=pose).nav_pose == pose  # type: ignore[arg-type]
+
+
+async def test_go_to_after_a_manual_move_relocalizes_first_and_reports_its_state(
+    tmp_path: Path,
+) -> None:
+    async with Rig(tmp_path, [], "salon@0", (1.5, 1.5, 0.0)) as rig:
+        call = asyncio.create_task(rig.governor.move(0.2, 0.0, 0.0, 2.0))
+        while not call.done():
+            await rig.step()
+        assert call.result().ok
+        motion = rig.governor._motion
+        assert motion is not None
+        while not motion.done():
+            await rig.step()
+        assert rig.calls("robot.look") == 0
+        started, result = await rig.go_to("cuisine")
+        assert started.ok, started
+        assert rig.calls("robot.look") >= 7
+        assert result is not None and result.ok, result
+        assert rig.governor.navigation == "arrived at cuisine"
+        assert rig.localizer.travel_since_fix < 6
+
+
+async def test_navigation_state_says_why_a_trip_stopped(tmp_path: Path) -> None:
+    async with Rig(tmp_path, [DOOR], "salon@0", (1.5, 1.5, 0.0)) as rig:
+        started, result = await rig.go_to("cuisine")
+        assert started.ok and rig.governor.navigation.startswith("stopped before reaching")
+        assert result is not None and result.reason in rig.governor.navigation
