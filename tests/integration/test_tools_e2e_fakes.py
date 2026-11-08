@@ -90,6 +90,8 @@ async def rig(tmp_path: Path, request: pytest.FixtureRequest):
     robot = FakeRobotd()
     await robot.start()
     settings = _settings()
+    # Transport and queueing scenarios: gait speed floors are covered in test_assembled_app.
+    settings.min_vx = settings.min_vy = settings.min_vyaw = 0
     settings.max_move_s = getattr(request, "param", 5)
     settings.robot_link = f"tcp://127.0.0.1:{robot.port}"
     feature = RobotFeature()
@@ -345,6 +347,7 @@ async def test_thirty_second_move_finishes_at_configured_ceiling(tmp_path: Path)
     clock = FakeClock()
     link = FakeRobotLink(clock)
     settings = _settings()
+    settings.min_vx = settings.min_vy = settings.min_vyaw = 0
     settings.max_move_s = 30
     feature = RobotFeature(link=link)
     app = App(settings, _Audio(), Journal(tmp_path), clock=clock, features=())

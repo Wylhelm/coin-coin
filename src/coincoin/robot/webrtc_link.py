@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import aiohttp
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCIceCandidate, RTCPeerConnection, RTCSessionDescription
 from aiortc.exceptions import InvalidStateError
 from aiortc.mediastreams import MediaStreamError
 from aiortc.sdp import candidate_from_sdp
@@ -28,6 +28,13 @@ from coincoin.robot.methods import ROBOT_METHODS
 LOGGER = logging.getLogger(__name__)
 LinkCallback = Callable[[], Awaitable[None] | None]
 MAX_MOVE_BUFFERED_BYTES = 0
+# A camera frame older than this is refused rather than shown as the present.
+FRAME_STALE_S = 2.0
+# The robot or mediad restarting takes seconds; retry soon enough to be back promptly.
+MAX_RECONNECT_S = 10.0
+# The link subscribes to robot.state at 10 Hz; this long without one, the peer is gone even if
+# ICE consent (about 30 s in aiortc) has not noticed yet.
+STATE_LOST_S = 3.0
 
 
 def _encode_video_frame(video_frame: VideoFrame, captured_at: float) -> Frame:
@@ -164,6 +171,32 @@ class WebRtcLink:
         self._runner: asyncio.Task[None] | None = None
         self._ready: asyncio.Future[None] | None = None
         self._up = asyncio.Event()
+        self.producer_meta: dict[str, Any] = {}
+        self.hello: dict[str, Any] | None = None
+        self.last_error = ""
+        self._session_id = ""
+        self._listeners: dict[str, list[Callable[[Any], None]]] = {}
+        # Bumped on every new control channel: stream subscriptions die with the old one.
+        self.generation = 0
+
+    def add_notification_listener(
+        self, method: str, callback: Callable[[Any], None]
+    ) -> Callable[[], None]:
+        """Receive `method` notifications' params (e.g. tof.frame); returns the remover."""
+        self._listeners.setdefault(method, []).append(callback)
+
+        def remove() -> None:
+            with contextlib.suppress(ValueError):
+                self._listeners.get(method, []).remove(callback)
+
+        return remove
+
+    def _on_notification(self, method: str, params: Any) -> None:
+        for callback in tuple(self._listeners.get(method, ())):
+            try:
+                callback(params)
+            except Exception:
+                LOGGER.exception("%s listener failed", method)
 
     @property
     def connected(self) -> bool:
@@ -222,6 +255,7 @@ class WebRtcLink:
 
     async def frame(self) -> Frame:
         if self._latest_frame is not None:
+            self._check_fresh(self._latest_video_at)
             return self._latest_frame
         try:
             async with asyncio.timeout(3):
@@ -230,15 +264,23 @@ class WebRtcLink:
             raise FrameError("No video frame received from WebRTC peer") from error
         async with self._frame_lock:
             if self._latest_frame is not None:
+                self._check_fresh(self._latest_video_at)
                 return self._latest_frame
             video_frame = self._latest_video_frame
             if video_frame is None:
                 raise FrameError("No video frame received from WebRTC peer")
             captured_at = self._latest_video_at
+            self._check_fresh(captured_at)
             frame = await asyncio.to_thread(_encode_video_frame, video_frame, captured_at)
             if video_frame is self._latest_video_frame and captured_at == self._latest_video_at:
                 self._latest_frame = frame
             return frame
+
+    @staticmethod
+    def _check_fresh(captured_at: float) -> None:
+        age = time.time() - captured_at
+        if age > FRAME_STALE_S:
+            raise FrameError(f"WebRTC camera stalled: last frame is {age:.1f} s old")
 
     def _require_connection(self) -> JsonRpcConnection:
         if not self.connected or self._connection is None:
@@ -298,14 +340,20 @@ class WebRtcLink:
                 )
                 if producer is None:
                     raise LinkDown("mediad returned an invalid producer list")
+                meta = producer.get("meta")
+                self.producer_meta = dict(meta) if isinstance(meta, dict) else {}
                 await self._send_signal({"type": "startSession", "peerId": producer["id"]})
                 started = await self._receive_until({"sessionStarted"})
                 session_id = started.get("sessionId")
                 if not isinstance(session_id, str) or not session_id:
                     raise LinkDown("mediad returned an invalid WebRTC session")
+                self._session_id = session_id
                 LOGGER.debug("Started mediad WebRTC session")
 
-                self._peer = RTCPeerConnection()
+                # LAN only: host candidates pair directly and mediad offers any relay itself
+                # (mediad/src/turn.rs). aiortc's default public STUN server would only add a
+                # third-party request and a multi-second gathering timeout to every connection.
+                self._peer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
                 self._channel_open.clear()
                 self._peer_connected.clear()
                 self._peer_lost.clear()
@@ -346,10 +394,15 @@ class WebRtcLink:
                 stream = self._stream
                 if stream is None:
                     raise LinkDown("mediad did not open the control datachannel")
-                connection = JsonRpcConnection(stream, stream, clock=self._clock)
+                connection = JsonRpcConnection(
+                    stream, stream, clock=self._clock, on_notification=self._on_notification
+                )
                 self._connection = connection
+                self.generation += 1
+                self.hello = None
                 try:
-                    await connection.call("hello", {"api_version": API_VERSION})
+                    hello = await connection.call("hello", {"api_version": API_VERSION})
+                    self.hello = hello if isinstance(hello, dict) else None
                 except JsonRpcError:
                     LOGGER.info("mediad hello rejected; trying the state subscription")
                 await connection.call("robot.subscribe", {"hz": 10})
@@ -498,14 +551,45 @@ class WebRtcLink:
             LOGGER.warning("WebRTC video receiver failed (%s)", type(error).__name__)
 
     async def _wait_link_down(self, connection: JsonRpcConnection) -> None:
-        closed = asyncio.create_task(connection.wait_closed())
-        peer_lost = asyncio.create_task(self._peer_lost.wait())
+        watchers = (
+            asyncio.create_task(connection.wait_closed()),
+            asyncio.create_task(self._peer_lost.wait()),
+            asyncio.create_task(self._watch_signalling()),
+            asyncio.create_task(self._watch_state(connection)),
+        )
         try:
-            await asyncio.wait((closed, peer_lost), return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(watchers, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if not task.cancelled() and (error := task.exception()) is not None:
+                    self.last_error = str(error)
+                    LOGGER.warning("WebRTC robot link lost: %s", error)
         finally:
-            closed.cancel()
-            peer_lost.cancel()
-            await asyncio.gather(closed, peer_lost, return_exceptions=True)
+            for task in watchers:
+                task.cancel()
+            await asyncio.gather(*watchers, return_exceptions=True)
+
+    async def _watch_signalling(self) -> None:
+        """mediad ends the session, or dies, before ICE consent notices."""
+        while True:
+            try:
+                message = await self._receive_signal()
+            except LinkDown as error:
+                raise LinkDown("mediad signalling closed") from error
+            if message.get("sessionId") not in (None, self._session_id):
+                continue
+            if message["type"] in ("endSession", "error"):
+                raise LinkDown("mediad ended the WebRTC session")
+            if message["type"] == "peer":
+                with contextlib.suppress(LinkDown, ValueError, InvalidStateError):
+                    await self._handle_peer_signal(message, self._session_id)
+
+    async def _watch_state(self, connection: JsonRpcConnection) -> None:
+        started = time.monotonic()
+        while True:
+            await asyncio.sleep(0.25)
+            age = connection.state_age()
+            if age > STATE_LOST_S and time.monotonic() - started > STATE_LOST_S:
+                raise LinkDown(f"no robot.state for {min(age, time.monotonic() - started):.1f} s")
 
     async def _cleanup(self) -> None:
         connection, self._connection = self._connection, None
@@ -554,6 +638,7 @@ class WebRtcLink:
                     InvalidStateError,
                     ValueError,
                 ) as error:
+                    self.last_error = f"{type(error).__name__}: {error}"
                     LOGGER.warning("WebRTC robot connection failed (%s)", type(error).__name__)
                     if self._ready is not None and not self._ready.done():
                         self._ready.set_exception(
@@ -562,6 +647,7 @@ class WebRtcLink:
                         self._ready.exception()
                 else:
                     delay = 0.5
+                    self.last_error = ""
                     await self._callback(self.on_up)
                     self._up.set()
                     if self._ready is not None and not self._ready.done():
@@ -572,8 +658,8 @@ class WebRtcLink:
                     self._up.clear()
                     if was_up:
                         await self._callback(self.on_down)
-                await self._clock.sleep(min(30, delay * random.uniform(0.8, 1.2)))
-                delay = min(30, delay * 2)
+                await self._clock.sleep(min(MAX_RECONNECT_S, delay * random.uniform(0.8, 1.2)))
+                delay = min(MAX_RECONNECT_S, delay * 2)
         finally:
             was_up = self._connection is not None
             await self._cleanup()

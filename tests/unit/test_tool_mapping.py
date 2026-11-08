@@ -12,7 +12,8 @@ from tests.fakes.fake_robotd import FakeRobotLink
 @pytest.mark.parametrize(
     ("argv", "method", "params"),
     [
-        (["move", "0.1", "0", "0", "0.1"], "robot.move", {"vx": 0.1, "vy": 0.0, "vyaw": 0.0}),
+        # Raised to the walking gait's minimum (min_vx 0.3, capped by max_vx 0.25).
+        (["move", "0.1", "0", "0", "0.1"], "robot.move", {"vx": 0.25, "vy": 0.0, "vyaw": 0.0}),
         (["turn", "0"], "robot.stop", None),
         (["look", "haut"], "robot.look", {"x": 1.0, "y": 0.0, "z": 0.6}),
         (

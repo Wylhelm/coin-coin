@@ -7,7 +7,7 @@ import pytest
 
 from coincoin.clock import FakeClock
 from coincoin.robot.frames import FrameError
-from coincoin.robot.jsonrpc import JsonRpcConnection, JsonRpcError
+from coincoin.robot.jsonrpc import API_VERSION, JsonRpcConnection, JsonRpcError
 from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.tcp_link import TcpLink, tcp_address
 from relay.duck_relay import DuckRelay
@@ -45,7 +45,7 @@ async def test_hello_subscribe_state_concurrent_requests_and_notify(robot):
         "robot.subscribe",
         "robot.mouth",
     ]
-    assert robot.records[0].params == {"api_version": 47}
+    assert robot.records[0].params == {"api_version": API_VERSION}
     assert robot.records[1].params == {"hz": 10}
     assert robot.records[-1].notification
     robot.refusals["robot.do"] = "precise daemon reason"

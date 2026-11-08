@@ -32,6 +32,153 @@ def test_language_and_duration_are_opt_in_overrides(monkeypatch: pytest.MonkeyPa
     assert custom["MAX_MOVE_S"] == "30.0"
 
 
+def test_webrtc_link_is_opt_in_and_ignores_delivery_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOT_TARGET", "robot")
+    monkeypatch.setenv("ROBOT_HOST", "192.168.1.42")
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert default["ROBOT_LINK"] == "tcp://127.0.0.1:7810"
+    env = live_stack.environment(live_stack.parse_args(["--link", "webrtc"]))
+    assert env["ROBOT_LINK"] == "webrtc://127.0.0.1:8443"
+    assert env["ROBOT_TARGET"] == env["ROBOT_HOST"] == default["ROBOT_TARGET"] == ""
+    with pytest.raises(SystemExit):
+        live_stack.parse_args(["--link", "udp"])
+
+
+def test_custom_scene_is_opt_in_and_resolved_from_invocation_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DUCK_SIM_SCENE", "untrusted-environment")
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert default["DUCK_SIM_SCENE"] == "backlash"
+    assert default["DUCK_SIM_PRELOAD_EQUIPMENT"] == "0"
+    custom = live_stack.environment(live_stack.parse_args(["--scene", "my room/scene.xml"]))
+    assert custom["DUCK_SIM_SCENE"] == str(tmp_path / "my room/scene.xml")
+    assert custom["DUCK_SIM_PRELOAD_EQUIPMENT"] == "0"
+    preloaded = live_stack.environment(
+        live_stack.parse_args(["--scene", "my room/scene.xml", "--preload-equipment"])
+    )
+    assert preloaded["DUCK_SIM_PRELOAD_EQUIPMENT"] == "1"
+
+
+def test_places_enable_simulator_navigation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("NAV_MAP", "untrusted")
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert "NAV_MAP" not in default and "SIM_POSE_LINK" not in default
+    args = live_stack.parse_args(["--places", "nav.json"])
+    env = live_stack.environment(args)
+    assert env["NAV_MAP"] == str(tmp_path / "nav.json")
+    assert env["SIM_POSE_LINK"] == f"tcp://127.0.0.1:{env['DUCK_SIM_PORT']}"
+    assert env["TOF_LINK"] == "tcp://127.0.0.1:7812"
+    assert env["NAV_POSE"] == "estimated" and env["NAV_START"] == ""
+    env = live_stack.environment(
+        live_stack.parse_args(["--places", "nav.json", "--start", "départ@0", "--oracle-pose"])
+    )
+    assert env["NAV_START"] == "départ@0" and env["NAV_POSE"] == "oracle"
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="Navigation map does not exist"):
+        live_stack.preflight(args, env)
+    webrtc = live_stack.environment(
+        live_stack.parse_args(["--places", "nav.json", "--link", "webrtc"])
+    )
+    assert webrtc["TOF_LINK"] == "link"
+
+
+def test_simulator_realism_options_are_forced_and_passed_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for name, value in (
+        ("DUCK_SIM_REALISM", "hard"),
+        ("DUCK_SIM_NO_ASSIST", "1"),
+        ("DUCK_SIM_OBSTACLES", "/leftover.json"),
+        ("DUCK_SIM_OBSTACLE_SLOTS", "9"),
+        ("DUCK_SIM_MAPLOC", "1"),
+    ):
+        monkeypatch.setenv(name, value)
+    default = live_stack.environment(live_stack.parse_args([]))
+    assert default["DUCK_SIM_REALISM"] == "off" and default["DUCK_SIM_REALISM_SEED"] == "0"
+    assert default["DUCK_SIM_MAPLOC"] == "0"
+    for name in ("DUCK_SIM_NO_ASSIST", "DUCK_SIM_OBSTACLES", "DUCK_SIM_OBSTACLE_SLOTS"):
+        assert name not in default
+    args = live_stack.parse_args(
+        [
+            "--realism",
+            "real",
+            "--realism-seed",
+            "7",
+            "--no-assist",
+            "--obstacles",
+            "flat.json",
+            "--obstacle-slots",
+            "4",
+            "--maploc",
+        ]
+    )
+    env = live_stack.environment(args)
+    assert env["DUCK_SIM_REALISM"] == "real" and env["DUCK_SIM_REALISM_SEED"] == "7"
+    assert env["DUCK_SIM_NO_ASSIST"] == "1" and env["DUCK_SIM_MAPLOC"] == "1"
+    assert env["DUCK_SIM_OBSTACLES"] == str(tmp_path / "flat.json")
+    assert env["DUCK_SIM_OBSTACLE_SLOTS"] == "4"
+    with pytest.raises(SystemExit):
+        live_stack.parse_args(["--realism", "ideal"])
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    with pytest.raises(RuntimeError, match="Obstacles file does not exist"):
+        live_stack.preflight(args, env)
+
+
+def test_missing_custom_scene_fails_before_starting_anything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    args = live_stack.parse_args(["--scene", str(tmp_path / "missing.xml")])
+    with pytest.raises(RuntimeError, match="Custom simulator scene does not exist"):
+        live_stack.preflight(args, live_stack.environment(args))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_invalid_custom_scene_reports_compile_error_before_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    coin = tmp_path / "coin"
+    runtime = tmp_path / "runtime"
+    rl = tmp_path / "rl"
+    scene = tmp_path / "scene.xml"
+    scene.write_text("invalid")
+    for path in (
+        coin / ".venv/bin/python",
+        coin / "relay/duck_relay.py",
+        runtime / "scripts/duck-sim",
+        rl / ".venv/bin/python",
+        coin / "assets/models/silero_vad.onnx",
+        coin / "assets/models/vosk-model-small-fr/am/final.mdl",
+        coin / "assets/models/vosk-model-small-en-us/am/final.mdl",
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    monkeypatch.setattr(live_stack, "COIN", coin)
+    monkeypatch.setattr(live_stack.sys, "platform", "linux")
+    commands: list[list[str]] = []
+
+    def fail_compile(argv, **kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 1, "", "invalid MJCF")
+
+    monkeypatch.setattr(live_stack.subprocess, "run", fail_compile)
+    args = live_stack.parse_args(
+        ["--scene", str(scene), "--runtime", str(runtime), "--rl", str(rl)]
+    )
+    with pytest.raises(RuntimeError, match="invalid MJCF"):
+        live_stack.preflight(args, live_stack.environment(args))
+    assert len(commands) == 1
+    assert commands[0][-1] == str(scene)
+
+
 def test_check_mode_does_not_start_services(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(live_stack, "preflight", lambda *_: None)
 
@@ -100,7 +247,7 @@ def launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(live_stack.subprocess, "Popen", start)
     monkeypatch.setattr(live_stack, "health_ready", lambda: True)
     monkeypatch.setattr(live_stack, "listening", lambda port: len(commands) == 1)
-    args = argparse.Namespace(runtime=tmp_path, rl=tmp_path)
+    args = argparse.Namespace(runtime=tmp_path, rl=tmp_path, link="tcp", sim_auto_equipment=False)
     return args, commands, children
 
 
@@ -189,3 +336,40 @@ def test_stubborn_owned_process_is_killed_after_timeout(monkeypatch: pytest.Monk
     monkeypatch.setattr(process, "wait", wait)
     live_stack.stop_owned(process)  # type: ignore[arg-type]
     assert process.terminated and process.killed
+
+
+def test_webrtc_link_starts_no_relay(launcher, monkeypatch: pytest.MonkeyPatch) -> None:
+    args, commands, _ = launcher
+    args.link = "webrtc"
+    started: list[list[str]] = []
+
+    def start(argv, **kwargs):
+        started.append(argv)
+        process = OwnedProcess()
+        process.returncode = 4
+        return process
+
+    monkeypatch.setattr(live_stack.subprocess, "Popen", start)
+    monkeypatch.setattr(live_stack, "listening", lambda port: False)
+    with pytest.raises(RuntimeError, match="coincoin exited with 4"):
+        live_stack.run(args, {})
+    assert len(started) == 1 and started[0][1:3] == ["-m", "coincoin.app"]
+    assert commands[-1][-1] == "down"
+    assert not live_stack.LOCK.exists()
+
+
+def test_equipment_assistant_is_opt_in_and_conflicts_with_no_assist(monkeypatch):
+    monkeypatch.setenv("SIM_EQUIPMENT_SOCKET", "/real/robot.sock")
+    assert live_stack.environment(live_stack.parse_args([]))["SIM_EQUIPMENT_SOCKET"] == ""
+    args = live_stack.parse_args(["--sim-auto-equipment", "--no-assist"])
+    with pytest.raises(RuntimeError, match="cannot be combined"):
+        live_stack.preflight(args, live_stack.environment(args))
+
+
+def test_equipment_assistant_uses_owned_stack_socket(launcher):
+    args, _, _ = launcher
+    args.sim_auto_equipment = True
+    env = {}
+    with pytest.raises(RuntimeError, match="exited: 4"):
+        live_stack.run(args, env)
+    assert env["SIM_EQUIPMENT_SOCKET"] == str(Path(env["DUCK_SIM_STATE"]) / "duck-a.sock")

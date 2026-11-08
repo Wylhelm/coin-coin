@@ -150,6 +150,49 @@ async def test_frame_binary_response_is_untouched(tmp_path: Path):
     await server.wait_closed()
 
 
+async def test_tof_port_forwards_subscription_and_streams_frames(tmp_path: Path):
+    frame = (
+        b'{"jsonrpc":"2.0","method":"tof.frame","params":{"seq":1,"rows":8,"cols":8,'
+        b'"distance_mm":[1],"status":[5]}}\n'
+    )
+    seen = []
+
+    async def tofd(reader, writer):
+        try:
+            while line := await reader.readline():
+                seen.append(line)
+                writer.write(b'{"jsonrpc":"2.0","id":1,"result":{"accepted":true}}\n' + frame)
+                await writer.drain()
+        finally:
+            writer.close()
+
+    server = await asyncio.start_unix_server(tofd, tmp_path / "duck-a-tof.sock")
+    relay = DuckRelay(tmp_path, robot_port=0, frame_port=0, tof_port=0)
+    await relay.start()
+    port = relay.servers[2].sockets[0].getsockname()[1]
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(b'{"jsonrpc":"2.0","id":9,"method":"robot.move","params":{}}\n')
+    writer.write(b'{"jsonrpc":"2.0","id":1,"method":"tof.stream"}\n')
+    await writer.drain()
+    refused = json.loads(await asyncio.wait_for(reader.readline(), 2))
+    assert refused["id"] == 9 and refused["error"]["code"] == -32601
+    assert json.loads(await asyncio.wait_for(reader.readline(), 2))["result"]["accepted"]
+    assert await asyncio.wait_for(reader.readline(), 2) == frame
+    assert seen == [b'{"jsonrpc":"2.0","id":1,"method":"tof.stream"}\n']
+    writer.close()
+    await writer.wait_closed()
+    await relay.close()
+    server.close()
+    await server.wait_closed()
+
+
+async def test_tof_port_is_opt_in(tmp_path: Path):
+    relay = DuckRelay(tmp_path, robot_port=0, frame_port=0)
+    await relay.start()
+    assert len(relay.servers) == 2
+    await relay.close()
+
+
 async def test_missing_target_shutdown_and_incomplete_line(tmp_path: Path, caplog):
     caplog.set_level(logging.INFO)
     relay = DuckRelay(tmp_path, robot_port=0, frame_port=0)

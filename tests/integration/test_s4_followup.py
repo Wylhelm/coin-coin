@@ -192,6 +192,48 @@ async def test_interruption_rejects_late_tool_but_allows_new_response(tmp_path: 
     await _cancel_app_tasks(app)
 
 
+async def test_interrupted_robot_trip_still_reports_how_it_ended(tmp_path: Path) -> None:
+    class Announcing(_Session):
+        def __init__(self) -> None:
+            super().__init__()
+            self.notices: list[str] = []
+
+        async def announce(self, notice: str) -> None:
+            self.notices.append(notice)
+
+    app = App(_settings(), _Audio(), Journal(log_dir=tmp_path))
+    app.state = State(Mode.AWAKE)
+    session = Announcing()
+    app._session = session  # type: ignore[assignment]
+    running = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def go_to(_app: App, _args: dict) -> dict:
+        running.set()
+        await finish.wait()
+        return {"ok": False, "reason": "the way to salon is blocked"}
+
+    app.register_tool(
+        "local_go_to", "Local fake trip", {"type": "object"}, go_to, manages_timeout=True
+    )
+    await app._handle_realtime_event(ResponseStarted(response_id="trip"))
+    await app._handle_realtime_event(
+        ToolCall(name="local_go_to", call_id="trip", arguments="{}", response_id="trip")
+    )
+    await asyncio.wait_for(running.wait(), 0.2)
+    await app._handle_realtime_event(SpeechStarted())
+    await app._handle_realtime_event(ResponseDone(response_id="trip", status="cancelled"))
+    await asyncio.sleep(0)
+    assert app._motion_tool_tasks, "the trip must survive the barge-in"
+    finish.set()
+    await asyncio.gather(*tuple(app._motion_tool_tasks))
+    await asyncio.gather(*tuple(app._tool_tasks))
+    late = [e for e in _entries(app) if e.get("type") == "tool_result_late"]
+    assert late and late[0]["call_id"] == "trip"
+    assert any("the way to salon is blocked" in notice for notice in session.notices)
+    await _cancel_app_tasks(app)
+
+
 async def test_failed_tool_output_ends_speaking_without_starting_a_response(tmp_path: Path) -> None:
     class BrokenOutput(_Session):
         async def send_tool_result(self, call_id: str, output: str) -> None:

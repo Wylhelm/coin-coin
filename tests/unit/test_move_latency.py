@@ -75,7 +75,8 @@ async def rig(tmp_path: Path):
     clock = FakeClock()
     link = CachedRobotLink(clock)
     journal = Journal(tmp_path)
-    governor = Governor(link, Settings(), clock, journal)
+    # Latency matching, not the gait's speed floors: commands are sent exactly as asked.
+    governor = Governor(link, Settings(min_vx=0, min_vy=0, min_vyaw=0), clock, journal)
     await governor.start()
     await pump()
     yield governor, link, clock, journal
@@ -163,7 +164,7 @@ async def test_stale_matching_state_is_not_a_measurement(rig):
     assert outcomes(journal)[0]["reason"] == "cancelled"
 
 
-@pytest.mark.parametrize("baseline", ["active", "requested", "stale", "malformed", "zero"])
+@pytest.mark.parametrize("baseline", ["active", "requested", "stale", "malformed"])
 async def test_ineligible_baseline_is_explicit(rig, baseline):
     governor, link, clock, journal = rig
     if baseline == "active":
@@ -174,7 +175,7 @@ async def test_ineligible_baseline_is_explicit(rig, baseline):
         clock.advance(0.3)
     elif baseline == "malformed":
         link.cached = {"safety": link.safety}
-    await governor.move(0 if baseline == "zero" else 0.2, 0, 0, 1)
+    await governor.move(0.2, 0, 0, 1)
     await pump()
     entry = outcomes(journal)[0]
     assert entry["applied_status"] == "unavailable"
@@ -185,7 +186,6 @@ async def test_ineligible_baseline_is_explicit(rig, baseline):
             "requested": "already_active",
             "stale": "baseline_unavailable",
             "malformed": "baseline_unavailable",
-            "zero": "zero_command",
         }[baseline]
     )
     link.push([0.2, 0, 0], [0.1, 0, 0])

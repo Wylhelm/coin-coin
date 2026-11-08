@@ -3,11 +3,13 @@
 import argparse
 import asyncio
 import json
+import sys
 from dataclasses import asdict
 from typing import Any
 
 from coincoin.clock import SystemClock
 from coincoin.config import Settings
+from coincoin.doctor import run_doctor
 from coincoin.journal import Journal
 from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import Governor, ToolResult
@@ -35,6 +37,10 @@ def parser() -> argparse.ArgumentParser:
     raw = commands.add_parser("raw", help="Diagnostic RPC with the S1 method filter")
     raw.add_argument("method")
     raw.add_argument("params", nargs="?", default="{}")
+    doctor = commands.add_parser(
+        "doctor", help="Check every step of the robot connection and print fixes"
+    )
+    doctor.add_argument("--json", action="store_true", help="Machine-readable report")
     return result
 
 
@@ -76,6 +82,17 @@ async def execute(
                 result = await governor.stand()
             case "mode":
                 result = await governor.set_mode(args.mode)
+                if result.ok and governor.awaiting_person:
+                    # The link refused robot.setMode: wait like the voice service does.
+                    print(result.detail, file=sys.stderr, flush=True)
+                    await governor.wait_person()
+                    current = await link.call("robot.mode")
+                    reached = isinstance(current, dict) and current.get("mode") == args.mode
+                    result = (
+                        ToolResult(True, detail=f"locomotion mode: {args.mode} (set by a person)")
+                        if reached
+                        else ToolResult(False, reason=f"{args.mode} mode was not selected in time")
+                    )
             case "do":
                 result = await governor.do_skill(args.name)
             case "skills":
@@ -131,6 +148,14 @@ async def execute(
 
 def main(argv: list[str] | None = None) -> None:
     args = parser().parse_args(argv)
+    if args.command == "doctor":
+        report = asyncio.run(run_doctor(Settings(), args.link))
+        print(
+            json.dumps(report.as_dict(), ensure_ascii=True, allow_nan=False)
+            if args.json
+            else report.text()
+        )
+        raise SystemExit(0 if report.ok else 1)
     output, code = asyncio.run(execute(args, Settings()))
     print(json.dumps(output, ensure_ascii=True, allow_nan=False))
     raise SystemExit(code)

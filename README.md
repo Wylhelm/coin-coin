@@ -50,7 +50,10 @@ The relay bridges allowlisted JSON-RPC requests to MicroDuck's Unix sockets.
 The governor bounds speed and movement duration, streams movement setpoints,
 checks fresh robot safety state and stops on completion or hazards. The robot's
 deadman is a separate last line of defense if communication disappears.
-TCP is the default transport; WebRTC is experimental.
+TCP is the default transport. WebRTC (`webrtc://host:8443`) is the path a
+delivered robot exposes: mediad signalling plus a `control` DataChannel carrying the
+same JSON-RPC, with the camera as a video track and no relay. See
+[Connecting to a robot](#connecting-to-a-robot).
 
 The simulator and runtime are **separate repositories**, not bundled dependencies.
 The simulator's optional visual-mouth support animates a private render model:
@@ -146,7 +149,57 @@ uv run --no-sync python scripts/live_stack.py --max-move-s 30 --language French
 # Different checkout locations / no viewer:
 uv run --no-sync python scripts/live_stack.py \
   --runtime /path/to/microduck --rl /path/to/microduck_rl --headless
+
+# Use a detailed custom scene and preload both equipment models:
+uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml --preload-equipment
+
+# Add named places so the duck can be sent to rooms of that scene:
+uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml \
+  --preload-equipment --places /path/to/navigation.json
+
+# Closer to a real robot: WebRTC link, a known start, simulator imperfections,
+# obstacles from a file, no simulation-only hand (equipment must be fitted):
+uv run --no-sync python scripts/live_stack.py --link webrtc --scene /path/to/scene.xml \
+  --places /path/to/navigation.json --start dock@0 --realism real --realism-seed 7 \
+  --obstacles /path/to/obstacles.json [--obstacle-slots N] [--no-assist] [--maploc]
 ```
+
+`--realism off|real|hard`, `--realism-seed`, `--no-assist`, `--obstacles` and
+`--obstacle-slots` export the simulator's `DUCK_SIM_*` variables before the body server
+starts (realism is `off` unless asked); `--maploc` turns on robotd's mapping and
+localization. See `microduck_rl` for what each does.
+
+For convenient voice equipment changes in simulation, add `--sim-auto-equipment`.
+It fits/removes skates through the stack's local simulator socket, then waits for mode
+confirmation and homing. It cannot be combined with `--no-assist`; on hardware a person
+still fits/removes the skates and selects the mode. The WebRTC route is unchanged.
+
+`--places` loads a user-supplied navigation map (clearance grid and named places)
+and enables the `go_to` tool: "Va dans ma
+chambre" or "Reviens" plan a route around obstacles with A* and follow it in
+closed loop. By default the duck steers by an **estimated pose** built only from
+what a real duck has: contact odometry, the IMU and the head's 8x8 ToF depth
+frames, matched against the map by a particle filter. `--start dock@0` gives
+a known start matching the supplied scene and map; without it the
+duck sweeps its head and refuses if it cannot place itself. The simulator's true
+pose is read only to score the estimate, or to steer when `--oracle-pose` is
+given. The duck stops before unmapped obstacles seen by the ToF, marks them and
+replans, sweeps its head to relocalize when uncertain, and stops and says so when
+it is lost or the way is blocked (a closed door). Skates are refused in honest
+mode. See [honest localization](docs/localization.md) for the model, measured
+errors and limits; nothing is validated on hardware.
+Room navigation refuses to start unless `robot.policies` explicitly reports a
+simulated robot. The duck commands a stop before replanning after four seconds
+without movement or rotation, or twelve seconds without progress. It gives up if
+the same route fails again from the same spot or after at most three replans,
+and stops after 300 s at most. Voice or browser STOP, falls and stale state stop
+it as for any other motion.
+
+The optional `--preload-equipment` compiles walking and roller equipment models
+for the single duck at startup. This uses more memory and startup time, but
+avoids recompiling a detailed scene during a mode change. The runtime and
+simulator checkouts must support `DUCK_SIM_PRELOAD_EQUIPMENT` and
+`--preload-equipment`.
 
 Open <http://localhost:8765/> once **LIVE READY** appears. Enable the microphone,
 say **"Coin coin"**, then try "Introduce yourself", "Look left" or "What do you see?".
@@ -194,7 +247,10 @@ balance or equipment-changing skill. The local policy set must contain `roller.o
 `roller_crouch.onnx`; `duck-sim` selects it with `[policy] directory` rather than a
 walking-slot override. Restart the local stack once after updating both checkouts.
 On real hardware, mode selection does **not** physically fit or remove skates;
-that equipment must be changed by a person before selecting its mode.
+that equipment must be changed by a person before selecting its mode. The upstream
+[LAN WebRTC route](https://github.com/pollen-robotics/microduck/blob/main/mediad/src/route.rs)
+currently refuses remote `robot.setMode`, so the physical robot may require a
+local mode selection; confirm the procedure for its installed release.
 
 If the simulated duck has fallen, **"Releve-toi"** retries its current mode's
 assisted home ramp; **"Reviens a la marche"** also removes the skates. Success
@@ -237,14 +293,49 @@ Restart the service after changing them.
 | `OPENAI_REALTIME_VOICE` | `verse`; explicitly configured voices remain supported. |
 | `RESPONSE_LANGUAGE` | `auto`: follow the user. Examples: `English`, `French`, `Spanish`. Explicit spoken language requests take precedence during a conversation. |
 | `ROBOT_LINK`, `FRAME_LINK` | TCP robot/camera endpoints; the test launcher overrides both to localhost. |
+| `ROBOT_TARGET`, `ROBOT_HOST`, `ROBOT_SIGNALLING_PORT` | Empty: use `ROBOT_LINK`. `sim` (host defaults to `127.0.0.1`) or `robot` (host required: duck name or IP) selects `webrtc://ROBOT_HOST:8443`. |
+| `PERSON_MODE_TIMEOUT_S` | `120`: how long the duck waits for a person to change its mode when the link refuses `robot.setMode`. |
+| `SIM_EQUIPMENT_SOCKET` | Empty: no automatic equipment help. `--sim-auto-equipment` fills the owned simulator socket; never configure this for hardware. |
 | `RELAY_TOKEN` | Shared TCP relay token. Empty is permitted for loopback-only simulation, not remote exposure. |
 | `MAX_VX`, `MAX_VY`, `MAX_VYAW` | Walk limits: `0.25 m/s`, `0.2 m/s`, `1 rad/s`. |
+| `MIN_VX`, `MIN_VY`, `MIN_VYAW` | Walk floors: `0.3 m/s`, `0.15 m/s`, `1 rad/s`. Policy v9 stands still below about 0.2 m/s and 0.8 rad/s, so a nonzero walking speed below its floor is raised to it (never above the limit: with the default `MAX_VX` the forward floor is effectively 0.25 m/s; set `MAX_VX=0.3` to use it). The tool result and the journal say so. Not applied on skates (roller yaw is capped at 0.3 rad/s). `0` disables a floor. |
 | `MAX_MOVE_S`, `MOVE_HZ` | Maximum command duration `5 s`; command streaming `20 Hz`. |
+| `NAV_MAP`, `SIM_POSE_LINK` | Empty: no `go_to`. Navigation map and simulator body-server address; set together by `--places`. |
+| `NAV_POSE`, `NAV_START`, `TOF_LINK` | `estimated` (odometry + ToF, default) or `oracle` (simulator truth, evaluation only); known start such as `départ@0` (empty: unknown); ToF source: a relay `tcp://` endpoint, or `link` to subscribe to `tof.stream` over the WebRTC robot link itself. `--places` sets them (`link` with `--link webrtc`). |
+| `NAV_GLOBAL_RELOCALIZATION` | `false`: relocalize only near the last estimate; a whole-flat match can be confidently wrong. |
 | `WAKE_ENGINE`, `WAKE_THRESHOLD` | `vosk`, `0.9`; threshold remains provisional. |
 | `FOLLOWUP_S` | Conversation follow-up timeout, `420 s`. |
 | `QUACK_SINK` | `stream` (browser output) or `robot`. |
 | `OPENCLAW_URL`, `OPENCLAW_TOKEN`, `OPENCLAW_AGENT` | Optional memory integration; the test launcher disables it. |
 | `LOG_AUDIO`, `LOG_RETENTION_DAYS` | Raw audio disabled by default; logs retained for `30` days. |
+
+## Connecting to a robot
+
+One profile switch, one check:
+
+```sh
+ROBOT_TARGET=sim uv run coincoin-cli doctor                          # simulator mediad
+ROBOT_TARGET=robot ROBOT_HOST=192.0.2.10 uv run coincoin-cli doctor  # delivered duck (`duckctl ip`)
+```
+
+`doctor` checks, in order: configuration, host resolution, the signalling port, the
+mediad producer, the WebRTC link, the API version, `robot.policies`, sim versus real
+target, capabilities, health and battery, the state stream, command latency, and the
+camera. It prints a fix for each failing step and exits nonzero on failure; `--json` is
+machine readable. Put the same two variables in `.env` to run Coin-Coin itself
+against that target. `scripts/live_stack.py --link webrtc` runs the local stack over
+the same path, without the TCP relay.
+
+At connect time Coin-Coin probes what the robot actually allows. The LAN WebRTC route
+refuses `robot.setMode`. When that is the case and you ask for skates or walking, the
+duck says that a person must fit or remove the equipment and select the mode on the
+robot (today `sudo robotctl configure` → `[policy] mode`, then restart robotd). It then
+waits for `robot.state` to report the new mode, up to `PERSON_MODE_TIMEOUT_S`, and
+refuses every movement meanwhile. Voice or browser STOP cancels the wait. Sim-only tools
+(`go_to` with the simulator's oracle pose, assisted get-up) are offered only when
+`robot.policies` reports `simulated: true`. If the link is lost, motion stops, the link
+reconnects with a backoff capped at 10 s, and capabilities are probed again. In the
+simulator, `scripts/sim_person_mode.py roller` plays the person's part.
 
 For a manually managed robot/relay setup, configure the links and token, start
 the relay separately, then run `uv run coincoin --host 127.0.0.1`.
@@ -268,7 +359,8 @@ Known open points are not hidden by that successful interaction:
 - The seven-minute automatic sleep observation was interrupted and is **not validated**.
 - OpenClaw was disabled in the live test; its real gateway is not validated.
 - No physical robot, servo synchronization or acoustic robustness is validated.
-- The full Docker/Compose assembly and experimental WebRTC path require further validation.
+- The full Docker/Compose assembly is not validated. The WebRTC path is validated against
+  the simulator's mediad only; no physical robot has been reached over it.
 
 ## Development
 
@@ -285,6 +377,20 @@ node --test tests/js/play_worklet.test.mjs
 Node.js is needed only for the browser audio tests above. Simulator/model-dependent
 tests require their explicit prerequisites; skipped tests are not evidence of
 live behavior. Keep genuine failed measurements instead of relaxing thresholds.
+With the sibling runtime and simulator prepared, a built `robotd` and the scanned
+apartment assets available, the room-navigation rehearsal is opt-in:
+
+```sh
+DUCK_TEST_NAVIGATION_SIM=1 uv run --no-sync pytest -q -s \
+  tests/integration/test_navigation_simulation.py \
+  tests/integration/test_navigation_honest_simulation.py \
+  -p no:cacheprovider --no-cov --basetemp="$HOME/.cache/nvt/t"
+```
+
+The honest run prints estimated-vs-true pose error per leg and appends a JSON line
+per leg to `$DUCK_NAV_RESULTS` if set. A short `--basetemp` keeps robotd's Unix
+socket path under the kernel limit. Hold the shared simulator lock if other agents
+use the machine (`flock /tmp/microduck-sim-agents.lock ...`).
 
 GitHub Actions runs these offline checks on pull requests and pushes to `main`,
 using Python 3.12 and Node.js 22 without OpenAI or robot credentials. CI does not
