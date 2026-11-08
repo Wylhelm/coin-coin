@@ -42,6 +42,16 @@ TOF_NO_TARGET = 255
 
 # Returns below this height are the floor, above it the furniture and walls the map holds.
 FLOOR_Z_M = 0.05
+# Floor plane fit (FloorTracker): sampled planes per frame, the distance (m) that counts a return
+# as on a plane, the least floor to fit, and the most tilt and offset believed.
+FLOOR_FIT_TRIALS = 64
+FLOOR_FIT_INLIER_M = 0.025
+FLOOR_FIT_MIN_POINTS = 8
+# Farther floor returns graze in at a low angle, where a wall's foot looks just like them.
+FLOOR_FIT_MAX_REACH_M = 2.5
+FLOOR_FIT_MIN_SPAN_M = 0.3
+FLOOR_FIT_MAX_TILT_RAD = math.radians(12)
+FLOOR_FIT_MAX_OFFSET_M = 0.06
 HIT_MAX_Z_M = 1.5
 # A no-target zone clears the map along its beam while the beam stays at furniture height.
 FREE_MAX_Z_M = 0.45
@@ -88,6 +98,13 @@ LOST_YAW_RAD = 0.5
 LOW_FIT = 0.35
 INSIDE_CAP_M = 0.5
 FIT_NEAR_M = 0.12
+# A relocalization that moves the pose away from the tracked one (beyond this distance or
+# heading) must explain the sweep better, by this map-fit margin, than the best match near it.
+RELOC_JUMP_M = 0.3
+RELOC_JUMP_RAD = 0.2
+RELOC_JUMP_FIT_MARGIN = 0.1
+# Heading changes smaller than this are gait sway, not rotation that may have drifted.
+ROTATION_STEP_RAD = 0.2
 STATE_HISTORY = 200
 # Long enough to hold a whole head sweep (8 directions, about 8 s at 15 Hz).
 FRAME_HISTORY = 180
@@ -268,16 +285,28 @@ def _level_rotation(imu_quat: Sequence[float]) -> FloatArray:
 BEAMS = tof_beams()
 
 
-def scan_from(frame: TofFrame, state: Mapping[str, Any], odom: Odom) -> Scan:
-    """Project a frame through the head's ToF pose and the IMU tilt into the level frame."""
+def scan_from(
+    frame: TofFrame, state: Mapping[str, Any], odom: Odom, floor: FloorTracker | None = None
+) -> Scan:
+    """Project a frame through the head's ToF pose and the IMU tilt into the level frame.
+
+    With a `floor` tracker, returns on the floor plane the frame itself shows count as floor even
+    where a small tilt error lifts them above FLOOR_Z_M (see FloorTracker).
+    """
     tof = state["frames"]["tof"]
     level = _level_rotation(state["imu"]["quat"])
     sensor = level @ np.asarray(tof["pos"], dtype=float) + np.array([0.0, 0.0, odom.z])
     directions = BEAMS @ (level @ quat_matrix(*tof["quat"])).T
     points = sensor + directions * frame.distance_m[:, None]
     valid = frame.valid
-    hits = points[valid & (points[:, 2] >= FLOOR_Z_M) & (points[:, 2] <= HIT_MAX_Z_M)]
-    floor = points[valid & (points[:, 2] < FLOOR_Z_M)]
+    on_floor = points[:, 2] < FLOOR_Z_M
+    plane = floor.observe(points[valid]) if floor is not None else None
+    if plane is not None:
+        on_floor |= np.abs(points[:, 2] - plane.at(points[:, 0], points[:, 1])) <= (
+            FLOOR_FIT_INLIER_M
+        )
+    hits = points[valid & ~on_floor & (points[:, 2] <= HIT_MAX_Z_M)]
+    floor_points = points[valid & on_floor]
     free: list[FloatArray] = []
     for direction in directions[frame.no_target]:
         for distance in FREE_SAMPLES_M:
@@ -298,10 +327,89 @@ def scan_from(frame: TofFrame, state: Mapping[str, Any], odom: Odom) -> Scan:
         frame.t_ns,
         odom,
         hits,
-        floor,
+        floor_points,
         np.array(free).reshape(-1, 3),
         sensor,
     )
+
+
+@dataclass(frozen=True)
+class FloorPlane:
+    """The floor in the level frame as z = a·x + b·y + c."""
+
+    a: float = 0.0
+    b: float = 0.0
+    c: float = 0.0
+
+    def at(self, x: Any, y: Any) -> Any:
+        return self.a * x + self.b * y + self.c
+
+    @property
+    def tilt_rad(self) -> float:
+        return math.atan(math.hypot(self.a, self.b))
+
+
+class FloorTracker:
+    """Finds the floor plane in each frame, so floor returns are never taken for obstacles.
+
+    The level frame is only as good as the IMU's mounting and the head's kinematics: a few
+    degrees of error lift floor returns a metre or two ahead to 0.1-0.3 m, where they look like
+    unmapped obstacles on the path (measured: 2 deg of pitch with an ideal simulator, 3-4 deg
+    with realism `real`, plus +-3 deg of gait sway). Most of the ToF's lower zones see the floor,
+    so the plane they share is found frame by frame, and only the returns on it are reclassified:
+    a plane found wrongly (little floor in view) cannot move any other return.
+    """
+
+    def __init__(self) -> None:
+        self.plane: FloorPlane | None = None
+        self.fits = 0
+        self._rng = np.random.default_rng(0)
+
+    def observe(self, points: FloatArray) -> FloorPlane | None:
+        self.plane = self._fit(points)
+        self.fits += self.plane is not None
+        return self.plane
+
+    def _fit(self, points: FloatArray) -> FloorPlane | None:
+        """The plane that best fits most returns among plausible floors (a sampled consensus).
+
+        Wall feet and box sides also lie low and close; a least-squares fit through everything
+        near the floor tilts towards them, while near-vertical surfaces never gather many returns
+        on one gently tilted plane.
+        """
+        x, y, z = points[:, 0], points[:, 1], points[:, 2]
+        reach = np.hypot(x, y)
+        plausible = (reach <= FLOOR_FIT_MAX_REACH_M) & (
+            np.abs(z) <= FLOOR_FIT_MAX_OFFSET_M + math.tan(FLOOR_FIT_MAX_TILT_RAD) * reach
+        )
+        if plausible.sum() < FLOOR_FIT_MIN_POINTS:
+            return None
+        x, y, z, reach = x[plausible], y[plausible], z[plausible], reach[plausible]
+        picks = self._rng.integers(0, len(x), (FLOOR_FIT_TRIALS, 3))
+        design = np.stack((x[picks], y[picks], np.ones(picks.shape)), axis=-1)
+        solvable = np.abs(np.linalg.det(design)) > 1e-4
+        if not solvable.any():
+            return None
+        planes = np.linalg.solve(design[solvable], z[picks][solvable][..., None])[..., 0]
+        plausible_plane = (
+            np.hypot(planes[:, 0], planes[:, 1]) <= math.tan(FLOOR_FIT_MAX_TILT_RAD)
+        ) & (np.abs(planes[:, 2]) <= FLOOR_FIT_MAX_OFFSET_M)
+        if not plausible_plane.any():
+            return None
+        planes = planes[plausible_plane]
+        residual = np.abs(z[None, :] - (planes[:, :1] * x + planes[:, 1:2] * y + planes[:, 2:]))
+        # Truncated squared residuals: a plane tilted to also graze a wall foot pays for every
+        # floor return it no longer sits on, so the closest fit wins, not the widest.
+        cost = np.minimum(residual, FLOOR_FIT_INLIER_M) ** 2
+        best = residual[int(np.argmin(cost.sum(axis=1)))] <= FLOOR_FIT_INLIER_M
+        if best.sum() < FLOOR_FIT_MIN_POINTS or np.ptp(reach[best]) < FLOOR_FIT_MIN_SPAN_M:
+            return None
+        design = np.column_stack((x[best], y[best], np.ones(int(best.sum()))))
+        (a, b, c), *_ = np.linalg.lstsq(design, z[best], rcond=None)
+        plane = FloorPlane(float(a), float(b), float(c))
+        if plane.tilt_rad > FLOOR_FIT_MAX_TILT_RAD or abs(plane.c) > FLOOR_FIT_MAX_OFFSET_M:
+            return None
+        return plane
 
 
 class LikelihoodField:
@@ -852,6 +960,12 @@ class EstimatedPose:
         # Whether the filter's pose came from a known start or a head-sweep match.
         self.confirmed = False
         self.stats = LocalizerStats()
+        self.floor = FloorTracker()
+        # Odometry distance (m) and rotation (rad) since the pose was last confirmed: the
+        # filter's spread alone understates how far a long unchecked track may have drifted.
+        self.travel_since_fix = 0.0
+        self.rotation_since_fix = 0.0
+        self._rotation_anchor: float | None = None
         self.frame_event = asyncio.Event()
 
     # Lifecycle -----------------------------------------------------------------------------
@@ -877,6 +991,8 @@ class EstimatedPose:
         self.filter.init_pose(pose, std_xy, std_yaw)
         self._fit = 1.0
         self.confirmed = True
+        self.travel_since_fix = self.rotation_since_fix = 0.0
+        self._rotation_anchor = None
 
     def reset_region(
         self, centre: tuple[float, float], radius: float, yaw: float | None = None
@@ -980,7 +1096,7 @@ class EstimatedPose:
             return None
         odom, state = found
         try:
-            scan = scan_from(frame, state, odom)
+            scan = scan_from(frame, state, odom, self.floor)
         except (KeyError, TypeError, ValueError):
             self.stats.skipped += 1
             return None
@@ -1005,6 +1121,13 @@ class EstimatedPose:
         dt = max(0.0, (t_ns - previous_t) / 1e9)
         c, s = math.cos(previous.yaw), math.sin(previous.yaw)
         dx, dy = odom.x - previous.x, odom.y - previous.y
+        self.travel_since_fix += math.hypot(dx, dy)
+        if self._rotation_anchor is None:
+            self._rotation_anchor = previous.yaw
+        turned = abs(float(_wrap(odom.yaw - self._rotation_anchor)))
+        if turned >= ROTATION_STEP_RAD:
+            self.rotation_since_fix += turned
+            self._rotation_anchor = odom.yaw
         self.filter.predict(
             c * dx + s * dy,
             -s * dx + c * dy,
@@ -1068,12 +1191,15 @@ class EstimatedPose:
         radius: float | None = None,
         heading: float | None = None,
         heading_tolerance: float = math.pi,
+        prior: Pose | None = None,
     ) -> list[Hypothesis]:
         """Match a stationary head-sweep composite over the map and restart the filter.
 
         `heading` is the composite's reference heading in the map frame when it is known (the IMU
         keeps yaw far better than contact odometry keeps position), which removes the rotated
-        look-alikes a rectangular room offers.
+        look-alikes a rectangular room offers. With the tracked `prior`, a match away from it is
+        only taken when it explains the sweep clearly better than the best match near it: in a
+        wide room the ToF reaches few walls, and a look-alike a metre off may score as well.
         """
         if not scans:
             return []
@@ -1097,6 +1223,27 @@ class EstimatedPose:
         )
         if not hypotheses:
             return []
+        if prior is not None:
+            best = hypotheses[0].pose
+            jumped = (
+                math.dist((best.x, best.y), (prior.x, prior.y)) > RELOC_JUMP_M
+                or abs(float(_wrap(best.yaw - prior.yaw))) > RELOC_JUMP_RAD
+            )
+            if jumped:
+                near = global_search(
+                    self.field,
+                    all_hits,
+                    all_free,
+                    centre=(prior.x, prior.y),
+                    radius=RELOC_JUMP_M,
+                    heading=prior.yaw,
+                    heading_tolerance=RELOC_JUMP_RAD,
+                    keep=8,
+                )
+                if near and self.field.fit(best, all_hits) < (
+                    self.field.fit(near[0].pose, all_hits) + RELOC_JUMP_FIT_MARGIN
+                ):
+                    hypotheses = near
         self.filter.init_hypotheses(hypotheses)
         reference_t = scans[-1].t_ns
         composite = Scan(
@@ -1120,6 +1267,9 @@ class EstimatedPose:
         self.confirmed = (
             std_xy <= CONVERGED_XY_M and std_yaw <= CONVERGED_YAW_RAD and self._fit >= LOW_FIT
         )
+        if self.confirmed:
+            self.travel_since_fix = self.rotation_since_fix = 0.0
+            self._rotation_anchor = None
         self._last_odom, self._last_t_ns = reference, reference_t
         # Odometry since the reference frame is applied on the next frame.
         return hypotheses

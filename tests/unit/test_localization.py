@@ -12,7 +12,9 @@ from coincoin.clock import FakeClock
 from coincoin.robot.jsonrpc import JsonRpcConnection
 from coincoin.robot.localization import (
     CONVERGED_XY_M,
+    FLOOR_FIT_INLIER_M,
     EstimatedPose,
+    FloorTracker,
     LikelihoodField,
     LinkTofStream,
     Odom,
@@ -528,3 +530,32 @@ def test_tof_link_mode_needs_a_webrtc_link(tmp_path: Path, monkeypatch) -> None:
     assert _RobotRuntime._navigator(_App(), FakeRobotLink()) is None  # type: ignore[arg-type]
     logged = "".join(path.read_text() for path in tmp_path.glob("**/*.jsonl"))
     assert "TOF_LINK=link needs a WebRTC ROBOT_LINK" in logged
+
+
+def _floor_with(extra: list[tuple[float, float, float]], pitch_deg: float = 0.0) -> np.ndarray:
+    xs, ys = np.meshgrid(np.linspace(0.4, 2.2, 8), np.linspace(-0.6, 0.6, 5))
+    zs = np.tan(math.radians(pitch_deg)) * xs + 0.01
+    floor = np.column_stack((xs.ravel(), ys.ravel(), zs.ravel()))
+    return np.vstack((floor, np.array(extra).reshape(-1, 3)))
+
+
+def test_floor_tracker_stays_level_beside_a_wall_foot() -> None:
+    wall = [(1.0, float(y), z) for y in np.linspace(-0.6, 0.6, 7) for z in (0.03, 0.08, 0.15)]
+    plane = FloorTracker().observe(_floor_with(wall))
+    assert plane is not None
+    assert plane.tilt_rad < math.radians(0.5)
+    assert abs(plane.at(1.0, 0.0) - 0.01) < 0.01
+
+
+def test_floor_tracker_follows_a_tilted_level_frame_but_not_a_box() -> None:
+    box = [(1.2, y, z) for y in (-0.1, 0.0, 0.1) for z in (0.12, 0.2, 0.3)]
+    points = _floor_with(box, pitch_deg=4.0)
+    plane = FloorTracker().observe(points)
+    assert plane is not None
+    assert abs(math.degrees(plane.tilt_rad) - 4.0) < 0.5
+    inliers = np.abs(points[:, 2] - plane.at(points[:, 0], points[:, 1])) <= FLOOR_FIT_INLIER_M
+    assert inliers[:40].all() and not inliers[40:].any()
+
+
+def test_floor_tracker_needs_enough_floor_in_view() -> None:
+    assert FloorTracker().observe(np.array([(1.0, 0.0, 0.0), (1.5, 0.2, 0.0)])) is None
