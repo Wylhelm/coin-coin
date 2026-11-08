@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     # A person must fit/remove skates when the link refuses robot.setMode (WebRTC); how long
     # Coin-Coin waits for robot.mode to change before giving up. Motion stays disabled meanwhile.
     person_mode_timeout_s: float = Field(default=120, gt=0)
+    # Local simulator-only assistant; never used unless robotd explicitly reports simulated.
+    sim_equipment_socket: str = ""
 
     @model_validator(mode="after")
     def apply_robot_target(self) -> "Settings":

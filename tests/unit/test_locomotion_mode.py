@@ -198,3 +198,53 @@ async def test_simulation_recovery_does_not_allow_moving_while_fallen(rig):
     link.safety["fallen"] = True
     assert not (await governor.move(0.2, 0, 0, 1)).ok
     assert not commands(link, "robot.move")
+
+
+@pytest.mark.parametrize("mode", ["roller", "walk"])
+async def test_automatic_sim_equipment_waits_for_mode_confirmation(rig, monkeypatch, mode):
+    from coincoin.robot import governor as module
+    from coincoin.robot.capabilities import Capabilities
+
+    governor, link, clock = rig
+    link.mode = "walk" if mode == "roller" else "roller"
+    link.policies["simulated"] = True
+    governor.settings.sim_equipment_socket = "/owned/duck-a.sock"
+    governor.capabilities = Capabilities("webrtc", remote_mode_switch=False)
+    selected = []
+
+    async def select(socket, target):
+        selected.append((str(socket), target))
+        link.mode = target
+        link.policies["homed"] = False
+
+    monkeypatch.setattr(module, "select_mode", select)
+    result = await governor.set_mode(mode)
+    assert result.ok and "simulation equipment" in result.detail
+    await pump()
+    await advance(clock, 0.6)
+    assert selected == [("/owned/duck-a.sock", mode)]
+    assert governor.awaiting_person == mode
+    assert not (await governor.move(0.1, 0, 0, 1)).ok
+    link.policies["homed"] = True
+    await advance(clock, 0.6)
+    assert governor.awaiting_person is None
+    assert not commands(link, "robot.setMode")
+
+
+async def test_automatic_equipment_never_runs_on_hardware(rig, monkeypatch):
+    from coincoin.robot import governor as module
+    from coincoin.robot.capabilities import Capabilities
+
+    governor, link, _ = rig
+    link.policies["simulated"] = False
+    governor.settings.sim_equipment_socket = "/owned/duck-a.sock"
+    governor.capabilities = Capabilities("webrtc", remote_mode_switch=False)
+
+    async def forbidden(*args):
+        pytest.fail("equipment assistant reached hardware")
+
+    monkeypatch.setattr(module, "select_mode", forbidden)
+    assert (await governor.set_mode("roller")).ok
+    await pump()
+    assert governor.awaiting_person is None
+    assert link.mode == "walk"

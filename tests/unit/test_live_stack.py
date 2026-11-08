@@ -247,7 +247,7 @@ def launcher(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(live_stack.subprocess, "Popen", start)
     monkeypatch.setattr(live_stack, "health_ready", lambda: True)
     monkeypatch.setattr(live_stack, "listening", lambda port: len(commands) == 1)
-    args = argparse.Namespace(runtime=tmp_path, rl=tmp_path, link="tcp")
+    args = argparse.Namespace(runtime=tmp_path, rl=tmp_path, link="tcp", sim_auto_equipment=False)
     return args, commands, children
 
 
@@ -356,3 +356,20 @@ def test_webrtc_link_starts_no_relay(launcher, monkeypatch: pytest.MonkeyPatch) 
     assert len(started) == 1 and started[0][1:3] == ["-m", "coincoin.app"]
     assert commands[-1][-1] == "down"
     assert not live_stack.LOCK.exists()
+
+
+def test_equipment_assistant_is_opt_in_and_conflicts_with_no_assist(monkeypatch):
+    monkeypatch.setenv("SIM_EQUIPMENT_SOCKET", "/real/robot.sock")
+    assert live_stack.environment(live_stack.parse_args([]))["SIM_EQUIPMENT_SOCKET"] == ""
+    args = live_stack.parse_args(["--sim-auto-equipment", "--no-assist"])
+    with pytest.raises(RuntimeError, match="cannot be combined"):
+        live_stack.preflight(args, live_stack.environment(args))
+
+
+def test_equipment_assistant_uses_owned_stack_socket(launcher):
+    args, _, _ = launcher
+    args.sim_auto_equipment = True
+    env = {}
+    with pytest.raises(RuntimeError, match="exited: 4"):
+        live_stack.run(args, env)
+    assert env["SIM_EQUIPMENT_SOCKET"] == str(Path(env["DUCK_SIM_STATE"]) / "duck-a.sock")

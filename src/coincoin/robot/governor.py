@@ -6,6 +6,7 @@ import logging
 import math
 from collections.abc import Awaitable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -28,6 +29,7 @@ from coincoin.robot.localization import (
 )
 from coincoin.robot.move_latency import MoveLatency
 from coincoin.robot.navigation import Navigator, Pose, Steering
+from coincoin.robot.sim_equipment import select_mode
 
 LOGGER = logging.getLogger(__name__)
 ROBOT_ERRORS = (RobotRefused, LinkDown, JsonRpcError, TimeoutError)
@@ -484,7 +486,10 @@ class Governor:
         return ToolResult(
             True,
             detail=(
-                f"PENDING, not done: this link cannot switch modes. Tell the user now that a "
+                f"PENDING simulation equipment assistance: fitting/removing skates and selecting "
+                f"{mode} locally. Do not ask a human or move until confirmation."
+                if self.settings.sim_equipment_socket
+                else f"PENDING, not done: this link cannot switch modes. Tell the user now that a "
                 f"person must {EQUIPMENT[mode]} and then select {mode} mode on the robot itself. "
                 f"All motion stays disabled until the robot reports {mode} mode; you will be told "
                 f"when it does, or after {timeout_s:g} s if nobody does. Do not call move yet."
@@ -517,6 +522,23 @@ class Governor:
         deadline = self.clock.now() + timeout_s
         last_error = ""
         try:
+            if self.settings.sim_equipment_socket:
+                try:
+                    if reason := self._safety_reason():
+                        raise RobotRefused(reason)
+                    remote = await self.link.call("robot.policies")
+                    if not isinstance(remote, dict) or remote.get("simulated") is not True:
+                        raise RobotRefused("equipment assistance requires a simulated robot")
+                    if self._closed or self._person_target != mode:
+                        raise RobotRefused("simulation equipment request cancelled")
+                    async with asyncio.timeout(min(timeout_s, 30)):
+                        await select_mode(Path(self.settings.sim_equipment_socket), mode)
+                    self.journal.write("state", sim_equipment=mode)
+                except (*ROBOT_ERRORS, OSError, ValueError) as error:
+                    self._person_target = None
+                    self.journal.write("robot_refused", method="set_mode", reason=str(error))
+                    await self._notice(f"Simulation equipment change failed: {error}")
+                    return
             while True:
                 # Robot state is re-read every poll; a pick-up or a link outage while the
                 # equipment is changed is expected and does not end the wait.
@@ -525,6 +547,15 @@ class Governor:
                     try:
                         answer = await self.link.call("robot.mode")
                         current = answer.get("mode") if isinstance(answer, dict) else None
+                        if self.settings.sim_equipment_socket and current == mode:
+                            policies = await self.link.call("robot.policies")
+                            if (
+                                not isinstance(policies, dict)
+                                or type(policies.get("enabled")) is not bool
+                                or (policies["enabled"] and policies.get("homed") is not True)
+                                or self._safety_reason() is not None
+                            ):
+                                current = None
                     except ROBOT_ERRORS as error:
                         last_error = str(error)
                 if current == mode:

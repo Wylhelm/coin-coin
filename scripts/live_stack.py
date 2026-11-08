@@ -104,6 +104,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="no simulation-only hand: equipment must be fitted (equipment.fit), as on a robot",
     )
     parser.add_argument(
+        "--sim-auto-equipment",
+        action="store_true",
+        help="simulation only: fit/remove skates automatically for voice mode requests, "
+        "using the local robotd socket even over WebRTC",
+    )
+    parser.add_argument(
         "--obstacles", type=Path, help="JSON obstacles placed at launch (DUCK_SIM_OBSTACLES)"
     )
     parser.add_argument(
@@ -159,6 +165,7 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
         QUACK_SINK="stream",
         WAKE_ENGINE="vosk",
         WALK_ASSIST="true",
+        SIM_EQUIPMENT_SOCKET="",
         PYTHONUNBUFFERED="1",
     )
     # Forced either way, like everything above: a shell's leftover export must not change the run.
@@ -199,6 +206,8 @@ def environment(args: argparse.Namespace) -> dict[str, str]:
 
 
 def preflight(args: argparse.Namespace, env: dict[str, str]) -> None:
+    if args.sim_auto_equipment and args.no_assist:
+        raise RuntimeError("--sim-auto-equipment cannot be combined with --no-assist")
     if sys.platform != "linux":
         raise RuntimeError("Run this script on Linux, or inside WSL2 on Windows.")
     if args.scene is not None:
@@ -321,6 +330,9 @@ def run(args: argparse.Namespace, env: dict[str, str]) -> None:
         (LOCK / "owner").write_text(owner)
         state = Path(tempfile.mkdtemp(prefix="cc-live-", dir=Path.home() / ".cache"))
         env["DUCK_SIM_STATE"] = str(state)
+        if args.sim_auto_equipment:
+            env["SIM_EQUIPMENT_SOCKET"] = str(state / "duck-a.sock")
+            print("Simulation equipment assistant enabled (not available on real hardware).")
         print(f"State and logs: {state}", flush=True)
         print("Starting the simulator (the runtime may build its Rust binaries).", flush=True)
         sim_started = True

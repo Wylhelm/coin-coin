@@ -42,6 +42,7 @@ def test_master_defaults() -> None:
         "robot_host": "",
         "robot_signalling_port": 8443,
         "person_mode_timeout_s": 120.0,
+        "sim_equipment_socket": "",
     }
     for secret in (settings.openai_api_key, settings.openclaw_token, settings.relay_token):
         assert isinstance(secret, SecretStr)

@@ -1,5 +1,9 @@
 # Sim/real parity audit
 
+Latest integrated results, remaining work and restart commands:
+[Session handoff, 2026-11-08](reprise-2026-11-08.md). The tables below are a historical audit;
+the handoff distinguishes implemented changes from proposals.
+
 What separates the coin-coin simulation stack (`scripts/live_stack.py`, `robotd --sim`,
 `microduck_rl` body server, TCP relay) from a real MicroDuck. It also lists what would slow down
 the first connection on delivery day. This page covers what is **not** already handled by the
