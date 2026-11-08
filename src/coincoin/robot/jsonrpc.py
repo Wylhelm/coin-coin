@@ -6,12 +6,17 @@ import itertools
 import json
 import logging
 import math
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from coincoin.clock import Clock, SystemClock
 from coincoin.robot.link import LinkDown, RobotRefused
 
-API_VERSION = 47
+# The robot API this build is written and tested against (sent in hello; robotd does not gate
+# on it), and the oldest robot API it still drives: every method and field Coin-Coin uses
+# exists unchanged from v47 (fork 0.18.4) to v52 (0.18.9 + maploc, robot.map).
+API_VERSION = 52
+MIN_API_VERSION = 47
 LOGGER = logging.getLogger(__name__)
 
 
@@ -87,10 +92,19 @@ def response_result(message: dict[str, Any]) -> Any:
 
 
 class JsonRpcConnection:
-    def __init__(self, reader: RpcReader, writer: RpcWriter, *, clock: Clock | None = None) -> None:
+    def __init__(
+        self,
+        reader: RpcReader,
+        writer: RpcWriter,
+        *,
+        clock: Clock | None = None,
+        on_notification: Callable[[str, Any], None] | None = None,
+    ) -> None:
         self._reader = reader
         self._writer = writer
         self._clock = clock if clock is not None else SystemClock()
+        # Server notifications other than robot.state (e.g. tof.frame), as (method, params).
+        self._on_notification = on_notification
         self._ids = itertools.count(1)
         self._pending: dict[int, asyncio.Future[Any]] = {}
         self._write_lock = asyncio.Lock()
@@ -197,6 +211,10 @@ class JsonRpcConnection:
                         raise LinkDown("Invalid robot.state")
                     self._state = state
                     self._state_at = self._clock.now()
+                    continue
+                if "id" not in message and isinstance(message.get("method"), str):
+                    if self._on_notification is not None:
+                        self._on_notification(message["method"], message.get("params"))
                     continue
                 id_ = message.get("id")
                 future = self._pending.get(id_) if type(id_) is int else None

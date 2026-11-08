@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,6 +51,7 @@ class ToolRegistry:
             raise ValueError("Tool timeout must be positive")
         self.timeout_s = timeout_s
         self._tools: dict[str, ToolDefinition] = {}
+        self._unavailable: dict[str, str] = {}
 
     def register(
         self,
@@ -67,6 +68,35 @@ class ToolRegistry:
             raise ValueError(f"Tool already registered: {name}")
         self._tools[name] = ToolDefinition(name, description, schema, handler, manages_timeout)
 
+    def configure(
+        self,
+        name: str,
+        *,
+        available: bool | None = None,
+        description: str | None = None,
+        reason: str = "",
+    ) -> None:
+        """Hide/show a registered tool or change its description for the next session."""
+        if name not in self._tools:
+            raise ValueError(f"Unknown tool: {name}")
+        if available is True:
+            self._unavailable.pop(name, None)
+        elif available is False:
+            self._unavailable[name] = reason or "not available on this robot"
+        if description is not None:
+            self._tools[name] = replace(self._tools[name], description=description)
+
+    def description(self, name: str) -> str:
+        return self._tools[name].description
+
+    def available(self, name: str) -> bool:
+        return name in self._tools and name not in self._unavailable
+
+    def manages_timeout(self, name: str) -> bool:
+        """Whether the tool runs a long action that bounds its own duration (a robot motion)."""
+        definition = self._tools.get(name)
+        return definition is not None and definition.manages_timeout
+
     def definitions(self) -> list[dict[str, object]]:
         return [
             {
@@ -76,12 +106,15 @@ class ToolRegistry:
                 "parameters": definition.schema,
             }
             for definition in self._tools.values()
+            if definition.name not in self._unavailable
         ]
 
     async def dispatch(self, name: str, arguments_json: str, context: Any) -> dict[str, Any]:
         definition = self._tools.get(name)
         if definition is None:
             return {"ok": False, "reason": f"Unknown tool: {name}"}
+        if name in self._unavailable:
+            return {"ok": False, "reason": f"{name}: {self._unavailable[name]}"}
         try:
             arguments = json.loads(arguments_json)
         except json.JSONDecodeError:

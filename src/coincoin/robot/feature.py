@@ -6,26 +6,44 @@ import asyncio
 import math
 from collections.abc import Coroutine
 from dataclasses import asdict, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from coincoin.realtime.tools.robot import install_tools, invalid_arguments
+from coincoin.realtime.tools.robot import (
+    install_tools,
+    invalid_arguments,
+    tool_availability,
+    tool_description,
+)
 from coincoin.realtime.tools.vision import install_tools as install_vision_tools
+from coincoin.robot.capabilities import Capabilities, probe
 from coincoin.robot.factory import create_robot_link
 from coincoin.robot.governor import (
+    NAV_MAX_S,
     ROBOT_ERRORS,
     ROLLER_MAX_VYAW,
     Governor,
     ToolResult,
+    raised_note,
     turn_time_limit_s,
 )
 from coincoin.robot.link import RobotLink
+from coincoin.robot.localization import (
+    DepthSource,
+    EstimatedPose,
+    LinkTofStream,
+    OraclePose,
+    TcpTofStream,
+)
+from coincoin.robot.navigation import NavigationMap, Navigator, SimPose
 from coincoin.robot.quack import QuackSink, QuackUnavailable
+from coincoin.robot.webrtc_link import WebRtcLink
 
 if TYPE_CHECKING:
     from coincoin.app import App
 
 LINK_LOST = "je ne sens plus mes pattes"
-_AWAITED_MOTIONS = frozenset({"move", "turn"})
+_AWAITED_MOTIONS = frozenset({"move", "turn", "go_to"})
 
 
 class NullQuack:
@@ -80,17 +98,83 @@ class _RobotRuntime:
                 on_down=self._down,
             )
         )
-        self.governor = Governor(self.link, app.settings, app.clock, app.journal)
+        self.governor = Governor(
+            self.link,
+            app.settings,
+            app.clock,
+            app.journal,
+            navigator=self._navigator(app, self.link),
+        )
         self.quack = self._provided_quack or NullQuack(app)
-        self.contracts = install_tools(app, self.dispatch)
+        self.contracts = install_tools(app, self.dispatch, places=self.governor.places())
         install_vision_tools(app, self.link)
         app.instructions_context("skills", self.skills_context)
+        app.instructions_context("robot", self.robot_context)
+        self.governor.on_notice = app.announce
+        self._apply_capabilities(None)
         app.on("stop", self.stop)
         app.on("reset_pose", self.reset_pose)
         app.on("mouth_close", self.mouth_close)
         app.on("shutdown", self.close)
         await self.governor.start()
         self._spawn(self._connect())
+
+    @staticmethod
+    def _navigator(app: App, link: RobotLink) -> Navigator | None:
+        settings = app.settings
+        if not settings.nav_map:
+            return None
+        try:
+            nav_map = NavigationMap.load(Path(settings.nav_map))
+        except (OSError, ValueError, KeyError) as error:
+            app.journal.write("error", component="navigation", reason=str(error))
+            return None
+        oracle = SimPose(settings.sim_pose_link) if settings.sim_pose_link else None
+        localizer = None
+        start = ""
+        if settings.tof_link:
+            depth: DepthSource
+            if settings.tof_link == "link":
+                if not isinstance(link, WebRtcLink):
+                    app.journal.write(
+                        "error",
+                        component="navigation",
+                        reason="TOF_LINK=link needs a WebRTC ROBOT_LINK",
+                    )
+                    return None
+                depth = LinkTofStream(link)
+            else:
+                depth = TcpTofStream(settings.tof_link, settings.relay_token.get_secret_value())
+            localizer = EstimatedPose(
+                nav_map,
+                link.state,
+                depth,
+                clock=app.clock.now,
+            )
+            try:
+                start = localizer.start_at(settings.nav_start)
+            except ValueError as error:
+                app.journal.write("error", component="navigation", reason=str(error))
+                return None
+            localizer.start()
+        if settings.nav_pose == "oracle":
+            if oracle is None:
+                app.journal.write(
+                    "error", component="navigation", reason="NAV_POSE=oracle needs SIM_POSE_LINK"
+                )
+                return None
+            source = OraclePose(SimPose(settings.sim_pose_link))
+        elif localizer is None:
+            app.journal.write(
+                "error", component="navigation", reason="NAV_POSE=estimated needs TOF_LINK"
+            )
+            return None
+        else:
+            source = localizer
+        app.journal.write(
+            "state", navigation=sorted(nav_map.places), pose_source=source.name, start=start
+        )
+        return Navigator(nav_map, source, oracle=oracle, localizer=localizer)
 
     def _spawn(self, work: Coroutine[Any, Any, None]) -> None:
         task = asyncio.create_task(work)
@@ -106,6 +190,50 @@ class _RobotRuntime:
     async def _up(self) -> None:
         self._lost = False
         self.app.journal.write("state", robot="connected")
+        self._spawn(self._probe())
+
+    async def _probe(self) -> None:
+        try:
+            capabilities = await probe(self.link)
+        except ROBOT_ERRORS as error:
+            self.app.journal.write("error", component="robot probe", reason=str(error))
+            return
+        self.governor.capabilities = capabilities
+        self._apply_capabilities(capabilities)
+        self.app.journal.write("robot_capabilities", **capabilities.as_dict())
+
+    def _apply_capabilities(self, capabilities: Capabilities | None) -> None:
+        # Tools and descriptions follow what this robot reported, never assumptions; the
+        # registry snapshot is taken at the next Realtime session open.
+        for name in self.contracts:
+            reason = tool_availability(name, capabilities)
+            if name == "go_to" and self.governor.navigator is None:
+                reason = reason or "no navigation map configured"
+            self.app.tools.configure(
+                name,
+                available=reason is None,
+                reason=reason or "",
+                description=tool_description(name, capabilities),
+            )
+
+    async def robot_context(self) -> str:
+        capabilities = self.governor.capabilities
+        if capabilities is None:
+            return "robot capabilities not probed yet; tool results are authoritative"
+        self._apply_capabilities(capabilities)
+        parts = [
+            f"link {capabilities.transport}",
+            "simulated robot" if capabilities.simulated else "real robot",
+            f"mode {capabilities.mode or 'unknown'}",
+        ]
+        if capabilities.mode_switch_needs_person:
+            parts.append(
+                "changing walk/roller needs a person to fit or remove the skates and select the "
+                "mode on the robot; say so when asked"
+            )
+        if self.governor.awaiting_person:
+            parts.append("waiting for that person now; motion is disabled")
+        return "; ".join(parts)
 
     async def _down(self) -> None:
         if self._closing or self._lost:
@@ -129,6 +257,7 @@ class _RobotRuntime:
         return ", ".join(names) if names else "unavailable; do not invent skills"
 
     async def stop(self) -> None:
+        await self.governor.cancel_person_wait("bouton")
         await self.governor.stop("bouton")
         await self.quack.cancel()
 
@@ -169,6 +298,7 @@ class _RobotRuntime:
                 result = {"ok": False, "reason": str(error)}
         else:
             if name == "stop":
+                await self.governor.cancel_person_wait("outil stop")
                 outcome = await self.governor.stop("outil stop")
                 await self.quack.cancel()
                 await self.app._emit("mouth_close")
@@ -187,6 +317,8 @@ class _RobotRuntime:
         text = f"{name}: {result.get('detail') if result['ok'] else result.get('reason')}"
         if result.get("clamped"):
             text += f" (clamped: {result['clamped']})"
+        if result.get("raised"):
+            text += f" (raised: {result['raised']})"
         self.app.journal.write("robot_action", name=name, result=result)
         await self.app.notify_action(text, ok=result["ok"])
         return result
@@ -211,7 +343,13 @@ class _RobotRuntime:
                     finished = await self.governor.wait_motion()
                     if finished is None:
                         return ToolResult(False, reason="motion interrupted")
-                    return replace(finished, clamped=outcome.clamped) if finished.ok else finished
+                    if not finished.ok:
+                        return finished
+                    finished = replace(finished, clamped=outcome.clamped, raised=outcome.raised)
+                    if outcome.raised:
+                        detail = f"{finished.detail}; {raised_note(outcome.raised)}"
+                        finished = replace(finished, detail=detail)
+                    return finished
             except TimeoutError:
                 reason = f"Tool {name} timed out"
                 self.app.journal.write("error", component="robot", method=name, reason=reason)
@@ -229,4 +367,7 @@ class _RobotRuntime:
             angle = min(abs(arguments["degrees"]), 360)
             slowest_rate = min(self.app.settings.max_vyaw, ROLLER_MAX_VYAW)
             timeout_s += turn_time_limit_s(angle, slowest_rate)
+        elif name == "go_to":
+            # A mode change, standing up and the whole route all fit inside this bound.
+            timeout_s += NAV_MAX_S + 20
         return timeout_s

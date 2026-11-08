@@ -277,6 +277,40 @@ test "$(cat "$HOME/.cache/coin-coin-locks/sim-camera/owner")" = user-main && \
 
 Ne supprimer ni modèles, ni sons, ni journaux personnels au nettoyage.
 
+## Jour de livraison : connexion en une commande
+
+Chemin unique, identique à la sim : signalisation `mediad` 8443 et datachannel
+WebRTC, sans relais. Détails : [WebRTC, chemin du robot livré](webrtc.md#chemin-du-robot-livré--profil-doctor-mode-par-une-personne).
+
+1. Canard allumé et sur le Wi-Fi (provisionnement BLE seulement ; code
+   d'appairage par défaut : 6 derniers chiffres du numéro de série).
+2. Trouver son adresse : `duckctl ip` (ou `duckctl open`). Le nom d'hôte par
+   défaut n'est pas unique ; préférer l'IP.
+3. Vérifier, depuis le poste Coin-Coin sur le même LAN :
+
+   ```sh
+   ROBOT_TARGET=robot ROBOT_HOST=<ip> uv run coincoin-cli doctor
+   ```
+
+   Chaque étape en échec affiche son correctif (Wi-Fi, service `mediad`,
+   UDP/ICE bloqué, version d'API, batterie, caméra). Code retour 0 = prêt.
+4. Écrire `ROBOT_TARGET=robot` et `ROBOT_HOST=<ip>` dans `.env`, puis lancer
+   `uv run coincoin --host 127.0.0.1`.
+
+À savoir avant de parler au robot :
+
+- Changer de mode (patins/marche) demande une personne : poser ou retirer
+  l'équipement, puis choisir le mode sur le robot (`sudo robotctl configure`,
+  `[policy] mode`, redémarrage de `robotd`). Le canard le dit, attend jusqu'à
+  `PERSON_MODE_TIMEOUT_S` (120 s) et ne bouge pas pendant ce temps.
+- `go_to` et le relevé assisté sont désactivés : le robot ne déclare pas
+  `simulated: true`.
+- Pas de micro robot par WebRTC (aucune piste audio `mediad`).
+- Une mise à jour OTA est bloquée tant que Coin-Coin est connecté.
+- La signalisation LAN n'est pas authentifiée : ne pas exposer 8443 hors du LAN.
+- Coin-Coin parle l'API v47 ; un robot plus récent donne un avertissement du
+  doctor, à vérifier avant tout mouvement.
+
 ## Ce qui reste humain ou matériel
 
 Restent ouverts : positifs réels FR/EN et qualité du réveil ; AEC/écho ;

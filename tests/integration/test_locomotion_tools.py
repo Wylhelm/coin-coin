@@ -1,6 +1,15 @@
 import json
 
+from coincoin.robot.capabilities import PROBE_MODE
 from tests.integration.test_tools_e2e_fakes import rig as rig
+
+
+def mode_changes(robot):
+    return [
+        record.params
+        for record in robot.records
+        if record.method == "robot.setMode" and record.params != {"mode": PROBE_MODE}
+    ]
 
 
 async def test_voice_tools_switch_skate_walk_skate_over_tcp(rig):
@@ -19,8 +28,7 @@ async def test_voice_tools_switch_skate_walk_skate_over_tcp(rig):
         move = next(record for record in reversed(robot.records) if record.method == "robot.move")
         assert move.params is not None and move.params["vy"] == lateral
         assert robot.twist == [0, 0, 0]
-    changed = [record.params for record in robot.records if record.method == "robot.setMode"]
-    assert changed == [{"mode": "roller"}, {"mode": "walk"}, {"mode": "roller"}]
+    assert mode_changes(robot) == [{"mode": "roller"}, {"mode": "walk"}, {"mode": "roller"}]
 
 
 async def test_voice_mode_rejects_bad_arguments_without_transmitting(rig):
@@ -28,4 +36,4 @@ async def test_voice_mode_rejects_bad_arguments_without_transmitting(rig):
     for arguments in ("{}", '{"mode":"ice"}', '{"mode":true}', '{"mode":"walk","extra":1}'):
         outcome = await app.tools.dispatch("set_mode", arguments, app)
         assert not outcome["ok"] and outcome["reason"]
-    assert not any(record.method == "robot.setMode" for record in robot.records)
+    assert not mode_changes(robot)

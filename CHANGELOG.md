@@ -6,6 +6,41 @@
 > commits mentionnés dans les relevés correspondent à l'historique local
 > d'origine, dont les identifiants diffèrent de l'historique public.
 
+## Intégration sim-réalisme — runtime 0.18.9, API 52
+
+- Merge the parity/bring-up kit (contract tests, session record/replay, bring-up and
+  parity docs), the real-robot link (WebRTC without STUN, link loss and reconnect,
+  capability probe, person-in-the-loop mode changes, `ROBOT_TARGET`/`ROBOT_HOST`,
+  `coincoin-cli doctor`) and honest navigation (MCL on odometry + ToF, `NAV_POSE=estimated`
+  by default, reactive avoidance, `live_stack.py --start/--oracle-pose`).
+- Speak robot API 52 (runtime 0.18.9, policy set v9) and accept 47 and later. `doctor`
+  fails below 47 and warns above 52. A `degraded` or unhealthy `robot.health` (polled every
+  5 s) now stops and refuses motion until the robot is healthy again.
+- Walking speed floors `MIN_VX`/`MIN_VY`/`MIN_VYAW` (0.3 m/s, 0.15 m/s, 1 rad/s): v9 stands
+  still below about 0.2 m/s and 0.8 rad/s, so slower nonzero walking commands are raised,
+  never above the limits, and the result says so (`raised`). Not on skates. A 30° turn now
+  completes.
+- ToF over WebRTC: `tof.stream` is an allowed robot method and `TOF_LINK=link` subscribes on
+  the control channel, so honest navigation works with `--link webrtc` (the relay keeps
+  sending `tof.stream` to tofd).
+- `live_stack.py`: `--realism`, `--realism-seed`, `--no-assist`, `--obstacles`,
+  `--obstacle-slots`, `--maploc`.
+- The spoken equipment message stays generic; `docs/upstream-requests.md` lists what to
+  ask Pollen Robotics.
+
+## Navigation entre pièces en simulation
+
+- Add `go_to`: plan an A* route on a scanned navigation map and follow it with the
+  simulator's true pose, on foot or on skates, with replanning when stalled.
+  Skating controls measured speed (push, coast, brake) and turns in slow arcs,
+  because the roller policy was not trained to spin in place.
+- Add `live_stack.py --places`, the `NAV_MAP` and `SIM_POSE_LINK` settings, and
+  configurable named destinations from a user-supplied navigation map.
+- Follow each segment closely on skates, avoid diagonal shortcut corner cuts, and
+  stop before replanning when a route stalls rather than repeatedly pushing.
+- Refuse room navigation unless the connected robot explicitly identifies as
+  simulated, so a simulated pose cannot drive physical hardware.
+
 ## Public configuration and reproducible live stack — 2026-11-06
 
 - Replace French-only instructions with English source instructions and a
