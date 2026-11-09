@@ -505,7 +505,10 @@ class Governor:
             return self._failure("set_mode", error)
         if not isinstance(current, dict) or current.get("mode") not in ("walk", "roller"):
             return self._refuse("set_mode", "unsupported or unavailable robot mode")
-        if current["mode"] == mode:
+        # Selecting the mode the robot already reports is normally a no-op. On a fallen
+        # simulated robot it is the recovery request itself: robotd turns a re-selection into a
+        # mode_support stand-up, so the equipment assistant must be asked even for that mode.
+        if current["mode"] == mode and not await self._assisted_recovery():
             await self.cancel_person_wait("mode already selected")
             self._accept_mode(mode)
             self.journal.write("tool_result", method="set_mode", mode=mode)
@@ -545,6 +548,16 @@ class Governor:
             ),
         )
 
+    async def _assisted_recovery(self) -> bool:
+        """Whether the simulated equipment assistant can stand a fallen robot up right now."""
+        if not self.settings.sim_equipment_socket or self._safety_reason() != "robot fallen":
+            return False
+        try:
+            policies = await self.link.call("robot.policies")
+        except ROBOT_ERRORS:
+            return False
+        return isinstance(policies, dict) and policies.get("simulated") is True
+
     async def cancel_person_wait(self, reason: str) -> None:
         task, self._person_task = self._person_task, None
         if self._person_target is not None:
@@ -573,11 +586,14 @@ class Governor:
         try:
             if self.settings.sim_equipment_socket:
                 try:
-                    if reason := self._safety_reason():
-                        raise RobotRefused(reason)
                     remote = await self.link.call("robot.policies")
                     if not isinstance(remote, dict) or remote.get("simulated") is not True:
                         raise RobotRefused("equipment assistance requires a simulated robot")
+                    # A fallen robot is exactly what the assistant's mode_support hand is for:
+                    # re-selecting the current mode stands it up. Every other safety reason
+                    # still refuses, and the wait below releases only once it is upright.
+                    if (reason := self._safety_reason()) and reason != "robot fallen":
+                        raise RobotRefused(reason)
                     if self._closed or self._person_target != mode:
                         raise RobotRefused("simulation equipment request cancelled")
                     async with asyncio.timeout(min(timeout_s, 30)):
@@ -1858,7 +1874,15 @@ class Governor:
             try:
                 policies = await self._policies()
                 if policies.get("simulated") is True:
-                    if self.capabilities is not None and self.capabilities.mode_switch_needs_person:
+                    # The simulated equipment assistant can stand the duck up itself by
+                    # re-selecting the current mode, so a link that refuses robot.setMode is
+                    # no reason to ask a person.
+                    assisted = bool(self.settings.sim_equipment_socket)
+                    if (
+                        self.capabilities is not None
+                        and self.capabilities.mode_switch_needs_person
+                        and not assisted
+                    ):
                         return self._refuse("stand", FALLEN_NEEDS_PERSON)
                     mode = await self.link.call("robot.mode")
                     if not isinstance(mode, dict) or mode.get("mode") not in ("walk", "roller"):

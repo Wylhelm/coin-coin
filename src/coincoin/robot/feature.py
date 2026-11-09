@@ -233,7 +233,8 @@ class _RobotRuntime:
         ]
         if self.governor.settings.sim_equipment_socket:
             parts.append(
-                "the simulator fits or removes the skates by itself when the mode changes; "
+                "the simulator fits or removes the skates by itself when the mode changes and "
+                "gets a fallen duck back on its feet when its mode is selected again; "
                 "never ask a person for it"
             )
         elif capabilities.mode_switch_needs_person:
