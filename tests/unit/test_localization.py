@@ -129,7 +129,7 @@ def test_tracking_scores_only_explained_hits_when_an_unmapped_obstacle_dominates
     field = LikelihoodField(MAP)
     particle_filter = ParticleFilter(field, count=100, seed=3)
     particle_filter.init_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
-    hits = np.column_stack((np.arange(20), np.zeros(20), np.full(20, 0.2)))
+    hits = np.column_stack((np.arange(20, dtype=np.float64), np.zeros(20), np.full(20, 0.2)))
     monkeypatch.setattr(field, "surface_distance", lambda x, y: np.where(x < 7.0, 0.0, 1.0))
     expected = hits[:6]
     assert np.array_equal(particle_filter.gate(hits), hits)

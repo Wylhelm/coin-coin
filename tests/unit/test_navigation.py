@@ -207,7 +207,7 @@ def test_stalled_walk_pivot_uses_the_opposite_direction_without_advancing() -> N
 def test_stalled_pivot_recovery_is_off_without_simulation_walk_assist() -> None:
     steering = Steering([(0.0, 2.0)], (0.25, 0.0, 1.0), "walk", room=lambda point: 1.0)
     steering.update(Pose(0, 0, 0), 0)
-    assert steering.update(Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
+    assert steering_command(steering, Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
     assert not steering.reversing_pivot
 
 
@@ -221,9 +221,9 @@ def test_stalled_pivot_recovery_requires_and_keeps_clearance() -> None:
         recover_stalled_pivot=True,
     )
     steering.update(Pose(0, 0, 0), 0)
-    assert steering.update(Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
+    assert steering_command(steering, Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
     clearance[0] = 0.2
-    assert steering.update(Pose(0, 0, 0.02), 2.2)["vyaw"] == -1.0
+    assert steering_command(steering, Pose(0, 0, 0.02), 2.2)["vyaw"] == -1.0
     clearance[0] = 0.05
     assert steering.update(Pose(0, 0, -0.2), 2.3) == {"vx": 0.0, "vy": 0.0, "vyaw": 0.0}
 
