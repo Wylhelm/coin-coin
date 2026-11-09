@@ -61,7 +61,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--places",
         type=Path,
-        help="navigation map from salon_scan/build_navigation.py; enables the go_to tool",
+        help="user-supplied navigation map; enables the go_to tool",
     )
     parser.add_argument(
         "--start",

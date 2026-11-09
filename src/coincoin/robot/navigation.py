@@ -138,6 +138,21 @@ class NavigationMap:
         """Room around the duck's footprint at a world point, in metres."""
         return max(0, self.clearance_at(self.cell(point)) - self._needed_cm) / 100
 
+    def segment_clear(self, start: Point, end: Point) -> bool:
+        """Whether the footprint can follow this segment without cutting a corner."""
+        return self._visible(self.cell(start), self.cell(end))
+
+    def segment_traversable(self, start: Point, end: Point) -> bool:
+        """Check a live route with a little less margin than the planner's shortcut."""
+        a, b = self.cell(start), self.cell(end)
+        margin = math.ceil((self.robot_radius + COMFORT_MARGIN_M / 3) * 100)
+        needed = max(self._needed_cm, min(margin, self.clearance_at(a), self.clearance_at(b)))
+        return self._visible(a, b, minimum_cm=needed)
+
+    def segment_unobstructed(self, start: Point, end: Point) -> bool:
+        """Whether a pose correction crosses an occupied cell, ignoring footprint clearance."""
+        return self._visible(self.cell(start), self.cell(end), minimum_cm=1)
+
     def _snap(self, point: Point) -> tuple[int, int] | None:
         start = self.cell(point)
         if self.free(start):
@@ -216,10 +231,15 @@ class NavigationMap:
             waypoints.insert(0, self.centre(first))
         return waypoints
 
-    def _visible(self, a: tuple[int, int], b: tuple[int, int]) -> bool:
-        comfort = math.ceil((self.robot_radius + COMFORT_MARGIN_M / 2) * 100)
-        needed = min(comfort, self.clearance_at(a), self.clearance_at(b))
-        needed = max(needed, self._needed_cm)
+    def _visible(
+        self, a: tuple[int, int], b: tuple[int, int], *, minimum_cm: int | None = None
+    ) -> bool:
+        if minimum_cm is None:
+            comfort = math.ceil((self.robot_radius + COMFORT_MARGIN_M / 2) * 100)
+            needed = min(comfort, self.clearance_at(a), self.clearance_at(b))
+            needed = max(needed, self._needed_cm)
+        else:
+            needed = minimum_cm
         samples = max(1, math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) * 2))
         previous = a
         for i in range(samples + 1):
@@ -324,7 +344,7 @@ class SimPose:
 
 
 class Steering:
-    """Turn a route and the true pose into velocity commands, on foot or on skates.
+    """Turn a route and a pose into velocity commands, on foot or on skates.
 
     Walking stops almost at once, so it pivots toward each waypoint and then walks with
     proportional steering. Skates glide: the skating policy cannot spin in place but turns in a
@@ -337,12 +357,16 @@ class Steering:
     ROLLER_WAYPOINT_M = 0.15
     ROLLER_LOOKAHEAD_M = 0.45
     ESCAPE_WAYPOINT_M = 0.03
-    ARRIVAL_M = 0.2
+    # Leave room for localization error and the duck settling after the stop command.
+    ARRIVAL_M = 0.1
     ROLLER_ARRIVAL_M = 0.3
     TURN_RAD = 0.6
     ALIGNED_RAD = 0.2
     STEER_GAIN = 1.5
     WALK_MIN_VX = 0.15
+    WALK_PIVOT_STALL_S = 2.0
+    WALK_PIVOT_PROGRESS_RAD = 0.1
+    WALK_PIVOT_CLEARANCE_M = 0.1
     ROLLER_CRUISE = 0.26
     ROLLER_CORNER = 0.08
     ROLLER_STOPPED = 0.06
@@ -355,21 +379,43 @@ class Steering:
         limits: tuple[float, float, float],
         mode: str | None,
         room: Callable[[Point], float] | None = None,
+        segment_clear: Callable[[Point, Point], bool] | None = None,
+        *,
+        route_traversable: Callable[[Point, Point], bool] | None = None,
+        recover_stalled_pivot: bool = False,
     ) -> None:
         self.route = list(route)
         self.limits = limits
         self.roller = mode == "roller"
         self.room = room
+        self.segment_clear = segment_clear
+        self.route_traversable = route_traversable
+        self.recover_stalled_pivot = recover_stalled_pivot and not self.roller
         self.index = 0
         self.turning = False
+        self._pivot_anchor: tuple[float, float] | None = None
+        self._pivot_direction = 0.0
+        self._reverse_pivot = False
         self._start: Point | None = None
         self._escaping = False
         self._last: tuple[Pose, float] | None = None
         self._velocity = (0.0, 0.0)
 
+    @property
+    def reversing_pivot(self) -> bool:
+        return self._reverse_pivot
+
     def remaining(self, pose: Pose) -> float:
         points = [(pose.x, pose.y), *self.route[self.index :]]
         return sum(math.dist(a, b) for a, b in zip(points, points[1:], strict=False))
+
+    def route_clear(self, pose: Pose) -> bool:
+        """Check that the current pose can still reach the next waypoint safely."""
+        return (
+            self._escaping
+            or self.route_traversable is None
+            or self.route_traversable((pose.x, pose.y), self.route[self.index])
+        )
 
     def _observe(self, pose: Pose, now: float) -> None:
         if self._last is not None:
@@ -411,6 +457,10 @@ class Steering:
         while self.index < last and math.dist(here, self.route[self.index]) < waypoint_radius:
             if self._escaping and math.dist(here, self.route[self.index]) > self.ESCAPE_WAYPOINT_M:
                 break
+            if self.segment_clear is not None and not self.segment_clear(
+                here, self.route[self.index + 1]
+            ):
+                break
             self._escaping = False
             self.index += 1
         target = self.route[self.index]
@@ -428,12 +478,33 @@ class Steering:
         if self.turning:
             vyaw = math.copysign(max_vyaw, error)
             if not self.roller:
+                if self.recover_stalled_pivot:
+                    if self._pivot_anchor is None:
+                        self._pivot_anchor = (pose.yaw, now)
+                        self._pivot_direction = math.copysign(1, error)
+                    anchor_yaw, anchor_time = self._pivot_anchor
+                    progress = self._pivot_direction * _wrap(pose.yaw - anchor_yaw)
+                    if progress >= self.WALK_PIVOT_PROGRESS_RAD:
+                        self._pivot_anchor = (pose.yaw, now)
+                    elif (
+                        not self._reverse_pivot
+                        and now - anchor_time >= self.WALK_PIVOT_STALL_S
+                        and self.room is not None
+                        and self.room(here) >= self.WALK_PIVOT_CLEARANCE_M
+                    ):
+                        self._reverse_pivot = True
+                    if self._reverse_pivot:
+                        if self.room is None or self.room(here) < self.WALK_PIVOT_CLEARANCE_M:
+                            return _idle()
+                        vyaw = -self._pivot_direction * max_vyaw
                 return {"vx": 0.0, "vy": 0.0, "vyaw": vyaw}
             # The skating policy was never trained to spin in place: it turns while gliding
             # slowly, so it arcs with a gentle push and brakes whenever it gathers speed.
             if abs(forward) >= self.ROLLER_ARC_MAX:
                 return brake
             return {"vx": self.ROLLER_ARC_VX, "vy": 0.0, "vyaw": vyaw}
+        self._pivot_anchor = None
+        self._reverse_pivot = False
         vyaw = max(-max_vyaw, min(max_vyaw, self.STEER_GAIN * error))
         if not self.roller:
             vx = max(self.WALK_MIN_VX, min(max_vx, distance))
@@ -520,7 +591,7 @@ class Navigator:
             return None
 
     def mark_obstacles(self, points: Sequence[Point]) -> None:
-        """Remember what the ToF found in the way, for planning and for the localizer's map."""
+        """Remember what the ToF found in the way for planning."""
         self.set_obstacles([*self.obstacles, *points])
 
     def clear_obstacles(self) -> None:
@@ -531,10 +602,6 @@ class Navigator:
     def set_obstacles(self, points: Sequence[Point]) -> None:
         """Replace what the ToF has added to the map (to undo marks that proved doubtful)."""
         self.obstacles = list(points)[-OBSTACLE_MEMORY:]
-        if self.localizer is not None:
-            self.localizer.use_map(
-                self.map.with_obstacles(self.obstacles) if self.obstacles else self.map
-            )
 
     def plan(self, start: Point, goal: Point) -> list[Point] | None:
         return self.map.with_obstacles(self.obstacles).plan(start, goal)
