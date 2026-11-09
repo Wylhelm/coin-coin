@@ -15,13 +15,17 @@ from coincoin.robot.localization import (
     FLOOR_FIT_INLIER_M,
     EstimatedPose,
     FloorTracker,
+    Hypothesis,
     LikelihoodField,
     LinkTofStream,
     Odom,
     OraclePose,
+    ParticleFilter,
     PoseEstimate,
+    Scan,
     TcpTofStream,
     blocking_points,
+    global_search,
     obstacle_points,
     parse_tof_frame,
     scan_from,
@@ -99,6 +103,300 @@ def test_likelihood_field_is_two_sided() -> None:
     assert surface[4] >= 0.4
     outside = field.surface_distance(np.array([-5.0]), np.array([-5.0]))
     assert outside[0] > 0.4
+
+
+def test_free_rays_do_not_correct_a_2d_map_pose() -> None:
+    field = LikelihoodField(MAP)
+    filters = [ParticleFilter(field, count=100, seed=3) for _ in range(2)]
+    for particle_filter in filters:
+        particle_filter.init_pose(Pose(1.5, 1.5, 0), 0.1, 0.1)
+    hits = np.array([[2.4, 0.0, 0.2], [2.4, 0.2, 0.2]])
+    empty = np.zeros((0, 3))
+    # A beam can pass over a mapped floor footprint, or return no target on a dark surface.
+    free = np.array([[2.5, 0.0, 0.2], [2.5, 0.2, 0.2]])
+    for particle_filter, rays in zip(filters, (empty, free), strict=True):
+        particle_filter.correct(Scan(1, Odom(0, 0, 0, 0.12), hits, empty, rays, np.zeros(3)))
+    assert np.array_equal(filters[0].log_w, filters[1].log_w)
+    assert np.array_equal(filters[0].x, filters[1].x)
+    before = filters[0].log_w.copy()
+    filters[0].correct(Scan(2, Odom(0, 0, 0, 0.12), empty, empty, free, np.zeros(3)))
+    assert np.array_equal(filters[0].log_w, before)
+
+
+def test_tracking_scores_only_explained_hits_when_an_unmapped_obstacle_dominates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    field = LikelihoodField(MAP)
+    particle_filter = ParticleFilter(field, count=100, seed=3)
+    particle_filter.init_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    hits = np.column_stack((np.arange(20), np.zeros(20), np.full(20, 0.2)))
+    monkeypatch.setattr(field, "surface_distance", lambda x, y: np.where(x < 7.0, 0.0, 1.0))
+    expected = hits[:6]
+    assert np.array_equal(particle_filter.gate(hits), hits)
+    assert np.array_equal(particle_filter.gate(hits, require_match=True), expected)
+
+    scored: list[np.ndarray] = []
+
+    def likelihood(x, y, yaw, matched):
+        scored.append(matched)
+        return np.zeros(len(x))
+
+    monkeypatch.setattr(field, "log_likelihood", likelihood)
+    empty = np.zeros((0, 3))
+    scan = Scan(1, Odom(0, 0, 0, 0.12), hits, empty, empty, np.zeros(3))
+    assert particle_filter.correct(scan, require_match=True)
+    assert len(scored) == 1 and np.array_equal(scored[0], expected)
+    monkeypatch.setattr(field, "surface_distance", lambda x, y: np.where(x < 6.0, 0.0, 1.0))
+    assert particle_filter.correct(scan, require_match=True)
+    assert len(scored) == 1  # Too few mapped returns: no localization update.
+
+
+@pytest.mark.parametrize("heading_only", [False, True])
+def test_tracking_rejects_a_single_frame_that_collapses_the_particle_cloud(
+    monkeypatch: pytest.MonkeyPatch, heading_only: bool
+) -> None:
+    field = LikelihoodField(MAP)
+    particle_filter = ParticleFilter(field, count=100, seed=3)
+    particle_filter.init_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    particle_filter.x[:] = 1.5
+    particle_filter.y[:] = 1.5
+    particle_filter.yaw[:] = 0
+    if heading_only:
+        particle_filter.yaw[-10:] = 0.3
+    else:
+        particle_filter.x[-10:] = 1.7
+    monkeypatch.setattr(
+        field,
+        "log_likelihood",
+        lambda x, y, yaw, hits: np.where(yaw > 0.1 if heading_only else x > 1.6, 0, -12),
+    )
+    empty = np.zeros((0, 3))
+    scan = Scan(1, Odom(0, 0, 0, 0.12), np.array([[1.0, 0, 0.2]]), empty, empty, np.zeros(3))
+    pose, std_xy, std_yaw = particle_filter.estimate()
+    before = (
+        particle_filter.x.copy(),
+        particle_filter.y.copy(),
+        particle_filter.yaw.copy(),
+        particle_filter.log_w.copy(),
+    )
+    assert not particle_filter.correct(
+        scan, max_shift=max(0.06, 2 * std_xy), max_turn=max(0.1, 2 * std_yaw)
+    )
+    assert all(
+        np.array_equal(current, original)
+        for current, original in zip(
+            (particle_filter.x, particle_filter.y, particle_filter.yaw, particle_filter.log_w),
+            before,
+            strict=True,
+        )
+    )
+    assert particle_filter.estimate()[0] == pose
+    assert particle_filter.correct(scan)
+    after, _, _ = particle_filter.estimate()
+    if heading_only:
+        assert after.yaw - pose.yaw > 0.2
+    else:
+        assert after.x - pose.x > 0.15
+
+
+def test_repeated_tracking_contradictions_latch_unconfirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, link, localizer, _ = kit(odom_scale=1.0, odom_yaw_scale=1.0, particles=100)
+    link.place_at(1.5, 1.5, 0)
+    localizer.reset_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    localizer.filter.x[:] = 1.5
+    localizer.filter.x[-10:] = 1.7
+    localizer.filter.y[:] = 1.5
+    localizer.filter.yaw[:] = 0
+    conflict = True
+
+    def likelihood(x, y, yaw, hits):
+        return np.where(x > 1.6, 0.0, -100.0) if conflict else np.zeros(len(x))
+
+    monkeypatch.setattr(localizer.field, "log_likelihood", likelihood)
+
+    def frame(dt: float, seq: int) -> None:
+        clock.advance(dt)
+        localizer.observe_state(link.state())
+        assert localizer.observe_frame(link.frame_now(seq)) is not None
+
+    frame(0.05, 1)
+    assert localizer.confirmed and localizer.stats.rejected_corrections == 1
+    frame(1.1, 2)  # A separate isolated bad frame is not a persistent contradiction.
+    assert localizer.confirmed and localizer.stats.rejected_corrections == 2
+    conflict = False
+    frame(0.05, 3)  # One benign frame in the window does not erase the contradiction.
+    conflict = True
+    frame(0.05, 4)
+    assert localizer.confirmed
+    frame(0.05, 5)
+    assert not localizer.confirmed and localizer.stats.tracking_conflicts == 1
+    conflict = False
+    frame(0.05, 6)
+    assert not localizer.current().converged
+
+
+def test_unmapped_obstacle_freezes_corrections_until_good_evidence_is_sustained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, link, localizer, _ = kit(odom_scale=1.0, odom_yaw_scale=1.0, particles=100)
+    link.place_at(1.5, 1.5, 0)
+    localizer.reset_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    fit = 0.0
+    nearby = True
+    corrections: list[int] = []
+    monkeypatch.setattr(localizer.field, "fit", lambda pose, hits: fit)
+    monkeypatch.setattr(localizer, "_nearby_unmapped", lambda scan, pose: nearby)
+
+    def correct(scan, **kwargs):
+        corrections.append(scan.t_ns)
+        return True
+
+    monkeypatch.setattr(localizer.filter, "correct", correct)
+
+    def frame(dt: float, seq: int) -> None:
+        clock.advance(dt)
+        localizer.observe_state(link.state())
+        assert localizer.observe_frame(link.frame_now(seq)) is not None
+
+    for seq in range(2):
+        frame(0.1, seq)
+    assert localizer.confirmed and not localizer.current().converged
+    assert len(corrections) == 1
+    fit = 1.0
+    nearby = False
+    for seq in range(2, 6):
+        frame(0.2, seq)
+    assert not localizer.current().converged
+    assert len(corrections) == 1
+    frame(0.2, 6)
+    assert localizer.current().converged
+    assert len(corrections) == 2
+
+
+def test_sustained_obstacle_conflict_latches_unconfirmed_until_an_explicit_fix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, link, localizer, _ = kit(odom_scale=1.0, odom_yaw_scale=1.0, particles=100)
+    link.place_at(1.5, 1.5, 0)
+    localizer.reset_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    fit = 0.0
+    nearby = True
+    monkeypatch.setattr(localizer.field, "fit", lambda pose, hits: fit)
+    monkeypatch.setattr(localizer, "_nearby_unmapped", lambda scan, pose: nearby)
+
+    def frame(dt: float, seq: int) -> None:
+        clock.advance(dt)
+        localizer.observe_state(link.state())
+        assert localizer.observe_frame(link.frame_now(seq)) is not None
+
+    for seq in range(3):
+        frame(0.1, seq)
+    frame(8.1, 3)
+    assert not localizer.confirmed and localizer.stats.fit_conflicts == 1
+    fit = 1.0
+    nearby = False
+    for seq in range(4, 16):
+        frame(0.2, seq)
+    assert not localizer.current().converged
+    assert localizer.stats.fit_conflicts == 1
+    localizer.reset_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    assert localizer.current().converged
+
+
+def test_nearby_unmapped_check_ignores_distant_and_sideways_returns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, localizer, _ = kit()
+    empty = np.zeros((0, 3))
+    monkeypatch.setattr(localizer.field, "lookup", lambda x, y: np.ones(len(x)))
+    hits = np.array([[0.5, -0.05, 0.2], [0.6, 0, 0.2], [0.7, 0.05, 0.2]])
+    scan = Scan(1, Odom(0, 0, 0, 0.12), hits, empty, empty, np.zeros(3))
+    assert localizer._nearby_unmapped(scan, Pose(1.5, 1.5, 0))
+    far = Scan(1, scan.odom, hits + [2.0, 0, 0], empty, empty, np.zeros(3))
+    side = Scan(1, scan.odom, hits + [0, 1.0, 0], empty, empty, np.zeros(3))
+    assert not localizer._nearby_unmapped(far, Pose(1.5, 1.5, 0))
+    assert not localizer._nearby_unmapped(side, Pose(1.5, 1.5, 0))
+
+
+def test_low_fit_alone_does_not_latch_an_obstacle_conflict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, link, localizer, _ = kit(odom_scale=1.0, odom_yaw_scale=1.0, particles=100)
+    link.place_at(1.5, 1.5, 0)
+    localizer.reset_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    fit = 0.0
+    monkeypatch.setattr(localizer.field, "fit", lambda pose, hits: fit)
+    monkeypatch.setattr(localizer, "_nearby_unmapped", lambda scan, pose: False)
+    for seq in range(10):
+        clock.advance(0.1)
+        localizer.observe_state(link.state())
+        assert localizer.observe_frame(link.frame_now(seq)) is not None
+    assert localizer.confirmed and not localizer.current().converged
+    assert localizer.stats.fit_conflicts == 0
+    fit = 1.0
+    for seq in range(10, 20):
+        clock.advance(0.1)
+        localizer.observe_state(link.state())
+        assert localizer.observe_frame(link.frame_now(seq)) is not None
+    assert localizer.current().converged
+
+
+def test_sweep_collects_frames_without_correcting_the_tracked_pose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock, link, localizer, _ = kit(odom_scale=1.0, odom_yaw_scale=1.0, particles=100)
+    link.place_at(1.5, 1.5, 0)
+    localizer.reset_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    corrections: list[int] = []
+    monkeypatch.setattr(
+        localizer.filter, "correct", lambda scan, **kwargs: corrections.append(scan.t_ns) or True
+    )
+    localizer.collecting_sweep = True
+    for seq in range(3):
+        clock.advance(0.1)
+        localizer.observe_state(link.state())
+        assert localizer.observe_frame(link.frame_now(seq)) is not None
+    assert len(localizer.recent_scans(0)) == 3
+    assert not corrections
+    latest = localizer.latest_scan()
+    assert latest is not None and localizer._last_t_ns == latest.t_ns
+    localizer.collecting_sweep = False
+    clock.advance(0.1)
+    localizer.observe_state(link.state())
+    assert localizer.observe_frame(link.frame_now(3)) is not None
+    assert len(corrections) == 1
+
+
+@pytest.mark.parametrize("heading", [0.0, math.pi - 0.02])
+def test_sweep_refinement_respects_its_position_and_heading_window(
+    monkeypatch: pytest.MonkeyPatch, heading: float
+) -> None:
+    field = LikelihoodField(MAP)
+
+    def score(x, y, yaw, hits, sigma=0.06):
+        return -(
+            (x - 3.0) ** 2
+            + (y - 1.5) ** 2
+            + 5
+            * np.asarray(np.arctan2(np.sin(yaw - heading - 0.8), np.cos(yaw - heading - 0.8))) ** 2
+        )
+
+    monkeypatch.setattr(field, "log_likelihood", score)
+    matches = global_search(
+        field,
+        np.zeros((8, 2)),
+        centre=(1.5, 1.5),
+        radius=0.1,
+        heading=heading,
+        heading_tolerance=0.1,
+        step_m=0.05,
+        keep=8,
+    )
+    assert matches
+    assert all(math.dist((h.pose.x, h.pose.y), (1.5, 1.5)) <= 0.100001 for h in matches)
+    assert all(abs(math.remainder(h.pose.yaw - heading, math.tau)) <= 0.100001 for h in matches)
 
 
 def kit(
@@ -233,11 +531,66 @@ async def test_a_single_wedge_is_not_trusted() -> None:
     assert not localizer.relocalize([])
 
 
+def test_rejected_sweep_candidate_does_not_replace_the_prior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from coincoin.robot import localization as module
+
+    _, _, localizer, _ = kit()
+    localizer.reset_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
+    original = localizer.filter
+    before = original.x.copy()
+    monkeypatch.setattr(
+        module, "global_search", lambda *args, **kwargs: [Hypothesis(Pose(1.9, 1.5, 0), 0)]
+    )
+    hits = np.array([[2.0, y, 0.2] for y in np.linspace(-0.2, 0.2, 8)])
+    empty = np.zeros((0, 3))
+    scan = Scan(1, Odom(0, 0, 0, 0.12), hits, empty, empty, np.zeros(3))
+    assert not localizer.relocalize([scan], accept=lambda pose: False)
+    assert localizer.filter is original and np.array_equal(localizer.filter.x, before)
+    assert not localizer.confirmed and not localizer.current().converged
+
+
+def test_obstacle_aware_sweep_excludes_unmapped_returns_at_all_heights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from coincoin.robot import localization as module
+
+    _, _, localizer, _ = kit()
+    prior = Pose(1.5, 1.5, 0)
+    localizer.reset_pose(prior, 0.01, 0.01)
+    scored: list[np.ndarray] = []
+
+    def search(field, hits, **kwargs):
+        scored.append(hits.copy())
+        return [Hypothesis(prior, 0)]
+
+    monkeypatch.setattr(module, "global_search", search)
+    monkeypatch.setattr(
+        localizer.field, "surface_distance", lambda x, y: np.where(x > 1.8, 1.0, 0.0)
+    )
+    mapped = [[0.1, y, 0.2] for y in np.linspace(-0.2, 0.2, 8)]
+    unmapped = [[0.5, 0.0, 0.2], [0.5, 0.1, 0.8]]
+    hits = np.array([*mapped, *unmapped])
+    empty = np.zeros((0, 3))
+    scan = Scan(1, Odom(0, 0, 0, 0.12), hits, empty, empty, np.zeros(3))
+    assert localizer.relocalize([scan], prior=prior, exclude_unmapped=True)
+    assert np.array_equal(scored[0], np.array(mapped)[:, :2])
+    scored.clear()
+    assert localizer.relocalize([scan], prior=prior)
+    assert np.array_equal(scored[0], hits[:, :2])
+    with pytest.raises(ValueError, match="prior pose"):
+        localizer.relocalize([scan], exclude_unmapped=True)
+
+
 def test_start_specs() -> None:
     clock, link, localizer, _ = kit()
     assert "unknown" in localizer.start_at("")
     assert not localizer.initialized
-    assert localizer.start_at("salon@90") == "start at salon, heading 90 deg"
+    assert localizer.start_at("salon@90") == "start at salon, heading 90 deg (odometry origin)"
+    estimate = localizer.current()
+    assert not estimate.converged
+    localizer.observe_state(_state(100, 0, 0, 0))
     estimate = localizer.current()
     assert estimate.converged and math.dist((estimate.x, estimate.y), (1.5, 1.5)) < 0.1
     assert abs(estimate.yaw - math.pi / 2) < 0.1
@@ -245,15 +598,70 @@ def test_start_specs() -> None:
     assert localizer.initialized and not localizer.current().converged
     assert localizer.start_at("2, 1.5, -45").startswith("start at (2, 1.5)")
     assert localizer.current().converged
-    for bad in ("nowhere", "1,2", "1,2,nan"):
+    for bad in ("nowhere", "1,2", "1,2,nan", "salon@nan", "salon@inf"):
         with pytest.raises(ValueError):
             localizer.start_at(bad)
+
+
+def _state(t_ns: int, x: float, y: float, yaw: float) -> dict:
+    return {"t_ns": t_ns, "odom": {"position": [x, y, 0.12], "yaw": yaw}}
+
+
+@pytest.mark.parametrize("state_first", [False, True])
+def test_start_is_the_odometry_origin(state_first: bool) -> None:
+    """Standing up turned the duck 57 degrees and slid it before Coin-Coin started."""
+    _, _, localizer, _ = kit()
+    turned = _state(1_000, 0.21, -0.1, math.radians(-57))
+    if state_first:
+        localizer.observe_state(turned)
+    localizer.start_at("salon@90")
+    if not state_first:
+        localizer.observe_state(turned)
+    estimate = localizer.current()
+    # Origin (1.5, 1.5) facing +y: odometry x is map +y, odometry y is map -x.
+    assert math.dist((estimate.x, estimate.y), (1.6, 1.71)) < 0.05
+    assert abs(math.degrees(math.remainder(estimate.yaw - math.radians(33), math.tau))) < 3
+    assert estimate.converged
+    # Later states move the estimate by the odometry difference, not from the origin again.
+    localizer.observe_state(_state(2_000, 0.21, -0.1, math.radians(-57)))
+    assert math.dist((localizer.current().x, localizer.current().y), (1.6, 1.71)) < 0.05
+
+
+def test_a_later_reset_cancels_a_pending_origin() -> None:
+    _, _, localizer, _ = kit()
+    localizer.start_at("2, 1.5, 0")
+    localizer.reset_pose(Pose(5.0, 1.0, 0.0))
+    localizer.observe_state(_state(1_000, 1.0, 0.0, 1.0))
+    estimate = localizer.current()
+    assert math.dist((estimate.x, estimate.y), (5.0, 1.0)) < 0.3
+
+
+def test_start_after_stationary_state_initializes_and_tracks_later_odom() -> None:
+    _, _, localizer, _ = kit()
+    localizer.observe_state(_state(1_000, 0, 0, 0))
+    localizer.start_at("salon@90")
+    assert localizer.current().converged
+    localizer.observe_state(_state(2_000, 0.2, 0, 0))
+    estimate = localizer.current()
+    assert math.dist((estimate.x, estimate.y), (1.5, 1.7)) < 0.05
+
+
+def test_unknown_start_cancels_a_pending_origin() -> None:
+    _, _, localizer, _ = kit()
+    localizer.start_at("salon@0")
+    localizer.start_at("")
+    localizer.observe_state(_state(1_000, 1.0, 0, 0))
+    assert not localizer.initialized
+    assert not localizer.current().converged
 
 
 def test_estimate_description_and_lost_flags() -> None:
     good = PoseEstimate(1, 2, math.pi / 2, 0.05, 0.02, True, 0.8)
     assert good.describe() == (
-        "(+1.00, +2.00) m heading +90 deg, uncertainty 5 cm / 1 deg, map fit 80%"
+        "(+1.00, +2.00) m heading +90 deg, particle spread 5 cm / 1 deg, map fit 80%"
+    )
+    assert (
+        "uncertainty 0 cm / 0 deg" in PoseEstimate(0, 0, 0, 0, 0, True, source="oracle").describe()
     )
     assert not good.lost and good.pose == Pose(1, 2, math.pi / 2)
     assert PoseEstimate(0, 0, 0, 0.8, 0.1, False).lost
@@ -322,6 +730,19 @@ def test_marked_obstacles_reroute_or_block() -> None:
     nav.mark_obstacles([(4.0, y / 10) for y in range(20, 30)])
     assert nav.plan((1.5, 2.5), (6.5, 1.5)) is None
     assert MAP.with_obstacles([]) is MAP
+
+
+def test_temporary_obstacles_are_not_localization_landmarks() -> None:
+    _, _, localizer, _ = kit()
+    navigator = Navigator(MAP, localizer, localizer=localizer)
+    original_field = localizer.field
+    point = (2.8, 2.5)
+    assert float(original_field.lookup(np.array([point[0]]), np.array([point[1]]))[0]) > 0.15
+    navigator.mark_obstacles([point])
+    assert localizer.field is original_field
+    assert not navigator.map.with_obstacles(navigator.obstacles).free(MAP.cell(point))
+    navigator.clear_obstacles()
+    assert localizer.field is original_field
 
 
 def densify(route: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -555,6 +976,31 @@ def test_floor_tracker_follows_a_tilted_level_frame_but_not_a_box() -> None:
     assert abs(math.degrees(plane.tilt_rad) - 4.0) < 0.5
     inliers = np.abs(points[:, 2] - plane.at(points[:, 0], points[:, 1])) <= FLOOR_FIT_INLIER_M
     assert inliers[:40].all() and not inliers[40:].any()
+
+
+def test_floor_tracker_handles_observed_gait_tilt_without_hiding_a_low_obstacle() -> None:
+    slope = math.tan(math.radians(18))
+    box = [
+        (x, y, slope * x + 0.01 + height)
+        for x in (0.9, 1.0, 1.1)
+        for y in (-0.1, 0.0, 0.1)
+        for height in (0.07, 0.15)
+    ]
+    points = _floor_with(box, pitch_deg=18)
+    plane = FloorTracker().observe(points)
+    assert plane is not None
+    assert abs(math.degrees(plane.tilt_rad) - 18) < 0.5
+    inliers = np.abs(points[:, 2] - plane.at(points[:, 0], points[:, 1])) <= FLOOR_FIT_INLIER_M
+    assert inliers[:40].all() and not inliers[40:].any()
+
+
+def test_floor_tracker_does_not_treat_a_sparse_steep_surface_as_the_floor() -> None:
+    xs, ys = np.meshgrid(np.linspace(0.5, 1.8, 5), [-0.3, 0.3])
+    obstacle = np.column_stack((xs.ravel(), ys.ravel(), (0.28 * xs + 0.05 * ys + 0.01).ravel()))
+    distractors = np.column_stack(
+        (np.linspace(0.4, 2.0, 54), np.linspace(-0.5, 0.5, 54), np.full(54, 1.0))
+    )
+    assert FloorTracker().observe(np.vstack((obstacle, distractors))) is None
 
 
 def test_floor_tracker_needs_enough_floor_in_view() -> None:

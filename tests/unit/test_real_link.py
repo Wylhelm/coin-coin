@@ -182,12 +182,16 @@ async def test_fallen_stand_without_probe_discovers_the_refusal_and_asks_a_perso
 
 
 def test_tool_descriptions_follow_capabilities():
+    assert "trips on skates are refused" in tool_description("go_to")
+    assert "do not change mode unless the user agrees" in tool_description("go_to")
     assert "PERSON" not in tool_description("set_mode")
     assert "cannot change mode by itself".upper() in tool_description("set_mode", WEBRTC).upper()
     remote = Capabilities("tcp", remote_mode_switch=True, simulated=True)
     assert tool_description("set_mode", remote) == tool_description("set_mode")
     assert tool_description("stand", remote) == tool_description("stand")
     assert "person" in tool_description("stand", WEBRTC)
+    assisted = tool_description("set_mode", WEBRTC, equipment_assisted=True)
+    assert "CANNOT CHANGE MODE" not in assisted and "never ask a person" in assisted
     assert tool_availability("go_to", None)
     assert tool_availability("go_to", WEBRTC)
     assert tool_availability("go_to", remote) is None

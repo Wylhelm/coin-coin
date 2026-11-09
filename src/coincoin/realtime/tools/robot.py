@@ -114,16 +114,27 @@ DESCRIPTIONS = {
     "stand": "Stand, idempotent.",
     "do_skill": "Perform one currently available skill.",
     "quack": "Quack; wheee can be held for at most 3 seconds.",
-    "status": "Short robot posture, safety, mode and health summary.",
+    "status": (
+        "Short robot posture, safety, mode and health summary and, when room navigation is "
+        "configured, the estimated position (nearest known place) or that it is uncertain. "
+        "Use it to answer où es-tu / where are you; never invent a position."
+    ),
     "go_to": (
-        "Walk or skate by itself to a named room of the apartment, avoiding walls and furniture, "
-        "then stop there (aller dans ma chambre, aller au salon). To come back (reviens, "
-        "retourne, rentre) use place départ, the starting point. mode is optional: roller = on "
-        "skates, faster (en patins, en patinant); walk = on feet (à pied, sans patins, en "
-        "marchant); omit it to keep the current mode. Returns once arrived, which can take a "
-        "minute or more; stop interrupts it."
+        "Go by itself to a named room of the apartment, avoiding walls and furniture, then "
+        "stop there (aller dans ma chambre, aller au salon). To come back (reviens, retourne, "
+        "rentre) use place départ, the starting point. mode is optional: roller = on skates "
+        "(en patins, en patinant); walk = on feet (à pied, sans patins, en marchant); omit "
+        "it to keep the current mode. With estimated-pose navigation, trips on skates are "
+        "refused because gliding cannot be tracked. Returns once arrived, which can take a "
+        "minute or more; stop interrupts it. If it refuses, relay the reason plainly and offer "
+        "what it suggests; do not change mode unless the user agrees."
     ),
 }
+
+SIM_EQUIPMENT_NOTE = (
+    " In this simulation the skates are fitted or removed automatically: never ask a person, "
+    "just wait for the confirmation."
+)
 
 
 PERSON_DESCRIPTIONS = {
@@ -148,15 +159,23 @@ SUFFIX = (
 )
 
 
-def tool_description(name: str, capabilities: Capabilities | None = None) -> str:
-    """Model-facing description, adapted to what the connected robot actually allows."""
+def tool_description(
+    name: str, capabilities: Capabilities | None = None, *, equipment_assisted: bool = False
+) -> str:
+    """Model-facing description, adapted to what the connected robot actually allows.
+
+    `equipment_assisted`: the simulator fits and removes the skates itself (sim auto-equipment),
+    so a mode change never needs a person.
+    """
     needs_person = capabilities is not None and (
-        (name == "set_mode" and capabilities.mode_switch_needs_person)
+        (name == "set_mode" and capabilities.mode_switch_needs_person and not equipment_assisted)
         or (
             name == "stand"
             and (not capabilities.simulated or capabilities.mode_switch_needs_person)
         )
     )
+    if name == "set_mode" and equipment_assisted:
+        return DESCRIPTIONS[name] + SIM_EQUIPMENT_NOTE + SUFFIX
     return (PERSON_DESCRIPTIONS[name] if needs_person else DESCRIPTIONS[name]) + SUFFIX
 
 

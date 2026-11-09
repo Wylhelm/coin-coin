@@ -50,13 +50,15 @@ FLOOR_FIT_MIN_POINTS = 8
 # Farther floor returns graze in at a low angle, where a wall's foot looks just like them.
 FLOOR_FIT_MAX_REACH_M = 2.5
 FLOOR_FIT_MIN_SPAN_M = 0.3
-FLOOR_FIT_MAX_TILT_RAD = math.radians(12)
+FLOOR_FIT_NORMAL_TILT_RAD = math.radians(12)
+FLOOR_FIT_MAX_TILT_RAD = math.radians(20)
 FLOOR_FIT_MAX_OFFSET_M = 0.06
+FLOOR_FIT_STEEP_FRACTION = 0.4
 HIT_MAX_Z_M = 1.5
-# A no-target zone clears the map along its beam while the beam stays at furniture height.
+# Sample ray points for diagnostics; they do not prove that the 2D footprint is clear.
 FREE_MAX_Z_M = 0.45
 FREE_SAMPLES_M = (0.6, 1.2, 1.8, 2.4, 3.0, 3.6)
-# Points a return's beam crossed are free too, short of the surface by a margin for map error.
+# Sample before measured returns too, short of the surface by a margin.
 PASS_MARGIN_M = 0.25
 PASS_MIN_M = 0.3
 
@@ -65,13 +67,32 @@ PASS_MIN_M = 0.3
 # correlated, so a frame counts as this many independent beams.
 SIGMA_HIT_M = 0.06
 RANDOM_FLOOR = 0.25
-FREE_PENALTY = 0.3
 FRAME_BEAMS = 6.0
 # Tracking ignores returns this far from the map at the current estimate (unmapped things), unless
 # too few would remain.
 GATE_M = 0.12
 GATE_MIN_HITS = 6
 GATE_MIN_FRACTION = 0.5
+# A single frame can heavily favor a handful of particles when its floor/wall returns are
+# ambiguous. Reject tracking corrections much larger than the prior cloud, and require a sweep
+# if several such contradictions occur close together.
+TRACK_CORRECTION_M = 0.06
+TRACK_CORRECTION_RAD = 0.1
+TRACK_CORRECTION_STD = 2.0
+TRACK_REJECT_WINDOW_NS = 1_000_000_000
+TRACK_REJECT_LIMIT = 3
+# Nearby unmapped surfaces can look like mapped walls as the pose drifts. Freeze corrections until
+# most frames in a one-second window agree with the predicted pose and the obstacle is out of view.
+TRACK_OBSTACLE_VIEW_M = 1.5
+TRACK_OBSTACLE_WIDTH_MARGIN_M = 0.05
+TRACK_OBSTACLE_EXPLAINED_M = 0.15
+TRACK_OBSTACLE_MIN_HITS = 3
+TRACK_OBSTACLE_CONFIRM_FRAMES = 2
+TRACK_FIT_RECOVERY_NS = 1_000_000_000
+TRACK_FIT_RECOVERY_FRACTION = 0.7
+TRACK_FIT_RECOVERY_MIN_FRAMES = 6
+TRACK_FIT_RECOVERY_MIN_SPAN_NS = 500_000_000
+TRACK_FIT_LOST_NS = 8_000_000_000
 
 # Odometry noise: proportional to the distance and angle moved, plus a small floor per update.
 ODOM_TRANS = 0.08
@@ -80,6 +101,11 @@ ODOM_TRANS_FROM_ROT = 0.02
 ODOM_ROT_FROM_TRANS = 0.08
 ODOM_FLOOR_M = 0.002
 ODOM_FLOOR_RAD = 0.003
+# A NAV_START pose: its own uncertainty, widened by the odometry between origin and first state.
+START_STD_XY = 0.07
+START_STD_YAW = 0.07
+START_TRANS_NOISE = ODOM_TRANS
+START_ROT_NOISE = ODOM_ROT
 # Skates glide where contact odometry sees no step: forward speed is a particle state instead.
 ROLLER_SPEED_SIGMA = 0.25
 ROLLER_MAX_SPEED = 0.6
@@ -145,7 +171,7 @@ def _wrap(angle: FloatArray | float) -> Any:
 
 @dataclass(frozen=True)
 class PoseEstimate:
-    """A map-frame pose with its uncertainty. `converged` means safe to steer by."""
+    """A map-frame pose with spread and fit, not a bound on the actual position error."""
 
     x: float
     y: float
@@ -165,9 +191,10 @@ class PoseEstimate:
         return self.std_xy > LOST_XY_M or self.std_yaw > LOST_YAW_RAD or self.fit < LOW_FIT
 
     def describe(self) -> str:
+        spread = "particle spread" if self.source == "estimated" else "uncertainty"
         return (
             f"({self.x:+.2f}, {self.y:+.2f}) m heading {math.degrees(self.yaw):+.0f} deg, "
-            f"uncertainty {self.std_xy * 100:.0f} cm / {math.degrees(self.std_yaw):.0f} deg, "
+            f"{spread} {self.std_xy * 100:.0f} cm / {math.degrees(self.std_yaw):.0f} deg, "
             f"map fit {self.fit:.0%}"
         )
 
@@ -251,9 +278,9 @@ class Odom:
 class Scan:
     """One frame's returns in the robot's level frame (x forward, y left, z up from the floor).
 
-    `hits` are surfaces at map height, `floor` the returns on the floor, `free` points a no-target
-    beam passed through. `odom` is the contact-odometry pose at the frame's time, so scans taken
-    while turning in place can be stitched into one composite.
+    `hits` are surfaces at map height, `floor` the returns on the floor, and `free` sampled ray
+    points retained for diagnostics, not proof that the 2D map is clear. `odom` is the
+    contact-odometry pose at the frame's time, so scans can be stitched into one composite.
     """
 
     t_ns: int
@@ -314,8 +341,7 @@ def scan_from(
             if not FLOOR_Z_M <= point[2] <= FREE_MAX_Z_M:
                 break
             free.append(point)
-    # A return also says the beam crossed open floor on its way: without that, a pose amid
-    # clutter, where every return lands near some surface, scores as well as the right one.
+    # A measured return can also provide ray samples before the reported surface.
     for direction, distance in zip(directions[valid], frame.distance_m[valid], strict=True):
         for along in (0.5 * distance, distance - PASS_MARGIN_M):
             if along < PASS_MIN_M:
@@ -354,10 +380,11 @@ class FloorTracker:
 
     The level frame is only as good as the IMU's mounting and the head's kinematics: a few
     degrees of error lift floor returns a metre or two ahead to 0.1-0.3 m, where they look like
-    unmapped obstacles on the path (measured: 2 deg of pitch with an ideal simulator, 3-4 deg
-    with realism `real`, plus +-3 deg of gait sway). Most of the ToF's lower zones see the floor,
-    so the plane they share is found frame by frame, and only the returns on it are reclassified:
-    a plane found wrongly (little floor in view) cannot move any other return.
+    unmapped obstacles on the path. In recorded realistic walking, individual frames showed
+    floor slopes up to about 17 degrees in the level frame. Most of the ToF's lower zones see
+    the floor, so the plane they share is found frame by frame. Steep candidates must explain
+    a substantial fraction of the frame; a few points on an obstacle do not establish a floor.
+    Height near the robot and minimum span are also constrained.
     """
 
     def __init__(self) -> None:
@@ -398,16 +425,27 @@ class FloorTracker:
             return None
         planes = planes[plausible_plane]
         residual = np.abs(z[None, :] - (planes[:, :1] * x + planes[:, 1:2] * y + planes[:, 2:]))
+        support = (residual <= FLOOR_FIT_INLIER_M).sum(axis=1)
+        steep = np.hypot(planes[:, 0], planes[:, 1]) > math.tan(FLOOR_FIT_NORMAL_TILT_RAD)
+        strong_support = max(
+            FLOOR_FIT_MIN_POINTS, math.ceil(FLOOR_FIT_STEEP_FRACTION * len(points))
+        )
+        allowed = ~steep | (support >= strong_support)
+        if not allowed.any():
+            return None
         # Truncated squared residuals: a plane tilted to also graze a wall foot pays for every
         # floor return it no longer sits on, so the closest fit wins, not the widest.
         cost = np.minimum(residual, FLOOR_FIT_INLIER_M) ** 2
-        best = residual[int(np.argmin(cost.sum(axis=1)))] <= FLOOR_FIT_INLIER_M
+        score = np.where(allowed, cost.sum(axis=1), math.inf)
+        best = residual[int(np.argmin(score))] <= FLOOR_FIT_INLIER_M
         if best.sum() < FLOOR_FIT_MIN_POINTS or np.ptp(reach[best]) < FLOOR_FIT_MIN_SPAN_M:
             return None
         design = np.column_stack((x[best], y[best], np.ones(int(best.sum()))))
         (a, b, c), *_ = np.linalg.lstsq(design, z[best], rcond=None)
         plane = FloorPlane(float(a), float(b), float(c))
         if plane.tilt_rad > FLOOR_FIT_MAX_TILT_RAD or abs(plane.c) > FLOOR_FIT_MAX_OFFSET_M:
+            return None
+        if plane.tilt_rad > FLOOR_FIT_NORMAL_TILT_RAD and best.sum() < strong_support:
             return None
         return plane
 
@@ -479,10 +517,9 @@ class LikelihoodField:
         y: FloatArray,
         yaw: FloatArray,
         hits: FloatArray,
-        free: FloatArray,
         sigma: float = SIGMA_HIT_M,
     ) -> FloatArray:
-        """Per-pose log-likelihood of level-frame hits and free points (2D arrays ok)."""
+        """Per-pose log-likelihood of level-frame hits (2D arrays ok)."""
         c, s = np.cos(yaw)[..., None], np.sin(yaw)[..., None]
         total = np.zeros(np.shape(x))
         if len(hits):
@@ -490,11 +527,8 @@ class LikelihoodField:
             wy = y[..., None] + s * hits[:, 0] + c * hits[:, 1]
             d = self.surface_distance(wx, wy)
             total += np.log(np.exp(-0.5 * (d / sigma) ** 2) + RANDOM_FLOOR).sum(axis=-1)
-        if len(free):
-            wx = x[..., None] + c * free[:, 0] - s * free[:, 1]
-            wy = y[..., None] + s * free[:, 0] + c * free[:, 1]
-            blocked = self.lookup(wx, wy) < self.resolution
-            total += np.log(np.where(blocked, FREE_PENALTY, 1.0)).sum(axis=-1)
+        # A 2D footprint says nothing about occupancy at a beam's height, and a no-target return
+        # may be a dark or transparent surface. Neither is evidence against a mapped obstacle.
         # The duck stands on free floor, never inside furniture or walls.
         inside = self.lookup(x, y) < 0.5 * self.robot_radius
         return np.where(inside, total - 20.0, total)
@@ -518,7 +552,6 @@ class Hypothesis:
 def global_search(
     field: LikelihoodField,
     hits: FloatArray,
-    free: FloatArray,
     *,
     step_m: float = 0.1,
     yaw_bins: int = 72,
@@ -532,12 +565,10 @@ def global_search(
     """Match a composite scan over every free cell and heading; best hypotheses first."""
     if len(hits) < 8:
         return []
-    fine_hits, fine_free = hits, free
+    fine_hits = hits
     rng = np.random.default_rng(0)
     if len(hits) > max_beams:
         hits = hits[rng.choice(len(hits), max_beams, replace=False)]
-    if len(free) > max_beams // 2:
-        free = free[rng.choice(len(free), max_beams // 2, replace=False)]
     cells = field.free_cells
     stride = max(1, round(step_m / field.resolution))
     keep_mask = (np.rint((cells[:, 0] - field.origin[0]) / field.resolution) % stride == 0) & (
@@ -560,7 +591,7 @@ def global_search(
         x = np.repeat(block[:, 0], len(yaws)).reshape(-1, len(yaws))
         y = np.repeat(block[:, 1], len(yaws)).reshape(-1, len(yaws))
         yaw = np.broadcast_to(yaws, x.shape)
-        scores = field.log_likelihood(x, y, yaw, hits, free, sigma=COARSE_SIGMA_M)
+        scores = field.log_likelihood(x, y, yaw, hits, sigma=COARSE_SIGMA_M)
         flat = scores.ravel()
         top = np.argpartition(flat, -min(keep, flat.size))[-min(keep, flat.size) :]
         best.extend(
@@ -574,10 +605,18 @@ def global_search(
     rng_fine = np.random.default_rng(1)
     if len(fine_hits) > REFINE_BEAMS:
         fine_hits = fine_hits[rng_fine.choice(len(fine_hits), REFINE_BEAMS, replace=False)]
-    if len(fine_free) > REFINE_BEAMS // 2:
-        fine_free = fine_free[rng_fine.choice(len(fine_free), REFINE_BEAMS // 2, replace=False)]
     refined = [
-        _refine(field, Pose(x, y, yaw), fine_hits, fine_free, step_m, 2 * math.pi / yaw_bins)
+        _refine(
+            field,
+            Pose(x, y, yaw),
+            fine_hits,
+            step_m,
+            2 * math.pi / yaw_bins,
+            centre=centre,
+            radius=radius,
+            heading=heading,
+            heading_tolerance=heading_tolerance,
+        )
         for _, x, y, yaw in best
     ]
     refined.sort(key=lambda hypothesis: hypothesis.score, reverse=True)
@@ -588,9 +627,13 @@ def _refine(
     field: LikelihoodField,
     pose: Pose,
     hits: FloatArray,
-    free: FloatArray,
     step_m: float,
     step_yaw: float,
+    *,
+    centre: tuple[float, float] | None = None,
+    radius: float | None = None,
+    heading: float | None = None,
+    heading_tolerance: float = math.pi,
 ) -> Hypothesis:
     """Pattern search around a pose on a 3x3x3 stencil, halving the step each round."""
     offsets = np.array([(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0, 1)])
@@ -600,7 +643,13 @@ def _refine(
         xs = x + offsets[:, 0] * step_m
         ys = y + offsets[:, 1] * step_m
         yaws = yaw + offsets[:, 2] * step_yaw
-        scores = field.log_likelihood(xs, ys, yaws, hits, free)
+        scores = field.log_likelihood(xs, ys, yaws, hits)
+        allowed = np.ones(len(offsets), dtype=bool)
+        if centre is not None and radius is not None:
+            allowed &= np.hypot(xs - centre[0], ys - centre[1]) <= radius + 1e-9
+        if heading is not None:
+            allowed &= np.abs(_wrap(yaws - heading)) <= heading_tolerance + 1e-9
+        scores = np.where(allowed, scores, -math.inf)
         best = int(np.argmax(scores))
         x, y, yaw, score = float(xs[best]), float(ys[best]), float(yaws[best]), float(scores[best])
         if offsets[best].any():
@@ -693,33 +742,59 @@ class ParticleFilter:
         self.y = self.y + s * forward + c * side
         self.yaw = _wrap(self.yaw + turn)
 
-    def correct(self, scan: Scan) -> None:
-        if not len(scan.hits) and not len(scan.free):
-            return
-        hits, free = self.gate(scan.hits), scan.free
-        log_l = self.field.log_likelihood(self.x, self.y, self.yaw, hits, free)
-        beams = len(hits) + len(free) / len(FREE_SAMPLES_M)
-        self.log_w = self.log_w + log_l * min(1.0, FRAME_BEAMS / max(1.0, beams))
-        self.log_w -= self.log_w.max()
-        weights = np.exp(self.log_w)
+    def correct(
+        self,
+        scan: Scan,
+        *,
+        max_shift: float = math.inf,
+        max_turn: float = math.inf,
+        require_match: bool = False,
+    ) -> bool:
+        """Weigh a scan, rejecting an unexpectedly large correction without changing particles."""
+        if not len(scan.hits):
+            return True
+        hits = self.gate(scan.hits, require_match=require_match)
+        if not len(hits):
+            return True
+        log_l = self.field.log_likelihood(self.x, self.y, self.yaw, hits)
+        beams = len(hits)
+        log_w = self.log_w + log_l * min(1.0, FRAME_BEAMS / max(1.0, beams))
+        log_w -= log_w.max()
+        weights = np.exp(log_w)
         weights /= weights.sum()
+        if math.isfinite(max_shift) or math.isfinite(max_turn):
+            before, _, _ = self.estimate()
+            x, y = float(np.sum(weights * self.x)), float(np.sum(weights * self.y))
+            yaw = math.atan2(
+                float(np.sum(weights * np.sin(self.yaw))),
+                float(np.sum(weights * np.cos(self.yaw))),
+            )
+            if (
+                math.dist((before.x, before.y), (x, y)) > max_shift
+                or abs(float(_wrap(yaw - before.yaw))) > max_turn
+            ):
+                return False
+        self.log_w = log_w
         if 1 / np.sum(weights**2) < 0.5 * len(weights) or len(weights) != self.count:
             self._resample(weights)
+        return True
 
-    def gate(self, hits: FloatArray) -> FloatArray:
+    def gate(self, hits: FloatArray, *, require_match: bool = False) -> FloatArray:
         """Drop returns that land far from any mapped surface from the current estimate.
 
         An unmapped closed door or a chair otherwise pulls the cloud to where the map has a wall
-        that looks like it (a door across a doorway lines up with the wall beside it). When most
-        returns are unexplained the estimate itself is in doubt, so they all count.
+        that looks like it (a door across a doorway lines up with the wall beside it). During
+        tracking, too few plausible mapped returns means the frame cannot correct the pose.
         """
-        if len(hits) < 2 * GATE_MIN_HITS:
+        if not require_match and len(hits) < 2 * GATE_MIN_HITS:
             return hits
         pose, _, _ = self.estimate()
         c, s = math.cos(pose.yaw), math.sin(pose.yaw)
         wx = pose.x + c * hits[:, 0] - s * hits[:, 1]
         wy = pose.y + s * hits[:, 0] + c * hits[:, 1]
         keep = self.field.surface_distance(wx, wy) <= GATE_M
+        if require_match:
+            return hits[keep] if keep.sum() >= min(GATE_MIN_HITS, len(hits)) else hits[:0]
         if keep.sum() < max(GATE_MIN_HITS, GATE_MIN_FRACTION * len(hits)):
             return hits
         return hits[keep]
@@ -921,6 +996,9 @@ class LocalizerStats:
     frames: int = 0
     used: int = 0
     skipped: int = 0
+    rejected_corrections: int = 0
+    tracking_conflicts: int = 0
+    fit_conflicts: int = 0
     updates: list[tuple[float, PoseEstimate]] = field(default_factory=list)
 
 
@@ -966,6 +1044,15 @@ class EstimatedPose:
         self.travel_since_fix = 0.0
         self.rotation_since_fix = 0.0
         self._rotation_anchor: float | None = None
+        # A NAV_START pose waiting for the first robot.state to be composed with its odometry.
+        self._origin: Pose | None = None
+        self._correction_rejections: deque[int] = deque()
+        self._correction_conflicted = False
+        self._fit_recovery_start: int | None = None
+        self._fit_recovery_frames: deque[tuple[int, bool]] = deque()
+        self._fit_conflicted = False
+        self._near_obstacle_streak = 0
+        self.collecting_sweep = False
         self.frame_event = asyncio.Event()
 
     # Lifecycle -----------------------------------------------------------------------------
@@ -988,11 +1075,18 @@ class EstimatedPose:
     # Initialisation ------------------------------------------------------------------------
     def reset_pose(self, pose: Pose, std_xy: float = 0.1, std_yaw: float = 0.1) -> None:
         """Start from a known pose (the dock, a place the user confirmed)."""
+        self._origin = None
         self.filter.init_pose(pose, std_xy, std_yaw)
         self._fit = 1.0
         self.confirmed = True
         self.travel_since_fix = self.rotation_since_fix = 0.0
         self._rotation_anchor = None
+        self._correction_rejections.clear()
+        self._correction_conflicted = False
+        self._fit_recovery_start = None
+        self._fit_recovery_frames.clear()
+        self._fit_conflicted = False
+        self._near_obstacle_streak = 0
 
     def reset_region(
         self, centre: tuple[float, float], radius: float, yaw: float | None = None
@@ -1002,40 +1096,87 @@ class EstimatedPose:
         A single 45-degree wedge can pull the particles into a confident wrong pose (a rotated
         twin of the room), so frames alone never promote a region start to `converged`.
         """
+        self._origin = None
         self.filter.init_region(centre, radius, yaw)
         self._fit = 1.0
         self.confirmed = False
+        self._correction_rejections.clear()
+        self._correction_conflicted = False
+        self._fit_recovery_start = None
+        self._fit_recovery_frames.clear()
+        self._fit_conflicted = False
+        self._near_obstacle_streak = 0
 
     def start_at(self, spec: str) -> str:
         """Apply a NAV_START value: `place`, `place@heading_deg` or `x,y,heading_deg`; '' = unknown.
+
+        The given pose is where the odometry origin lies, i.e. where the duck was when its
+        controller started (the simulator spawn). Standing up already turns and slides the duck
+        (tens of degrees under realistic physics), so the start is composed with the odometry
+        accumulated since then, on the first robot.state if none has arrived yet.
 
         Returns a short description for the journal. A place without heading starts as a 0.5 m
         region with unknown heading, which the first go_to confirms with a head sweep.
         """
         spec = spec.strip()
         if not spec:
+            self._origin = None
             self.confirmed = False
+            self.filter.initialized = False
+            self._last_odom = self._last_t_ns = None
             return "unknown start: the first go_to relocalizes with a head sweep"
         name, _, heading = spec.partition("@")
         if name in self.map.places:
             x, y = self.map.places[name]
             if heading:
-                self.reset_pose(Pose(x, y, math.radians(float(heading))), 0.07, 0.07)
-                return f"start at {name}, heading {float(heading):g} deg"
+                degrees = float(heading)
+                if not math.isfinite(degrees):
+                    raise ValueError(f"NAV_START heading must be finite: {spec!r}")
+                self.anchor_origin(Pose(x, y, math.radians(degrees)))
+                return f"start at {name}, heading {degrees:g} deg (odometry origin)"
             self.reset_region((x, y), 0.5)
             return f"start near {name}, heading unknown"
         parts = [float(value) for value in spec.split(",")]
         if len(parts) != 3 or not all(math.isfinite(value) for value in parts):
             raise ValueError(f"NAV_START must be a place, place@deg or x,y,deg: {spec!r}")
-        self.reset_pose(Pose(parts[0], parts[1], math.radians(parts[2])), 0.07, 0.07)
-        return f"start at ({parts[0]:g}, {parts[1]:g}), heading {parts[2]:g} deg"
+        self.anchor_origin(Pose(parts[0], parts[1], math.radians(parts[2])))
+        return f"start at ({parts[0]:g}, {parts[1]:g}), heading {parts[2]:g} deg (odometry origin)"
+
+    def anchor_origin(self, origin: Pose) -> None:
+        """Place the odometry origin at `origin` and start from it plus the odometry so far."""
+        self.reset_pose(origin, START_STD_XY, START_STD_YAW)
+        self._origin = origin
+        if self._history:
+            latest = self._history[-1]
+            self._apply_origin(latest.odom, latest.t_ns)
+
+    def _apply_origin(self, odom: Odom, t_ns: int) -> None:
+        origin, self._origin = self._origin, None
+        if origin is None:
+            return
+        c, s = math.cos(origin.yaw), math.sin(origin.yaw)
+        pose = Pose(
+            origin.x + c * odom.x - s * odom.y,
+            origin.y + s * odom.x + c * odom.y,
+            float(_wrap(origin.yaw + odom.yaw)),
+        )
+        moved = math.hypot(odom.x, odom.y)
+        turned = abs(float(_wrap(odom.yaw)))
+        self._last_odom, self._last_t_ns = odom, t_ns
+        if moved < 1e-3 and turned < 1e-3:
+            return  # Still at the origin: the particles drawn there stand.
+        self.reset_pose(
+            pose,
+            START_STD_XY + START_TRANS_NOISE * moved,
+            START_STD_YAW + START_ROT_NOISE * turned,
+        )
 
     @property
     def initialized(self) -> bool:
         return self.filter.initialized
 
     def use_map(self, nav_map: NavigationMap) -> None:
-        """Weigh beams against another version of the map (with obstacles the ToF has found)."""
+        """Replace the known localization map; transient planning obstacles do not belong here."""
         self.field = LikelihoodField(nav_map)
         self.filter.field = self.field
 
@@ -1055,6 +1196,8 @@ class EstimatedPose:
         if self._history and t_ns <= self._history[-1].t_ns:
             return
         self._history.append(_Stamped(t_ns, odom, state))
+        if self._origin is not None:
+            self._apply_origin(odom, t_ns)
 
     async def _consume(self) -> None:
         async for frame in self._depth.frames():
@@ -1102,16 +1245,100 @@ class EstimatedPose:
             return None
         self._scans.append(scan)
         self.advance(odom, frame.t_ns)
-        if self.filter.initialized:
-            self.filter.correct(scan)
-            pose, _, _ = self.filter.estimate()
-            fit = self.field.fit(pose, scan.hits)
-            if len(scan.hits) >= 6:
-                self._fit = 0.7 * self._fit + 0.3 * fit
+        if self.filter.initialized and not self.collecting_sweep:
+            guarded = not self.glide and (
+                self.confirmed
+                or self._correction_conflicted
+                or self._fit_conflicted
+                or self._fit_recovery_start is not None
+            )
+            self._update_fit(scan, guarded=guarded)
+            if self._fit_recovery_start is not None:
+                accepted = True
+            elif guarded:
+                _, std_xy, std_yaw = self.filter.estimate()
+                accepted = self.filter.correct(
+                    scan,
+                    max_shift=max(TRACK_CORRECTION_M, TRACK_CORRECTION_STD * std_xy),
+                    max_turn=max(TRACK_CORRECTION_RAD, TRACK_CORRECTION_STD * std_yaw),
+                    require_match=True,
+                )
+            else:
+                accepted = self.filter.correct(scan)
+            while (
+                self._correction_rejections
+                and frame.t_ns - self._correction_rejections[0] > TRACK_REJECT_WINDOW_NS
+            ):
+                self._correction_rejections.popleft()
+            if not accepted:
+                self.stats.rejected_corrections += 1
+                self._correction_rejections.append(frame.t_ns)
+                if len(self._correction_rejections) >= TRACK_REJECT_LIMIT:
+                    if not self._correction_conflicted:
+                        self.stats.tracking_conflicts += 1
+                    self._correction_conflicted = True
+                    self.confirmed = False
             self.stats.used += 1
         self.frame_event.set()
         self.frame_event = asyncio.Event()
         return scan
+
+    def _update_fit(self, scan: Scan, *, guarded: bool) -> None:
+        pose, _, _ = self.filter.estimate()
+        enough_hits = len(scan.hits) >= GATE_MIN_HITS
+        if enough_hits:
+            fit = self.field.fit(pose, scan.hits)
+            self._fit = 0.7 * self._fit + 0.3 * fit
+        nearby = guarded and self._nearby_unmapped(scan, pose)
+        self._near_obstacle_streak = self._near_obstacle_streak + 1 if nearby else 0
+        if (
+            self._near_obstacle_streak >= TRACK_OBSTACLE_CONFIRM_FRAMES
+            and self._fit_recovery_start is None
+        ):
+            self._fit_recovery_start = scan.t_ns
+            self._fit_recovery_frames.clear()
+        if self._fit_recovery_start is None:
+            return
+        frames = self._fit_recovery_frames
+        if enough_hits:
+            frames.append((scan.t_ns, self._fit >= GATE_MIN_FRACTION and not nearby))
+        while frames and scan.t_ns - frames[0][0] > TRACK_FIT_RECOVERY_NS:
+            frames.popleft()
+        if (
+            scan.t_ns - self._fit_recovery_start >= TRACK_FIT_RECOVERY_NS
+            and len(frames) >= TRACK_FIT_RECOVERY_MIN_FRAMES
+            and frames[-1][0] - frames[0][0] >= TRACK_FIT_RECOVERY_MIN_SPAN_NS
+            and sum(good for _, good in frames) >= TRACK_FIT_RECOVERY_FRACTION * len(frames)
+        ):
+            self._fit_recovery_start = None
+            frames.clear()
+            return
+        if scan.t_ns - self._fit_recovery_start >= TRACK_FIT_LOST_NS:
+            if not self._fit_conflicted:
+                self.stats.fit_conflicts += 1
+            self._fit_conflicted = True
+            self.confirmed = False
+
+    def _nearby_unmapped(self, scan: Scan, pose: Pose) -> bool:
+        end = (
+            pose.x + TRACK_OBSTACLE_VIEW_M * math.cos(pose.yaw),
+            pose.y + TRACK_OBSTACLE_VIEW_M * math.sin(pose.yaw),
+        )
+        points = blocking_points(
+            self.field,
+            pose,
+            obstacle_points(scan),
+            [(pose.x, pose.y), end],
+            lookahead_m=TRACK_OBSTACLE_VIEW_M,
+            half_width_m=self.map.robot_radius + TRACK_OBSTACLE_WIDTH_MARGIN_M,
+            explained_m=TRACK_OBSTACLE_EXPLAINED_M,
+        )
+        return len(points) >= TRACK_OBSTACLE_MIN_HITS
+
+    @property
+    def obstacle_conflict(self) -> bool:
+        """A nearby unmapped surface has made tracking corrections unreliable."""
+        return self._fit_recovery_start is not None or self._fit_conflicted
 
     def advance(self, odom: Odom, t_ns: int) -> None:
         previous, previous_t = self._last_odom, self._last_t_ns
@@ -1161,7 +1388,12 @@ class EstimatedPose:
             pose.yaw,
             std_xy,
             std_yaw,
-            converged and self._fit >= LOW_FIT and self.confirmed,
+            converged
+            and self._fit >= LOW_FIT
+            and self.confirmed
+            and self._origin is None
+            and self._fit_recovery_start is None
+            and not self.glide,
             self._fit,
         )
 
@@ -1192,6 +1424,8 @@ class EstimatedPose:
         heading: float | None = None,
         heading_tolerance: float = math.pi,
         prior: Pose | None = None,
+        exclude_unmapped: bool = False,
+        accept: Callable[[Pose], bool] | None = None,
     ) -> list[Hypothesis]:
         """Match a stationary head-sweep composite over the map and restart the filter.
 
@@ -1203,19 +1437,22 @@ class EstimatedPose:
         """
         if not scans:
             return []
+        if exclude_unmapped and prior is None:
+            raise ValueError("excluding unmapped sweep returns needs a prior pose")
         reference = scans[-1].odom
         hits: list[FloatArray] = []
-        free: list[FloatArray] = []
         for scan in scans:
-            h, f = scan.relative_to(reference)
+            h, _ = scan.relative_to(reference)
+            if exclude_unmapped and prior is not None and len(h):
+                c, s = math.cos(prior.yaw), math.sin(prior.yaw)
+                wx = prior.x + c * h[:, 0] - s * h[:, 1]
+                wy = prior.y + s * h[:, 0] + c * h[:, 1]
+                h = h[self.field.surface_distance(wx, wy) <= TRACK_OBSTACLE_EXPLAINED_M]
             hits.append(h)
-            free.append(f)
         all_hits = np.concatenate(hits) if hits else np.zeros((0, 2))
-        all_free = np.concatenate(free) if free else np.zeros((0, 2))
         hypotheses = global_search(
             self.field,
             all_hits,
-            all_free,
             centre=centre,
             radius=radius,
             heading=heading,
@@ -1233,7 +1470,6 @@ class EstimatedPose:
                 near = global_search(
                     self.field,
                     all_hits,
-                    all_free,
                     centre=(prior.x, prior.y),
                     radius=RELOC_JUMP_M,
                     heading=prior.yaw,
@@ -1244,25 +1480,29 @@ class EstimatedPose:
                     self.field.fit(near[0].pose, all_hits) + RELOC_JUMP_FIT_MARGIN
                 ):
                     hypotheses = near
-        self.filter.init_hypotheses(hypotheses)
+        candidate = ParticleFilter(self.field, count=self.filter.count)
+        candidate.rng.bit_generator.state = self.filter.rng.bit_generator.state
+        candidate.init_hypotheses(hypotheses)
         reference_t = scans[-1].t_ns
         composite = Scan(
             reference_t,
             reference,
             np.column_stack((all_hits, np.full(len(all_hits), 0.2))),
             np.zeros((0, 3)),
-            np.column_stack((all_free, np.full(len(all_free), 0.2))),
+            np.zeros((0, 3)),
             np.zeros(3),
         )
         for _ in range(3):
-            self.filter.correct(composite)
-            self.filter.x += self.filter.rng.normal(0, 0.02, len(self.filter.x))
-            self.filter.y += self.filter.rng.normal(0, 0.02, len(self.filter.y))
-            self.filter.yaw = _wrap(
-                self.filter.yaw + self.filter.rng.normal(0, 0.02, len(self.filter.yaw))
-            )
-        self.filter.correct(composite)
-        pose, std_xy, std_yaw = self.filter.estimate()
+            candidate.correct(composite)
+            candidate.x += candidate.rng.normal(0, 0.02, len(candidate.x))
+            candidate.y += candidate.rng.normal(0, 0.02, len(candidate.y))
+            candidate.yaw = _wrap(candidate.yaw + candidate.rng.normal(0, 0.02, len(candidate.yaw)))
+        candidate.correct(composite)
+        pose, std_xy, std_yaw = candidate.estimate()
+        if accept is not None and not accept(pose):
+            self.confirmed = False
+            return []
+        self.filter = candidate
         self._fit = self.field.fit(pose, composite.hits)
         self.confirmed = (
             std_xy <= CONVERGED_XY_M and std_yaw <= CONVERGED_YAW_RAD and self._fit >= LOW_FIT
@@ -1270,6 +1510,12 @@ class EstimatedPose:
         if self.confirmed:
             self.travel_since_fix = self.rotation_since_fix = 0.0
             self._rotation_anchor = None
+            self._correction_rejections.clear()
+            self._correction_conflicted = False
+            self._fit_recovery_start = None
+            self._fit_recovery_frames.clear()
+            self._fit_conflicted = False
+            self._near_obstacle_streak = 0
         self._last_odom, self._last_t_ns = reference, reference_t
         # Odometry since the reference frame is applied on the next frame.
         return hypotheses
