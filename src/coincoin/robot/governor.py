@@ -20,7 +20,13 @@ from coincoin.robot.link import LinkDown, RobotLink, RobotRefused
 from coincoin.robot.localization import (
     LOST_XY_M,
     LOST_YAW_RAD,
+    RELOC_JUMP_M,
+    RELOC_JUMP_RAD,
+    TRACK_OBSTACLE_EXPLAINED_M,
+    TRACK_OBSTACLE_MIN_HITS,
+    TRACK_OBSTACLE_VIEW_M,
     EstimatedPose,
+    Odom,
     PoseEstimate,
     Scan,
     blocking_points,
@@ -65,7 +71,7 @@ NAV_OBSTACLE_MARGIN_M = 0.15
 NAV_OBSTACLE_SCANS = 2
 NAV_OBSTACLE_REPLANS = 4
 # Unmapped returns this far along the path excuse a low map fit for a while.
-NAV_OBSTACLE_VIEW_M = 1.5
+NAV_OBSTACLE_VIEW_M = TRACK_OBSTACLE_VIEW_M
 NAV_OBSTACLE_MARK_M = 2.0
 # Any return this close ahead of the body stops the duck, mapped or not.
 NAV_BUMPER_M = 0.06
@@ -121,9 +127,19 @@ FALLEN_NEEDS_PERSON = (
 )
 EQUIPMENT = {"roller": "fit the skates", "walk": "remove the skates"}
 PERSON_POLL_S = 0.5
+ROLLER_TRIP_REFUSED = (
+    "I only find my way on foot: on skates my leg odometry cannot measure a glide, so I would "
+    "lose track of where I am. Not switching by myself: offer to switch to walk mode first "
+    "(set_mode walk), then go_to again"
+)
 
 
-def person_wait_reason(mode: str) -> str:
+def person_wait_reason(mode: str, *, assisted: bool = False) -> str:
+    if assisted:
+        return (
+            f"the simulator is switching to {mode} mode ({EQUIPMENT[mode]}); "
+            "motion is disabled until the robot reports that mode"
+        )
     return (
         f"waiting for a person to {EQUIPMENT[mode]} and select {mode} mode on the robot; "
         "motion is disabled until the robot reports that mode"
@@ -152,6 +168,10 @@ class ToolResult:
     clamped: dict[str, Any] | None = None
     # Non-zero speeds raised to the gait's minimum (Settings.min_*), with their sent values.
     raised: dict[str, float] | None = None
+
+
+class ImmediateToolResult(ToolResult):
+    """A completed action that did not start a motion task."""
 
 
 def _finite(*values: object) -> bool:
@@ -211,6 +231,7 @@ class Governor:
         self.navigation = ""
         # A move or turn ran outside go_to's checks since the last head-sweep fix.
         self._unsupervised_motion = False
+        self._blocked_anchor: tuple[Pose, Odom | None] | None = None
 
     async def start(self) -> None:
         if self._closed:
@@ -323,9 +344,28 @@ class Governor:
         if generation != self._stop_generation or self._closed:
             raise RobotRefused("action cancelled by stop")
         if self._person_target is not None:
-            raise RobotRefused(person_wait_reason(self._person_target))
+            raise RobotRefused(
+                person_wait_reason(
+                    self._person_target, assisted=bool(self.settings.sim_equipment_socket)
+                )
+            )
         if (reason := self._safety_reason()) and not (allow_fallen and reason == "robot fallen"):
             raise RobotRefused(reason)
+
+    def _accept_mode(self, mode: str) -> None:
+        if self._mode is not None and self._mode != mode:
+            self.navigation = ""
+        self._mode = mode
+        self._mode_at = self.clock.now()
+        if self.navigator is None or not self.navigator.honest:
+            return
+        localizer = self.navigator.localizer
+        if localizer is None:
+            return
+        if localizer.glide != (mode == "roller"):
+            localizer.confirmed = False
+            self.navigation = ""
+        localizer.glide = mode == "roller"
 
     async def _refresh_mode(self) -> None:
         async with self._mode_lock:
@@ -336,8 +376,7 @@ class Governor:
                 self._mode = None
                 raise RobotRefused("unsupported or unavailable robot mode")
             changed = self._mode is not None and self._mode != result["mode"]
-            self._mode = result["mode"]
-            self._mode_at = self.clock.now()
+            self._accept_mode(result["mode"])
             if changed and self.moving:
                 await self.stop("robot mode changed")
 
@@ -430,8 +469,7 @@ class Governor:
                         if self.clock.now() >= deadline:
                             raise RobotRefused("robot mode change did not complete within 10 s")
                         await self.clock.sleep(0.1)
-                self._mode = mode
-                self._mode_at = self.clock.now()
+                self._accept_mode(mode)
         except _NeedsPerson as refusal:
             self.journal.write("robot_refused", method="robot.setMode", reason=str(refusal))
             self.capabilities = replace(
@@ -469,12 +507,23 @@ class Governor:
             return self._refuse("set_mode", "unsupported or unavailable robot mode")
         if current["mode"] == mode:
             await self.cancel_person_wait("mode already selected")
-            self._mode = mode
-            self._mode_at = self.clock.now()
+            self._accept_mode(mode)
             self.journal.write("tool_result", method="set_mode", mode=mode)
             return ToolResult(True, detail=f"locomotion mode: {mode}")
-        # The person will pick the duck up to change its feet: nothing may move from now on.
-        await self.stop("mode change needs a person")
+        # Equipment changes may move the duck: nothing may navigate until they finish.
+        if (
+            self.navigator is not None
+            and self.navigator.honest
+            and self.navigator.localizer is not None
+        ):
+            self.navigator.localizer.confirmed = False
+        stop_reason = (
+            "simulation equipment change"
+            if self.settings.sim_equipment_socket
+            else "mode change needs a person"
+        )
+        await self.stop(stop_reason)
+        self.navigation = ""
         timeout_s = self.settings.person_mode_timeout_s
         if self._person_target != mode or self._person_task is None or self._person_task.done():
             await self.cancel_person_wait("mode request replaced")
@@ -560,8 +609,7 @@ class Governor:
                         last_error = str(error)
                 if current == mode:
                     self._person_target = None
-                    self._mode = mode
-                    self._mode_at = self.clock.now()
+                    self._accept_mode(mode)
                     self.journal.write("tool_result", method="set_mode", mode=mode, person=True)
                     await self._notice(
                         f"Le robot est maintenant en mode {mode}; tu peux de nouveau bouger. "
@@ -602,6 +650,14 @@ class Governor:
                 reason == "robot fallen" and self._mode_recovery_generation == self._stop_generation
             )
             if reason is not None and reason != last_reason and not recovering:
+                if (
+                    reason == "robot picked up"
+                    and self.navigator is not None
+                    and self.navigator.honest
+                    and self.navigator.localizer is not None
+                ):
+                    self.navigator.localizer.confirmed = False
+                    self.navigation = ""
                 await self.stop(reason)
             last_reason = reason
             was_connected = connected
@@ -767,6 +823,20 @@ class Governor:
             self._motion = asyncio.create_task(run(replacing))
             if not supervised:
                 self._unsupervised_motion = True
+                self.navigation = ""
+
+    async def _stop_other_motion(self, generation: int) -> None:
+        async with self._action_lock:
+            self._check_safety(generation)
+            motion = self._motion
+            if motion is not None and motion is not asyncio.current_task() and not motion.done():
+                motion.cancel()
+                try:
+                    await self._action_call(generation, "robot.stop", timeout=0.1)
+                finally:
+                    await self._cancel(motion)
+                    if self._motion is motion:
+                        self._motion = None
 
     async def move(self, vx: float, vy: float, vyaw: float, duration_s: float) -> ToolResult:
         requested_at = self.clock.now()
@@ -998,10 +1068,7 @@ class Governor:
         if mode is not None and mode not in ("walk", "roller"):
             return self._refuse("go_to", "mode must be walk or roller")
         if navigator.honest and mode == "roller":
-            return self._refuse(
-                "go_to",
-                "roller navigation needs the simulator pose: contact odometry cannot see a glide",
-            )
+            return self._refuse("go_to", ROLLER_TRIP_REFUSED)
         generation = self._stop_generation
         try:
             await self.start()
@@ -1011,24 +1078,18 @@ class Governor:
                 return self._refuse(
                     "go_to", "room navigation requires a simulated robot and simulated pose"
                 )
-            if mode is not None:
+            if navigator.honest or mode is not None:
                 await self._refresh_mode()
+            if navigator.honest and self._mode == "roller":
+                return self._refuse("go_to", ROLLER_TRIP_REFUSED)
+            if mode is not None:
                 if self._mode != mode:
                     switched = await self.set_mode(mode)
                     if not switched.ok or self._person_target is not None:
                         return switched
                 if generation != self._stop_generation:
                     return self._refuse("go_to", "action cancelled by stop")
-            if navigator.honest:
-                await self._refresh_mode()
-                if self._mode == "roller":
-                    return self._refuse(
-                        "go_to",
-                        "roller navigation needs the simulator pose: "
-                        "contact odometry cannot see a glide; ask for walk mode",
-                    )
             await self._rise_if_sitting(generation, await self._prepare(generation))
-            navigator.clear_obstacles()
             estimate = await navigator.estimate()
             # A manual move or turn was only tracked frame by frame, with no check that the
             # match still holds: confirm with a head sweep before trusting it for a whole trip.
@@ -1040,14 +1101,21 @@ class Governor:
                         f"({estimate.describe()})"
                     )
                 self._unsupervised_motion = False
+            navigator.clear_obstacles()
+            self._blocked_anchor = None
             pose = estimate.pose
             goal = navigator.places[place]
-            if math.dist((pose.x, pose.y), goal) <= Steering.ROLLER_ARRIVAL_M:
+            arrival = Steering.ROLLER_ARRIVAL_M if self._mode == "roller" else Steering.ARRIVAL_M
+            if math.dist((pose.x, pose.y), goal) <= arrival:
+                await self._stop_other_motion(generation)
+                self.navigation = f"arrived at {place}"
                 self.journal.write("tool_result", method="go_to", place=place, already=True)
-                return ToolResult(True, detail=f"already at {place}")
+                return ImmediateToolResult(True, detail=f"already at {place}")
             route = await asyncio.to_thread(navigator.plan, (pose.x, pose.y), goal)
             if route is None:
                 raise RobotRefused(f"no known path to {place}")
+            if math.dist(route[-1], goal) > arrival:
+                raise RobotRefused(f"cannot reach {place}: its mapped location is obstructed")
             locomotion = self._mode
             limits = self._limits()
             self.navigation = f"going to {place}"
@@ -1088,12 +1156,27 @@ class Governor:
         deadline = start + NAV_MAX_S
         next_tick = start + 1 / self.settings.move_hz
         goal = route[-1]
-        steering = Steering(route, limits, mode, navigator.room)
+
+        def make_steering(waypoints: list[tuple[float, float]]) -> Steering:
+            planning_map = navigator.map.with_obstacles(navigator.obstacles)
+            return Steering(
+                waypoints,
+                limits,
+                mode,
+                planning_map.clearance_m,
+                planning_map.segment_clear,
+                route_traversable=planning_map.segment_traversable,
+                recover_stalled_pivot=self.settings.walk_assist,
+            )
+
+        steering = make_steering(route)
         best, best_at, replans = math.inf, start, 0
         stationary_at = start
         observed_pose = None
         last_replan_at: tuple[float, float] | None = None
         last_route: list[tuple[float, float]] | None = None
+        deviation_replans = 0
+        deviation_anchor: tuple[float, float] | None = None
         relocalizations = obstacle_replans = 0
         blocked_checked = False
         uncertain_since: float | None = None
@@ -1118,6 +1201,8 @@ class Governor:
                 now = self.clock.now()
                 pose = estimate.pose
                 diffuse = estimate.std_xy > LOST_XY_M or estimate.std_yaw > LOST_YAW_RAD
+                if navigator.honest and localizer is not None and not localizer.confirmed:
+                    diffuse = True
                 scan = localizer.latest_scan() if localizer is not None else None
                 if (
                     localizer is not None
@@ -1137,9 +1222,15 @@ class Governor:
                         path,
                         lookahead_m=NAV_OBSTACLE_VIEW_M,
                         half_width_m=half_width,
-                        explained_m=0.15,
+                        explained_m=TRACK_OBSTACLE_EXPLAINED_M,
                     )
                     obstacle_seen_at = now if len(in_view) else obstacle_seen_at
+                    if (
+                        navigator.honest
+                        and len(in_view) >= TRACK_OBSTACLE_MIN_HITS
+                        and self._blocked_anchor is None
+                    ):
+                        self._blocked_anchor = (scan_pose, scan.odom)
                     radius = navigator.map.robot_radius
                     close = points[
                         (points[:, 0] > 0)
@@ -1148,7 +1239,12 @@ class Governor:
                     ]
                     # Mapped surfaces only: unmapped ones are the obstacle check's business.
                     bumped = forward and len(close) > len(
-                        unexplained_points(localizer.field, scan_pose, close, explained_m=0.15)
+                        unexplained_points(
+                            localizer.field,
+                            scan_pose,
+                            close,
+                            explained_m=TRACK_OBSTACLE_EXPLAINED_M,
+                        )
                     )
                     ahead = blocking_points(
                         localizer.field,
@@ -1157,7 +1253,7 @@ class Governor:
                         path,
                         lookahead_m=lookahead,
                         half_width_m=half_width,
-                        explained_m=0.15,
+                        explained_m=TRACK_OBSTACLE_EXPLAINED_M,
                     )
                     gap = float(
                         localizer.field.lookup(np.array([scan_pose.x]), np.array([scan_pose.y]))[0]
@@ -1178,7 +1274,7 @@ class Governor:
                         if replanned is None or replans >= NAV_REPLANS:
                             raise RobotRefused(f"stuck against a wall on the way to {place}")
                         replans += 1
-                        steering = Steering(replanned, limits, mode, navigator.room)
+                        steering = make_steering(replanned)
                         forward = False
                         now = self.clock.now()
                         best, best_at = math.inf, now
@@ -1199,7 +1295,7 @@ class Governor:
                             localizer.field,
                             scan_pose,
                             points,
-                            explained_m=0.15,
+                            explained_m=TRACK_OBSTACLE_EXPLAINED_M,
                             max_range_m=NAV_OBSTACLE_MARK_M,
                         )
                         obstacle_streak.extend(
@@ -1209,8 +1305,11 @@ class Governor:
                         streak, obstacle_streak = 0, []
                     if streak >= NAV_OBSTACLE_SCANS:
                         await self.link.call("robot.stop", timeout=0.1)
+                        forward = False
                         self._check_safety(generation)
                         known = list(navigator.obstacles)
+                        if navigator.honest and self._blocked_anchor is None:
+                            self._blocked_anchor = (estimate.pose, localizer.latest_odom())
                         navigator.mark_obstacles(obstacle_streak)
                         self.journal.write(
                             "navigation",
@@ -1236,13 +1335,15 @@ class Governor:
                             self.journal.write("navigation", place=place, event="verify_blocked")
                             relocalizations += 1
                             blocked_checked = True
+                            if self._blocked_anchor is None:
+                                self._blocked_anchor = (estimate.pose, localizer.latest_odom())
                             estimate = await self._relocalize(generation, navigator, estimate)
                             if not estimate.converged:
                                 raise RobotRefused(
-                                    f"I lost track of where I am on the way to {place}: what "
-                                    "looked like an obstacle may be a wall seen from a wrong "
-                                    f"pose, and a head sweep did not confirm my position; I "
-                                    f"stopped ({estimate.describe()})"
+                                    f"the way to {place} may be blocked by something that is "
+                                    "not on my map; I lost track of where I am and stopped, "
+                                    "and a head sweep did not confirm my position "
+                                    f"({estimate.describe()})"
                                 )
                             navigator.set_obstacles(known)
                             replanned = await asyncio.to_thread(
@@ -1250,7 +1351,7 @@ class Governor:
                             )
                             if replanned is None:
                                 raise RobotRefused(f"no known path to {place} from where I am")
-                            steering = Steering(replanned, limits, mode, navigator.room)
+                            steering = make_steering(replanned)
                             latest = localizer.latest_scan()
                             checked_scan_t = latest.t_ns if latest else checked_scan_t
                             now = self.clock.now()
@@ -1259,9 +1360,11 @@ class Governor:
                             next_tick = now + 1 / self.settings.move_hz
                             continue
                         if replanned is None:
+                            if navigator.honest and localizer is not None:
+                                localizer.confirmed = False
                             raise RobotRefused(
-                                f"the way to {place} is blocked by something that is not on my "
-                                "map (a closed door?); I stopped"
+                                f"the way to {place} may be blocked by something that is not on "
+                                "my map; I stopped and cannot confirm my position"
                             )
                         obstacle_replans += 1
                         blocked_checked = False
@@ -1271,7 +1374,7 @@ class Governor:
                             obstacle_replan=obstacle_replans,
                             route=replanned,
                         )
-                        steering = Steering(replanned, limits, mode, navigator.room)
+                        steering = make_steering(replanned)
                         now = self.clock.now()
                         best, best_at = math.inf, now
                         observed_pose, stationary_at = pose, now
@@ -1292,6 +1395,7 @@ class Governor:
                     diffuse or (uncertain_since is not None and now - uncertain_since >= patience)
                 ):
                     await self.link.call("robot.stop", timeout=0.1)
+                    forward = False
                     self._check_safety(generation)
                     if relocalizations >= NAV_RELOCALIZATIONS:
                         raise RobotRefused(
@@ -1301,6 +1405,12 @@ class Governor:
                     relocalizations += 1
                     estimate = await self._relocalize(generation, navigator, estimate)
                     if not estimate.converged:
+                        if navigator.obstacles:
+                            raise RobotRefused(
+                                f"the way to {place} may be blocked by something that is not "
+                                "on my map; I lost track of where I am and stopped "
+                                f"({estimate.describe()})"
+                            )
                         raise RobotRefused(
                             f"I lost track of where I am on the way to {place} and stopped "
                             f"({estimate.describe()})"
@@ -1310,14 +1420,78 @@ class Governor:
                     )
                     if replanned is None:
                         raise RobotRefused(f"no known path to {place} from where I am")
-                    steering = Steering(replanned, limits, mode, navigator.room)
+                    steering = make_steering(replanned)
+                    latest = localizer.latest_scan() if localizer is not None else None
+                    checked_scan_t = latest.t_ns if latest else checked_scan_t
+                    streak, obstacle_streak, obstacle_seen_at = 0, [], None
                     now = self.clock.now()
                     best, best_at, uncertain_since = math.inf, now, None
                     observed_pose, stationary_at = estimate.pose, now
                     next_tick = now + 1 / self.settings.move_hz
                     continue
+                reversing_pivot = steering.reversing_pivot
                 command = steering.update(pose, now)
+                if steering.reversing_pivot and not reversing_pivot:
+                    self.journal.write("navigation", place=place, event="reverse_stalled_pivot")
+                if command is not None and not steering.route_clear(pose):
+                    await self.link.call("robot.stop", timeout=0.1)
+                    forward = False
+                    self._check_safety(generation)
+                    here = (pose.x, pose.y)
+                    if deviation_anchor is None or math.dist(here, deviation_anchor) >= 0.2:
+                        deviation_anchor, deviation_replans = here, 0
+                    replanned = None
+                    if deviation_replans < NAV_REPLANS:
+                        replanned = await asyncio.to_thread(navigator.plan, here, goal)
+                    self._check_safety(generation)
+                    if replanned is None:
+                        raise RobotRefused(f"cannot keep a safe path to {place}; I stopped")
+                    deviation_replans += 1
+                    self.journal.write(
+                        "navigation", place=place, event="route_deviation", route=replanned
+                    )
+                    steering = make_steering(replanned)
+                    now = self.clock.now()
+                    best, best_at = math.inf, now
+                    observed_pose, stationary_at = pose, now
+                    next_tick = now + 1 / self.settings.move_hz
+                    continue
                 if command is None:
+                    if navigator.honest and not estimate.converged:
+                        await self.link.call("robot.stop", timeout=0.1)
+                        forward = False
+                        self._check_safety(generation)
+                        if relocalizations >= NAV_RELOCALIZATIONS:
+                            raise RobotRefused(
+                                f"I cannot confirm that I reached {place}; I stopped"
+                            )
+                        relocalizations += 1
+                        estimate = await self._relocalize(generation, navigator, estimate)
+                        if not estimate.converged:
+                            raise RobotRefused(
+                                f"I cannot confirm that I reached {place}; I stopped"
+                            )
+                        pose = estimate.pose
+                        if math.dist((pose.x, pose.y), goal) > Steering.ARRIVAL_M:
+                            replanned = await asyncio.to_thread(
+                                navigator.plan, (pose.x, pose.y), goal
+                            )
+                            if replanned is None:
+                                raise RobotRefused(f"no known path to {place} from where I am")
+                            steering = make_steering(replanned)
+                            latest = localizer.latest_scan() if localizer is not None else None
+                            checked_scan_t = latest.t_ns if latest else checked_scan_t
+                            streak, obstacle_streak, obstacle_seen_at = 0, [], None
+                            now = self.clock.now()
+                            best, best_at, uncertain_since = math.inf, now, None
+                            observed_pose, stationary_at = pose, now
+                            next_tick = now + 1 / self.settings.move_hz
+                            continue
+                    arrival = Steering.ROLLER_ARRIVAL_M if mode == "roller" else Steering.ARRIVAL_M
+                    if math.dist((pose.x, pose.y), navigator.places[place]) > arrival:
+                        raise RobotRefused(
+                            f"cannot reach {place}: its mapped location is obstructed"
+                        )
                     break
                 if now >= deadline:
                     raise RobotRefused(f"did not reach {place} within {NAV_MAX_S:g} s")
@@ -1333,6 +1507,7 @@ class Governor:
                     best, best_at = remaining, now
                 if now - best_at >= NAV_STALL_S or now - stationary_at >= NAV_STATIONARY_S:
                     await self.link.call("robot.stop", timeout=0.1)
+                    forward = False
                     self._check_safety(generation)
                     replanned = None
                     if replans < NAV_REPLANS:
@@ -1347,7 +1522,7 @@ class Governor:
                         raise RobotRefused(f"stuck on the way to {place}")
                     replans += 1
                     self.journal.write("navigation", place=place, replan=replans, route=replanned)
-                    steering = Steering(replanned, limits, mode, navigator.room)
+                    steering = make_steering(replanned)
                     last_replan_at, last_route = here, replanned
                     best, best_at = math.inf, now
                     observed_pose, stationary_at = pose, now
@@ -1396,6 +1571,20 @@ class Governor:
             estimate.yaw - math.remainder(latest.yaw - scan.odom.yaw, 2 * math.pi),
         )
 
+    @staticmethod
+    def _anchor_at_odom(anchor: Pose, start: Odom | None, end: Odom | None) -> Pose:
+        if start is None or end is None:
+            return anchor
+        dx, dy = end.x - start.x, end.y - start.y
+        c, s = math.cos(start.yaw), math.sin(start.yaw)
+        forward, side = c * dx + s * dy, -s * dx + c * dy
+        c, s = math.cos(anchor.yaw), math.sin(anchor.yaw)
+        return Pose(
+            anchor.x + c * forward - s * side,
+            anchor.y + s * forward + c * side,
+            anchor.yaw + math.remainder(end.yaw - start.yaw, 2 * math.pi),
+        )
+
     async def _relocalize(
         self, generation: int, navigator: Navigator, prior: PoseEstimate
     ) -> PoseEstimate:
@@ -1404,7 +1593,20 @@ class Governor:
         if localizer is None:
             return prior
         self.journal.write("localization", event="sweep", prior=prior.describe())
-        scans = await self._sweep(generation, localizer)
+        prior_odom = localizer.latest_odom()
+        exclude_unmapped = bool(
+            self._blocked_anchor is not None or navigator.obstacles or localizer.obstacle_conflict
+        )
+        localizer.confirmed = False
+        await self._stop_other_motion(generation)
+        localizer.collecting_sweep = True
+        try:
+            scans = await self._sweep(generation, localizer)
+        finally:
+            localizer.collecting_sweep = False
+        reference = scans[-1].odom if scans else localizer.latest_odom()
+        prior_pose = self._anchor_at_odom(prior.pose, prior_odom, reference)
+        prior = replace(prior, x=prior_pose.x, y=prior_pose.y, yaw=prior_pose.yaw)
         centre = heading = None
         radius = heading_tolerance = None
         if localizer.initialized and prior.std_xy <= RELOC_PRIOR_MAX_M:
@@ -1418,9 +1620,30 @@ class Governor:
                 heading_tolerance = min(
                     max(RELOC_HEADING_RAD[0], 3 * prior.std_yaw, drift_yaw), RELOC_HEADING_RAD[1]
                 )
-        elif not self.settings.nav_global_relocalization:
+        elif not self.settings.nav_global_relocalization or exclude_unmapped:
             self.journal.write("localization", event="no_prior", scans=len(scans))
-            return prior
+            return replace(prior, converged=False)
+        correction_map = navigator.map.with_obstacles(navigator.obstacles)
+        anchor = (
+            self._anchor_at_odom(*self._blocked_anchor, localizer.latest_odom())
+            if self._blocked_anchor is not None
+            else None
+        )
+
+        def accept(pose: Pose) -> bool:
+            if anchor is not None and (
+                math.dist((anchor.x, anchor.y), (pose.x, pose.y)) > RELOC_JUMP_M
+                or abs(math.remainder(pose.yaw - anchor.yaw, 2 * math.pi)) > RELOC_JUMP_RAD
+            ):
+                return False
+            if centre is None:
+                return True
+            if radius is not None and math.dist(centre, (pose.x, pose.y)) > radius + 0.2:
+                return False
+            return not navigator.obstacles or correction_map.segment_unobstructed(
+                centre, (pose.x, pose.y)
+            )
+
         localizer.relocalizing = True
         try:
             hypotheses = await asyncio.to_thread(
@@ -1431,19 +1654,20 @@ class Governor:
                 heading=heading,
                 heading_tolerance=heading_tolerance if heading_tolerance is not None else math.pi,
                 prior=prior.pose if centre is not None else None,
+                exclude_unmapped=exclude_unmapped,
+                accept=accept,
             )
         finally:
             localizer.relocalizing = False
         self._check_safety(generation)
         await self.clock.sleep(0.3)
         estimate = await navigator.estimate()
-        if (
-            centre is not None
-            and radius is not None
-            and math.dist(centre, (estimate.x, estimate.y)) > radius + 0.2
-        ):
-            # The match wandered off the prior: a look-alike, not a correction.
+        if not hypotheses or not accept(estimate.pose):
+            # A rejected match must not become trusted on the next request.
+            localizer.confirmed = False
             estimate = replace(estimate, converged=False)
+        elif estimate.converged:
+            self._blocked_anchor = None
         self.journal.write(
             "localization",
             event="relocalized" if estimate.converged else "relocalization_failed",
@@ -1686,10 +1910,41 @@ class Governor:
         if self.navigation:
             summary += f", navigation: {self.navigation}"
         if self._person_target is not None:
-            summary += f", {person_wait_reason(self._person_target)}"
+            summary += ", " + person_wait_reason(
+                self._person_target, assisted=bool(self.settings.sim_equipment_socket)
+            )
+        if self.navigator is not None:
+            summary += f", position: {await self._where()}"
         return ToolResult(
             True,
             detail=summary,
+        )
+
+    async def _where(self) -> str:
+        """The estimated position in words, or plainly that it is not known."""
+        navigator = self.navigator
+        assert navigator is not None
+        try:
+            estimate = await navigator.estimate()
+        except ROBOT_ERRORS as error:
+            return f"inconnue / unknown ({error})"
+        if (
+            not estimate.converged
+            or not math.isfinite(estimate.std_xy)
+            or (navigator.honest and self._unsupervised_motion)
+        ):
+            return (
+                "incertaine, je dois regarder autour de moi avant de partir / "
+                f"uncertain, a head sweep is needed before a trip ({estimate.describe()})"
+            )
+        name, goal = min(
+            navigator.places.items(),
+            key=lambda item: math.dist(item[1], (estimate.x, estimate.y)),
+        )
+        distance = math.dist(goal, (estimate.x, estimate.y))
+        return (
+            f"a environ {distance:.1f} m du repere {name} / "
+            f"about {distance:.1f} m from landmark {name} ({estimate.describe()})"
         )
 
 

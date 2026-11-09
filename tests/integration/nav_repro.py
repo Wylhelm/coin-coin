@@ -24,7 +24,7 @@ import numpy as np
 from coincoin.clock import SystemClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
-from coincoin.robot.governor import Governor
+from coincoin.robot.governor import Governor, ImmediateToolResult
 from coincoin.robot.localization import EstimatedPose, TcpTofStream
 from coincoin.robot.navigation import NavigationMap, Navigator, Pose, SimPose
 from tests.integration import sim_stack as sim_stack_module
@@ -46,6 +46,7 @@ class Trace:
         probe = await self.stack.probe()
         state = self.stack.link.state() or {}
         odom = state.get("odom") or {}
+        odom_pose = self.localizer.latest_odom()
         estimate = self.localizer.current()
         row: dict[str, Any] = {
             "t": round(time.monotonic() - self.start, 2),
@@ -53,6 +54,7 @@ class Trace:
             "true": [round(probe["position"][0], 3), round(probe["position"][1], 3)],
             "true_yaw": round(math.degrees(probe["yaw"]), 1),
             "odom_yaw": round(math.degrees(odom.get("yaw", math.nan)), 1),
+            "odom_xy": [odom_pose.x, odom_pose.y] if odom_pose is not None else None,
             "contacts": probe["contact_count"],
         }
         if estimate.std_xy < math.inf:
@@ -63,10 +65,12 @@ class Trace:
                 std_yaw=round(math.degrees(estimate.std_yaw), 1),
                 fit=round(estimate.fit, 2),
                 converged=estimate.converged,
-                err=round(math.dist(probe["position"], (estimate.x, estimate.y)), 3),
+                err=math.dist(probe["position"], (estimate.x, estimate.y)),
                 yaw_err=round(math.degrees(_wrap(probe["yaw"] - estimate.yaw)), 1),
             )
         scan = self.localizer.latest_scan()
+        if scan is not None:
+            row["scan_t_ns"] = scan.t_ns
         if scan is not None and scan.t_ns != getattr(self, "_scan_t", None):
             self._scan_t = scan.t_ns
             low = scan.hits[scan.hits[:, 2] <= 0.35]
@@ -112,15 +116,21 @@ class Trace:
 
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     errors = [row["err"] for row in rows if "err" in row]
+    converged_errors = [row["err"] for row in rows if row.get("converged") and "err" in row]
     yaws = [abs(row["yaw_err"]) for row in rows if "yaw_err" in row]
     if not errors:
         return {}
     return {
         "rms_m": round(math.sqrt(sum(e * e for e in errors) / len(errors)), 3),
         "max_m": round(max(errors), 3),
+        "max_converged_m": max(converged_errors, default=None),
         "yaw_rms_deg": round(math.sqrt(sum(y * y for y in yaws) / len(yaws)), 1),
         "yaw_max_deg": round(max(yaws), 1),
-        "contacts": sum(1 for row in rows if row["contacts"]),
+        "contacts": (
+            None
+            if any(row.get("contacts") is None for row in rows)
+            else sum(1 for row in rows if row["contacts"])
+        ),
     }
 
 
@@ -178,10 +188,15 @@ async def main(args: argparse.Namespace) -> list[dict[str, Any]]:
                 for place in args.places:
                     steps.append((place, lambda place=place: governor.go_to(place, mode="walk")))
                 for name, call in steps:
+                    samples_before = len(trace.rows.get(name, []))
                     trace.phase = name
                     began = time.monotonic()
                     started = await call()
-                    result = started if not started.ok else await governor.wait_motion()
+                    result = (
+                        started
+                        if not started.ok or isinstance(started, ImmediateToolResult)
+                        else await governor.wait_motion()
+                    )
                     trace.phase = f"{name}:settle"
                     await asyncio.sleep(2.0)
                     row = await trace.sample()
@@ -191,12 +206,12 @@ async def main(args: argparse.Namespace) -> list[dict[str, Any]]:
                         "detail": result.detail if result else None,
                         "reason": result.reason if result else None,
                         "seconds": round(time.monotonic() - began, 1),
-                        **summarize(trace.rows.get(name, [])),
+                        **summarize(trace.rows.get(name, [])[samples_before:]),
                         "after": row,
                     }
                     if name in navigator.places:
-                        final = math.dist(row["true"], navigator.places[name])
-                        summary["final_m"] = round(final, 3)
+                        final = await stack.probe()
+                        summary["final_m"] = math.dist(final["position"], navigator.places[name])
                     results.append(summary)
                     print(json.dumps(summary, ensure_ascii=False), flush=True)
                     out.write(json.dumps({"summary": summary}, ensure_ascii=False) + "\n")

@@ -15,6 +15,7 @@ from coincoin.journal import Journal
 from coincoin.realtime.events import ResponseDone, ResponseStarted, SpeechStarted, ToolCall
 from coincoin.realtime.session import RealtimeConnectionError, RealtimeSession
 from coincoin.robot.feature import LINK_LOST, RobotFeature
+from coincoin.robot.governor import ImmediateToolResult
 from coincoin.statemachine import Mode, State
 from tests.fakes.fake_realtime import FakeRealtimeServer
 from tests.fakes.fake_robotd import FakeRobotd, FakeRobotLink
@@ -111,6 +112,23 @@ async def rig(tmp_path: Path, request: pytest.FixtureRequest):
     finally:
         await app.stop()
         await robot.close_server()
+
+
+async def test_go_to_already_there_does_not_wait_for_an_old_motion(
+    rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, runtime, _, _ = rig
+
+    async def already(place: str) -> ImmediateToolResult:
+        return ImmediateToolResult(True, detail=f"already at {place}")
+
+    async def unexpected_wait() -> None:
+        pytest.fail("an immediate arrival must not await a previous motion")
+
+    monkeypatch.setattr(runtime.governor, "go_to", already)
+    monkeypatch.setattr(runtime.governor, "wait_motion", unexpected_wait)
+    result = await runtime._sequenced("go_to", {"place": "salon"})
+    assert result.ok and result.detail == "already at salon"
 
 
 async def test_scripted_move_then_turn_over_both_real_transports(rig) -> None:

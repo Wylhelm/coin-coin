@@ -27,9 +27,9 @@ import pytest
 from coincoin.clock import SystemClock
 from coincoin.config import Settings
 from coincoin.journal import Journal
-from coincoin.robot.governor import Governor, ToolResult
+from coincoin.robot.governor import Governor, ImmediateToolResult, ToolResult
 from coincoin.robot.localization import EstimatedPose, TcpTofStream
-from coincoin.robot.navigation import NavigationMap, Navigator, SimPose
+from coincoin.robot.navigation import NavigationMap, Navigator, Pose, SimPose
 from tests.integration.sim_stack import SimStack, apartment_dir, sim_stack
 
 pytestmark = pytest.mark.skipif(
@@ -50,11 +50,19 @@ class Leg:
     result: ToolResult | None = None
     seconds: float = 0.0
     errors: list[float] = field(default_factory=list)
+    converged_errors: list[float] = field(default_factory=list)
     yaw_errors: list[float] = field(default_factory=list)
     converged: int = 0
     samples: int = 0
     contact_s: float = 0.0
+    contact_samples: int = 0
+    contact_steps: int = 0
+    contact_events: int = 0
+    contact_physics_s: float = 0.0
+    contact_details: list[dict[str, Any]] = field(default_factory=list)
     final_error: float = math.nan
+    final_localization_error: float = math.nan
+    final_converged: bool | None = None
 
     def summary(self) -> dict[str, Any]:
         rms = math.sqrt(sum(e * e for e in self.errors) / len(self.errors)) if self.errors else 0
@@ -70,10 +78,20 @@ class Leg:
             "seconds": round(self.seconds, 1),
             "rms_m": round(rms, 3),
             "max_m": round(max(self.errors, default=0.0), 3),
+            "max_converged_m": (
+                round(max(self.converged_errors), 3) if self.converged_errors else None
+            ),
             "yaw_rms_deg": round(math.degrees(yaw_rms), 1),
             "converged_pct": round(100 * self.converged / max(self.samples, 1)),
             "contact_s": round(self.contact_s, 2),
+            "contact_samples": self.contact_samples,
+            "contact_steps": self.contact_steps,
+            "contact_events": self.contact_events,
+            "contact_physics_s": round(self.contact_physics_s, 3),
+            "contact_details": self.contact_details,
             "final_error_m": round(self.final_error, 3),
+            "final_localization_error_m": round(self.final_localization_error, 3),
+            "final_converged": self.final_converged,
         }
 
 
@@ -92,13 +110,34 @@ def scene_with(tmp_path: Path, *geoms: str) -> Path:
     return copy
 
 
+def capture_final(leg: Leg, initial: dict, final: dict, navigator: Navigator) -> None:
+    leg.final_error = math.dist(final["position"], navigator.places[leg.destination])
+    if navigator.localizer is not None:
+        estimate = navigator.localizer.current()
+        leg.final_localization_error = math.dist(final["position"], (estimate.x, estimate.y))
+        leg.final_converged = estimate.converged
+        if estimate.converged:
+            leg.converged_errors.append(leg.final_localization_error)
+    leg.contact_steps = final["contact_steps"] - initial["contact_steps"]
+    leg.contact_events = final["contact_events"] - initial["contact_events"]
+    leg.contact_physics_s = leg.contact_steps * final["contact_step_s"]
+    leg.contact_details = [
+        event for event in final["contact_details"] if event["event"] > initial["contact_events"]
+    ]
+
+
 async def drive(stack: SimStack, governor: Governor, navigator: Navigator, destination: str) -> Leg:
     leg = Leg(destination)
+    initial = await stack.probe()
+    leg.contact_samples = int(bool(initial["contact_count"]))
     started = await governor.go_to(destination, mode="walk")
     loop = asyncio.get_running_loop()
     at = loop.time()
-    if not started.ok:
+    if not started.ok or isinstance(started, ImmediateToolResult):
         leg.result = started
+        await asyncio.sleep(2.0)
+        final = await stack.probe()
+        capture_final(leg, initial, final, navigator)
         return leg
     waiter = asyncio.create_task(governor.wait_motion())
     contact_since: float | None = None
@@ -111,14 +150,21 @@ async def drive(stack: SimStack, governor: Governor, navigator: Navigator, desti
                 if estimate is not None and estimate.std_xy < math.inf:
                     leg.samples += 1
                     leg.converged += estimate.converged
-                    leg.errors.append(math.dist(probe["position"], (estimate.x, estimate.y)))
+                    error = math.dist(probe["position"], (estimate.x, estimate.y))
+                    leg.errors.append(error)
+                    if estimate.converged:
+                        leg.converged_errors.append(error)
                     yaw = probe["yaw"] - estimate.yaw
                     leg.yaw_errors.append(abs(math.atan2(math.sin(yaw), math.cos(yaw))))
                 if probe["contact_count"]:
+                    leg.contact_samples += 1
                     contact_since = now if contact_since is None else contact_since
                 elif contact_since is not None:
                     leg.contact_s = max(leg.contact_s, now - contact_since)
                     contact_since = None
+                if probe["contact_steps"] > initial["contact_steps"]:
+                    await governor.stop(reason="diagnostic collision")
+                    break
                 if leg.samples % 20 == 1 and estimate is not None:
                     print(
                         f"{destination} {now:5.1f}s true=({probe['position'][0]:+.2f}, "
@@ -133,8 +179,12 @@ async def drive(stack: SimStack, governor: Governor, navigator: Navigator, desti
         await governor.stop()
     leg.result = await waiter if waiter.done() else None
     leg.seconds = loop.time() - at
+    if contact_since is not None:
+        leg.contact_s = max(leg.contact_s, leg.seconds - contact_since)
+    await asyncio.sleep(2.0)
     final = await stack.probe()
-    leg.final_error = math.dist(final["position"], navigator.places[destination])
+    leg.contact_samples += bool(final["contact_count"])
+    capture_final(leg, initial, final, navigator)
     return leg
 
 
@@ -155,6 +205,8 @@ def report(name: str, legs: list[Leg], navigator: Navigator) -> list[dict[str, A
 async def run(tmp_path: Path, name: str, scene: Path, destinations: list[str]) -> list[Leg]:
     nav_map = NavigationMap.load(apartment_dir() / "navigation_appartement.json")
     async with sim_stack(tmp_path, scene, tof=True) as stack:
+        startup = await stack.probe()
+        assert startup["contact_steps"] == 0, startup
         localizer = EstimatedPose(
             nav_map, stack.link.state, TcpTofStream(stack.tof_url), clock=SystemClock().now
         )
@@ -191,26 +243,85 @@ async def test_honest_tour_of_the_apartment(tmp_path: Path) -> None:
     legs = await run(tmp_path, "plain", scene_with(tmp_path), ["ma chambre", "salon"])
     for leg in legs:
         assert leg.result is not None and leg.result.ok, leg.summary()
-        assert leg.final_error <= 0.35, leg.summary()
-        assert leg.contact_s < 2.0, leg.summary()
+        assert leg.final_error <= 0.20, leg.summary()
+        assert leg.final_converged and leg.final_localization_error <= 0.20, leg.summary()
+        assert max(leg.converged_errors, default=0.0) <= 0.20, leg.summary()
+        assert leg.contact_steps == 0 and leg.contact_samples == 0, leg.summary()
     assert len(legs) == 2
 
 
-@pytest.mark.xfail(
-    reason="measured limitation (docs/localization.md): in the open area west of the start the "
-    "estimate is biased 0.1-0.25 m south, so the mapped walls seen around the box look "
-    "unexplained, get marked too, and close the corridor",
-    strict=False,
-)
+async def test_honest_return_from_corridor_with_biased_initial_pose(tmp_path: Path) -> None:
+    nav_map = NavigationMap.load(apartment_dir() / "navigation_appartement.json")
+    async with sim_stack(tmp_path, scene_with(tmp_path)) as stack:
+        await stack.place([-2.72, -0.515], math.radians(-4.6))
+        await asyncio.sleep(0.5)
+        assert (await stack.probe())["contact_steps"] == 0
+        localizer = EstimatedPose(
+            nav_map, stack.link.state, TcpTofStream(stack.tof_url), clock=SystemClock().now
+        )
+        localizer.reset_pose(Pose(-2.68, -0.71, math.radians(-8)), 0.06, math.radians(3.3))
+        localizer.start()
+        navigator = Navigator(
+            nav_map, localizer, oracle=SimPose(stack.body_url), localizer=localizer
+        )
+        governor = Governor(
+            stack.link,
+            Settings(max_move_s=30, walk_assist=True),
+            SystemClock(),
+            Journal(tmp_path / "journal"),
+            navigator=navigator,
+        )
+        await governor.start()
+        try:
+            await asyncio.sleep(0.5)
+            leg = await drive(stack, governor, navigator, "départ")
+        finally:
+            await governor.close()
+            await navigator.close()
+        assert leg.result is not None and leg.result.ok, leg.summary()
+        assert leg.final_error <= 0.20, leg.summary()
+        assert leg.final_converged and leg.final_localization_error <= 0.20, leg.summary()
+        assert leg.contact_steps == 0 and leg.contact_samples == 0, leg.summary()
+
+
+async def test_contact_probe_records_physics_steps_between_samples(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    contact_log = tmp_path / "contacts.jsonl"
+    monkeypatch.setenv("DUCK_DIAG_CONTACT_LOG", str(contact_log))
+    async with sim_stack(tmp_path, scene_with(tmp_path, BOX), tof=False) as stack:
+        before = await stack.probe()
+        await stack.place([-2.5, -0.14], 0)
+        await asyncio.sleep(0.05)
+        await stack.place([0.0, 0.0], 0)
+        await asyncio.sleep(0.2)
+        after = await stack.probe()
+    assert before["contact_count"] == after["contact_count"] == 0
+    assert after["contact_steps"] > before["contact_steps"]
+    assert after["contact_events"] > before["contact_events"]
+    assert after["contact_details"][-1]["robot_body"]
+    assert after["contact_step_s"] > 0
+    records = [json.loads(line) for line in contact_log.read_text().splitlines()]
+    assert records[0] == {"ready": True}
+    assert len(records) - 1 == after["contact_events"]
+
+
 async def test_honest_detour_around_an_unmapped_box(tmp_path: Path) -> None:
     (leg,) = await run(tmp_path, "box", scene_with(tmp_path, BOX), ["ma chambre"])
-    assert leg.result is not None and leg.result.ok, leg.summary()
-    assert leg.final_error <= 0.35, leg.summary()
-    assert leg.contact_s < 2.0, leg.summary()
+    assert leg.contact_steps == 0 and leg.contact_samples == 0, leg.summary()
+    assert leg.result is not None, leg.summary()
+    assert leg.final_converged is False or leg.final_localization_error <= 0.20, leg.summary()
+    assert max(leg.converged_errors, default=0.0) <= 0.20, leg.summary()
+    if not leg.result.ok:
+        assert leg.result.reason, leg.summary()
+        pytest.xfail(f"unmapped box could not be bypassed: {leg.result.reason}")
+    assert leg.final_error <= 0.20, leg.summary()
 
 
 async def test_honest_gives_up_at_a_closed_door(tmp_path: Path) -> None:
     (leg,) = await run(tmp_path, "door", scene_with(tmp_path, DOOR), ["ma chambre"])
     assert leg.result is not None and not leg.result.ok, leg.summary()
-    assert leg.contact_s < 2.0, leg.summary()
+    assert leg.contact_steps == 0 and leg.contact_samples == 0, leg.summary()
     assert leg.result.reason, leg.summary()
+    assert leg.final_converged is False or leg.final_localization_error <= 0.20, leg.summary()
+    assert max(leg.converged_errors, default=0.0) <= 0.20, leg.summary()

@@ -23,6 +23,7 @@ from coincoin.robot.governor import (
     ROBOT_ERRORS,
     ROLLER_MAX_VYAW,
     Governor,
+    ImmediateToolResult,
     ToolResult,
     raised_note,
     turn_time_limit_s,
@@ -213,7 +214,11 @@ class _RobotRuntime:
                 name,
                 available=reason is None,
                 reason=reason or "",
-                description=tool_description(name, capabilities),
+                description=tool_description(
+                    name,
+                    capabilities,
+                    equipment_assisted=bool(self.governor.settings.sim_equipment_socket),
+                ),
             )
 
     async def robot_context(self) -> str:
@@ -226,13 +231,22 @@ class _RobotRuntime:
             "simulated robot" if capabilities.simulated else "real robot",
             f"mode {capabilities.mode or 'unknown'}",
         ]
-        if capabilities.mode_switch_needs_person:
+        if self.governor.settings.sim_equipment_socket:
+            parts.append(
+                "the simulator fits or removes the skates by itself when the mode changes; "
+                "never ask a person for it"
+            )
+        elif capabilities.mode_switch_needs_person:
             parts.append(
                 "changing walk/roller needs a person to fit or remove the skates and select the "
                 "mode on the robot; say so when asked"
             )
         if self.governor.awaiting_person:
-            parts.append("waiting for that person now; motion is disabled")
+            parts.append(
+                "mode change in progress; motion is disabled"
+                if self.governor.settings.sim_equipment_socket
+                else "waiting for that person now; motion is disabled"
+            )
         return "; ".join(parts)
 
     async def _down(self) -> None:
@@ -338,7 +352,11 @@ class _RobotRuntime:
             try:
                 async with asyncio.timeout(timeout_s):
                     outcome: ToolResult = await getattr(self.governor, name)(**arguments)
-                    if not outcome.ok or name not in _AWAITED_MOTIONS:
+                    if (
+                        not outcome.ok
+                        or name not in _AWAITED_MOTIONS
+                        or isinstance(outcome, ImmediateToolResult)
+                    ):
                         return outcome
                     finished = await self.governor.wait_motion()
                     if finished is None:

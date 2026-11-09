@@ -36,38 +36,74 @@ done here, and nothing here depends on maploc.
 
 - **Particles:** 600, in map x, y and yaw.
 - **Prediction:** each `robot.state` odometry delta, with a noise model of 8 % of translation,
-  5 % of rotation, cross terms and small floors. A gliding (roller) model exists but is unused in
-  honest mode.
+  5 % of rotation, cross terms and small floors. In roller mode the gliding model spreads the
+  particles because leg odometry cannot observe the glide; navigation remains disabled.
 - **Correction:** each ToF frame. Each zone becomes a beam from the head's ToF frame, levelled
   with the IMU:
   - **valid** (status 5/9): a hit, scored against a two-sided likelihood field of the map
     (σ 6 cm plus a random floor). Hits on the floor or above 1.5 m are ignored. "On the floor"
-    means below 3 cm in the level frame **or** on the floor plane fitted to that frame's own
-    returns (`FloorTracker`, a sampled-consensus fit within 2.5 m, at most 12° and 6 cm off
-    level): a few degrees of level-frame error lift floor returns 1–2 m ahead to 0.05–0.3 m,
+    means below 5 cm in the level frame **or** on the floor plane fitted to that frame's own
+    returns (`FloorTracker`, a sampled-consensus fit within 2.5 m, at most 20° and 6 cm off
+    level; fits above 12° must explain at least 40% of the valid returns): level-frame error lifts
+    floor returns 1–2 m ahead to 0.05–0.3 m,
     where they would otherwise look like obstacles. Only the plane's inliers are reclassified;
     other returns keep their height;
-  - **no target** (255): free space; points sampled along the beam up to 4 m are penalized if they
-    fall inside a mapped obstacle below 0.45 m;
+  - **no target** (255): a missing return, not proof that the floor map is empty;
   - **other statuses**: ignored.
-- **Outlier gating:** hits farther than 12 cm from any mapped surface for most particles are
-  treated as unmapped things (furniture, people, a door) and do not weigh the particles, so a box
-  does not pull the estimate.
-- **Uncertainty:** reported as standard deviations and a map-fit score. Converged means
-  σxy < 15 cm and σyaw < 0.15 rad. Lost means σxy > 0.5 m, σyaw > 0.5 rad, or a persistently low
-  map fit.
+- **Free rays:** samples from rays, including samples before valid hits, are retained for
+  diagnostics but do not score poses in tracking or head-sweep matching. The 2D map has no
+  obstacle heights, so a beam can pass over a mapped footprint; dark or transparent surfaces
+  can also produce a missing return.
+- **Outlier gating:** during confirmed walking, hits more than 12 cm from a mapped surface at the
+  predicted pose do not weigh the particles. If fewer than six hits remain (or fewer than all hits
+  in a smaller frame), that frame does not correct the pose; it is not scored using all the hits
+  as a fallback. An individual correction that moves the estimate too far is rejected, and
+  repeated rejections invalidate confirmation.
+- **Nearby unmapped objects:** two frames containing at least three unexplained returns in a
+  1.5 m corridor ahead suspend corrections and make the pose unconfirmed while the obstacle is in
+  view. Corrections resume only after sustained map agreement. If the disagreement lasts eight
+  seconds, confirmation remains invalid until a new explicit fix. A low map fit by itself does
+  not trigger this object-specific suspension.
+- **Dispersion and fit:** the particle standard deviations and a map-fit score are not bounds on
+  the actual error. A tight, good-fitting cluster can still be wrong. `converged` also requires a
+  known origin or accepted sweep, adequate fit and walking mode. The lost flag means σxy > 0.5 m,
+  σyaw > 0.5 rad, or low map fit; navigation permits a short persistence before stopping for
+  non-convergence.
 
 ## Start and relocalization
 
 - `NAV_START` gives a known start: a place, `place@heading_deg` or `x,y,heading_deg`. In the
   apartment scene the duck spawns at the dock, `départ@0`. `scripts/live_stack.py --start
-  départ@0` sets it.
+  départ@0` sets it, and `coincoin-appartement.sh` passes `--start 'départ@0'` by default (a
+  later `--start`, even empty, wins).
+- The start is the pose at the **odometry origin** (sim spawn or controller start), not the pose
+  when Coin-Coin connects. The duck turns and slides while it stands up (about −57° and 0.2 m on
+  realism seed 1); resetting to the start at connection time ignored that motion, so the filter
+  stayed "converged" while wrong and sent the duck to the wrong room. The estimate is now the
+  start composed with the accumulated odometry, with σ widened by the odometry already
+  travelled. Caveat: restarting Coin-Coin over a running sim dead-reckons from the spawn.
+- `status` reports an approximate distance to a named landmark, not an asserted room, or says
+  that the position is uncertain and a head sweep is needed.
+- Entering or leaving roller mode, a detected pickup, or an equipment change in progress
+  invalidates the previous confirmation. Returning to walk requires a fresh sweep; it does not
+  reset the duck to the dock.
+- A relocalization match that wanders off the prior also clears the confirmed flag, so the
+  rejection persists until a new confident match.
+- A proposed sweep match is evaluated separately before replacing the particle filter. After a
+  nearby obstacle is observed, its correction must remain within 0.3 m / 0.2 rad of the
+  pre-obstacle pose, carried forward by odometry, and must not cross observed obstacle cells.
+  Unmapped returns at that prior are excluded from the sweep match, including returns above the
+  robot's body: otherwise a box or door can be mistaken for a wall. The marks stay available for
+  the next localization attempt until a match is accepted. This is conservative: if the tracked
+  prior itself is badly wrong, the duck may have to refuse rather than guess.
 - With no start, `go_to` first sweeps the head and refuses ("I don't know where I am") unless a
   match is confident.
 - **Head sweep:** the duck stands still and looks at −75…+75° in 25° steps. Odometry stitches the
   frames into one composite, which is matched coarse-to-fine around the last estimate (0.6–1.5 m,
-  limited heading tolerance). Upstream #127 found that wide composites relocalize while narrow
-  wedges do not, and that matches here: a single wedge is never trusted.
+  limited heading tolerance). Frames are collected and odometry is propagated during the sweep,
+  but individual frames do not correct the tracked pose while the head is moving. Upstream #127
+  found that wide composites relocalize while narrow wedges do not, and that matches here: a
+  single wedge is never trusted.
 - The filter tracks during every motion (manual `move`/`turn` too), but a manual motion is not
   checked against a goal, so the next `go_to` first sweeps and relocalizes. The search window
   also grows with the odometry travelled and turned since the last confirmed fix (10 %, sway
@@ -89,22 +125,33 @@ done here, and nothing here depends on maploc.
   - the distance walked during the sensor latency (0.3 s × speed);
   - braking (0.1 m);
   - a margin (0.15 m).
-- **Bumper:** any return within 6 cm ahead of the body stops the duck, whether mapped or not.
+- **Bumper:** a mapped return close ahead during forward motion triggers a stop and replan or a
+  localization check; unexplained returns are handled by the two-frame obstacle check.
 - **Local costmap:** the seen faces are marked with an assumed depth of 0.3 m, then the route is
-  replanned with the existing A* (up to four obstacle replans). The localizer's map gets the same
-  marks.
+  replanned with the existing A* (up to four obstacle replans). These temporary marks are not
+  added to the localizer's static map: otherwise a false obstacle becomes a false landmark.
+- **Corners:** a waypoint is skipped only when the direct segment to the next one remains clear
+  in the planning map, including temporary obstacles. Proximity alone cut a mapped corner and
+  produced a brief wall contact in an isolated simulator run. The current segment is also
+  rechecked while steering; when the pose leaves it and the new segment is unsafe, the robot
+  stops before replanning.
+- **Arrival:** walking targets a 0.10 m radius around the named place rather than 0.20 m, leaving
+  some margin for localization error and stopping. This is not a guarantee of actual arrival.
 - **Verify before giving up:** if no path remains, the duck does not trust the marks at once,
   because they could come from a few centimetres of pose error that make a wall look
   "unexplained". It sweeps the head and relocalizes, then retries from the corrected pose with the
   previous marks. If the way is still blocked from a confirmed pose, it stops and says: "the way
-  to X is blocked by something that is not on my map (a closed door?); I stopped". If the sweep
-  cannot confirm the pose, it says it is lost instead: "I lost track of where I am on the way to
-  X: what looked like an obstacle may be a wall seen from a wrong pose…".
+  to X may be blocked by something that is not on my map; I stopped and cannot confirm my
+  position". A failed sweep likewise reports the uncertainty rather than asserting a closed door.
+  After a blocked stop, subsequent matching frames alone cannot restore confirmation.
 - **Status:** `status` reports the last trip: "navigation: going to X", "arrived at X",
-  "stopped before reaching X: reason" or "did not go to X: reason".
+  "stopped before reaching X: reason" or "did not go to X: reason". Starting manual motion,
+  changing locomotion mode or detecting pickup clears a stale last-arrival report.
 - **Conversation:** a `go_to` keeps walking when the user talks over it. Its result can no longer
   answer the cancelled tool call, so it is announced to the conversation when the trip ends
   (journal `tool_result_late`).
+- **After a stop and sweep:** the previous forward command and sweep's last scan are not reused as
+  evidence of a new collision. Fresh frames remain subject to the normal obstacle checks.
 
 ## Measurements
 
@@ -120,13 +167,14 @@ cover:
 - unknown starts, which are refused;
 - an unmapped chair, walked around;
 - a closed door, which ends in "blocked" without collision;
-- roller mode, which is refused;
+- roller mode, which is refused with an explanation; the mode is never switched automatically
+  (the user is offered `set_mode walk` first);
 - the beam and status model and the ToF TCP stream.
 
 In earlier synthetic runs, a whole-flat global relocalization was right in 2 of 3 cases, and in 3
 of 3 with a position and heading prior. That is why it is opt-in.
 
-### Live simulator
+### Live simulator (historical, before the latest localization changes)
 
 These runs use the scanned apartment, MuJoCo with the v9 walk policy, robotd, tofd (simulated
 VL53L5CX) and the TCP relay. The test is `tests/integration/test_navigation_honest_simulation.py`.
@@ -154,7 +202,7 @@ Making the "explained" tolerance looser (0.2 m), or dropping marks near walls, w
 broke the offline door case or let the planner squeeze between a real door and its jambs, so
 neither was kept. The live box test is a documented, non-strict `xfail`.
 
-### Over WebRTC, with realism (integration run)
+### Over WebRTC, with realism (historical integration run)
 
 `live_stack.py --link webrtc --places … --start départ@0 --realism real --realism-seed 7`,
 ToF over the WebRTC control channel (`TOF_LINK=link`), same apartment, no obstacles:
@@ -174,9 +222,9 @@ bedroom door closed, a moving cat):
 | départ → ma chambre, door closed | stopped: "blocked by something that is not on my map (a closed door?)" | 82.5 s | 0.309 m | 0.679 m | 10.7° | 92 % |
 
 It went around the chair (about 25 s stalled beside it) and stopped about 0.6 m in front of the
-closed door, without touching it. The error peaks (0.5–0.7 m) came while it was beside the
-unmapped chair, because the ToF saw the chair and not the mapped wall. They fell back to 0.02 m
-in the bedroom corridor.
+closed door. This WebRTC trace did not measure contacts, so it cannot establish that no contact
+occurred. The error peaks (0.5–0.7 m) came while it was beside the unmapped chair, because the
+ToF saw the chair and not the mapped wall. They fell back to 0.02 m in the bedroom corridor.
 
 ## The "blocked" incident (2026-11-08)
 
@@ -234,13 +282,75 @@ happens at the previous commit, so it is a policy/sim behaviour, not a localizat
 result, "turn 180" times out and `go_to salon` (which starts with a large CCW turn) ends "stuck";
 ma chambre and départ succeed.
 
-## Verdict for this apartment
+## Follow-up: starting pose and corridor drift
 
-**Odometry + IMU + one 8x8 ToF on the head is enough for room-to-room navigation from a known start
-in the mapped, empty apartment.** It tracks at about 6–10 cm RMS (under 20 cm max), arrives within
-about 17 cm of the place, and stops cleanly in front of a closed door.
+The spawn is the odometry origin, not the pose after standing. An initial fix that accounted for
+the odometry already accumulated at connection improved several trips, but a later realistic
+run still drifted by more than a metre while the particles reported only a few centimetres of
+spread. Two additional causes were established:
 
-It is **not enough** in these cases:
+- Free-ray penalties treated missing ToF returns and a 3D ray above a 2D footprint as proof
+  against the map. On the first 38 seconds of that recorded path, replaying the same sensor data
+  gave 0.279 m RMS / 0.432 m maximum position error with the old model and 0.066 m / 0.102 m
+  with positive returns only. This offline comparison is not a closed-loop navigation result.
+- Temporary obstacle marks were being added to the localization map and could reinforce an
+  incorrect pose. They now affect only route planning.
+
+An intermediate closed-loop run still stopped on the way to the salon even though the recorded
+position error there was about 0.08 m. After stopping and sweeping, the controller reused the
+old forward-command flag and sweep scan, immediately triggering the same bumper condition
+again. It now resets that state and waits for fresh observations.
+
+Another seed 0 run after a manual move and mode changes falsely reported a blocked salon and
+later got stuck returning to the dock. Some recorded walking frames show a floor slope of roughly
+12–17° in the computed level frame, outside the previous 12° floor-fit limit; many floor returns
+were then treated as obstacles. The floor model now admits up to 20° only with strong support,
+while retaining its near-origin height, span and inlier checks. Simply raising the limit without
+the support check made a synthetic chair scenario cross a wall.
+
+With the current steering and floor model, isolated TCP runs reached the bedroom and salon
+0.114 m and 0.143 m from their targets, and detoured around an unmapped 25 cm box to within
+0.121 m. No contact with world-box geometry was detected in those runs. A closed-door run stopped
+without contact and left the position unconfirmed (the final estimate was 0.082 m from truth).
+An earlier closed-door run had falsely confirmed a pose 0.872 m away; the blocked-sweep checks
+above were added in response. These are individual runs, not guarantees.
+
+In a separate WebRTC run before the floor-tilt change, realism seed 1 switched to skates, refused
+a skating trip, switched back to walking and made four trips. Distances are measured after
+stopping against simulator truth, which is not used to control the robot:
+
+| Trip | Final distance to target | Position RMS / maximum |
+|---|---:|---:|
+| départ → ma chambre | 0.090 m | 0.068 / 0.129 m |
+| → salon | 0.195 m | 0.072 / 0.141 m |
+| → ma chambre | 0.102 m | 0.066 / 0.127 m |
+| → départ | 0.137 m | 0.065 / 0.144 m |
+
+With the later fixes and the new contact monitor, WebRTC realism runs reached those four targets
+at the following distances after stopping. Each also checked the skating refusal, mode changes
+and manual movement before the trips.
+
+| Seed | Bedroom | Salon | Bedroom again | Départ | World-box contact events |
+|---|---:|---:|---:|---:|---:|
+| 0 | 0.083 m | 0.147 m | 0.067 m | 0.187 m | 0 |
+| 1 | 0.122 m | 0.081 m | 0.093 m | 0.163 m | 0 |
+| 2 | 0.067 m | 0.154 m | 0.057 m | 0.172 m | 0 |
+
+These are individual measurements, not guarantees. WebRTC itself does not expose contact data:
+the `contacts` sample field is `null`, not zero. Older WebRTC traces that reported zero used a
+placeholder and must not be used to claim collision-free operation. The current isolated TCP
+and WebRTC harnesses separately instrument the simulator to record contacts with the scene's
+world-box geometry at every physics step; the controller does not use this information. They do
+not cover collisions with all possible non-box or dynamic geometry.
+
+## Limits for this apartment
+
+The recorded runs do not establish reliable room-to-room navigation across all starts, routes and
+realism seeds. In particular, a small particle dispersion or a successful head sweep is not a
+guarantee that the robot is at the estimated pose. Older measurements above used earlier versions
+of the localization model and should not be read as validation of the current code.
+
+The available sensors and map have important limitations:
 
 - **Unknown start / global relocalization.** An 8x8, 45° sensor sees too little to tell similar
   rooms or corridor sections apart; a whole-flat match can be confidently wrong. Start at the dock

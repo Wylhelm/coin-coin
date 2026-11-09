@@ -14,7 +14,7 @@ from coincoin.config import Settings
 from coincoin.journal import Journal
 from coincoin.realtime.tools.robot import schemas
 from coincoin.robot.governor import Governor
-from coincoin.robot.localization import PoseEstimate
+from coincoin.robot.localization import Odom, PoseEstimate
 from coincoin.robot.navigation import NavigationMap, Navigator, Pose, Steering
 from tests.fakes.fake_robotd import FakeRobotLink
 
@@ -130,6 +130,21 @@ def test_clearance_is_measured_beyond_the_robot() -> None:
     assert nav.clearance_m((99.0, 0.0)) == 0
 
 
+def test_pose_correction_cannot_cross_an_observed_obstacle() -> None:
+    nav = NavigationMap(bytes([100] * 121), 11, 11, (0, 0), 0.1, 0.12, {})
+    nav = nav.with_obstacles([(0.5, 0.5)])
+    assert not nav.segment_unobstructed((0.2, 0.5), (0.8, 0.5))
+    assert nav.segment_unobstructed((0.2, 0.5), (0.2, 0.8))
+
+
+def test_blocked_pose_anchor_follows_later_odometry() -> None:
+    start = Odom(1.0, 2.0, math.pi / 2, 0.12)
+    end = Odom(1.0, 3.0, math.pi / 2 + 0.2, 0.12)
+    anchor = Governor._anchor_at_odom(Pose(3.0, 4.0, math.pi / 2), start, end)
+    assert (anchor.x, anchor.y) == pytest.approx((3.0, 5.0))
+    assert anchor.yaw == pytest.approx(math.pi / 2 + 0.2)
+
+
 def steering_command(steering: Steering, pose: Pose, now: float) -> dict[str, float]:
     command = steering.update(pose, now)
     assert command is not None
@@ -144,7 +159,73 @@ def test_walk_pivots_then_walks_with_steering() -> None:
     assert command["vx"] == 0.25 and command["vyaw"] == pytest.approx(-0.15)
     assert steering_command(steering, Pose(0.8, 0, 0), 0.2)["vyaw"] == 1.0
     assert steering.remaining(Pose(1.0, 0.5, 0)) == pytest.approx(0.5)
-    assert steering.update(Pose(1.0, 0.85, math.pi / 2), 0.3) is None
+    assert steering_command(steering, Pose(1.0, 0.85, math.pi / 2), 0.3)["vx"] > 0
+    assert steering.update(Pose(1.0, 0.91, math.pi / 2), 0.4) is None
+
+
+def test_walk_does_not_skip_a_waypoint_across_a_blocked_corner() -> None:
+    clearance = bytearray([100] * 25)
+    clearance[2 * 5 + 2] = 0
+    nav = NavigationMap(bytes(clearance), 5, 5, (0, 0), 0.1, 0.1, {})
+    start, corner, goal = (0.1, 0.1), (0.3, 0.1), (0.3, 0.3)
+    assert nav.segment_clear(start, corner)
+    assert nav.segment_clear(corner, goal)
+    assert not nav.segment_clear(start, goal)
+    steering = Steering([corner, goal], (0.25, 0.0, 1.0), "walk", segment_clear=nav.segment_clear)
+    assert steering_command(steering, Pose(*start, 0), 0)["vx"] > 0
+    assert steering.index == 0
+    steering.update(Pose(*corner, 0), 1)
+    assert steering.index == 1
+
+
+def test_walk_detects_when_deviation_blocks_the_current_waypoint() -> None:
+    nav = NavigationMap(bytes([100] * 121), 11, 11, (0, 0), 0.1, 0.1, {})
+    nav = nav.with_obstacles([(0.5, 0.5)])
+    steering = Steering(
+        [(1.0, 0.1)], (0.25, 0.0, 1.0), "walk", route_traversable=nav.segment_traversable
+    )
+    start = Pose(0.1, 0.1, 0)
+    steering.update(start, 0)
+    assert steering.route_clear(start)
+    assert not steering.route_clear(Pose(0.1, 0.6, 0))
+
+
+def test_stalled_walk_pivot_uses_the_opposite_direction_without_advancing() -> None:
+    steering = Steering(
+        [(0.0, 2.0)],
+        (0.25, 0.0, 1.0),
+        "walk",
+        room=lambda point: 0.2,
+        recover_stalled_pivot=True,
+    )
+    assert steering.update(Pose(0, 0, 0), 0) == {"vx": 0.0, "vy": 0.0, "vyaw": 1.0}
+    assert steering.update(Pose(0, 0, 0.02), 2.1) == {"vx": 0.0, "vy": 0.0, "vyaw": -1.0}
+    assert steering.update(Pose(0, 0, -2.5), 3) == {"vx": 0.0, "vy": 0.0, "vyaw": -1.0}
+    assert steering_command(steering, Pose(0, 0, 1.5), 4)["vx"] > 0
+
+
+def test_stalled_pivot_recovery_is_off_without_simulation_walk_assist() -> None:
+    steering = Steering([(0.0, 2.0)], (0.25, 0.0, 1.0), "walk", room=lambda point: 1.0)
+    steering.update(Pose(0, 0, 0), 0)
+    assert steering.update(Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
+    assert not steering.reversing_pivot
+
+
+def test_stalled_pivot_recovery_requires_and_keeps_clearance() -> None:
+    clearance = [0.05]
+    steering = Steering(
+        [(0.0, 2.0)],
+        (0.25, 0.0, 1.0),
+        "walk",
+        room=lambda point: clearance[0],
+        recover_stalled_pivot=True,
+    )
+    steering.update(Pose(0, 0, 0), 0)
+    assert steering.update(Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
+    clearance[0] = 0.2
+    assert steering.update(Pose(0, 0, 0.02), 2.2)["vyaw"] == -1.0
+    clearance[0] = 0.05
+    assert steering.update(Pose(0, 0, -0.2), 2.3) == {"vx": 0.0, "vy": 0.0, "vyaw": 0.0}
 
 
 def test_roller_controls_speed_and_brakes_before_arriving() -> None:
@@ -286,6 +367,71 @@ async def test_go_to_arrives_and_stops(rig) -> None:
     assert math.dist(link.position[:2], (2.0, 2.0)) <= Steering.ARRIVAL_M
     assert any(record.method == "robot.stop" for record in link.records)
     assert (await governor.go_to("chambre")).detail == "already at chambre"
+
+
+async def test_walking_shortcut_uses_the_walking_arrival_tolerance(rig) -> None:
+    governor, link, _, _ = rig
+    link.position[:2] = [2.25, 2.0]
+    started = await governor.go_to("chambre")
+    assert started.ok and started.detail.startswith("going to chambre")
+    assert governor.moving
+
+
+async def test_go_to_refuses_a_route_snapped_away_from_the_destination(rig, monkeypatch) -> None:
+    governor, _, _, navigator = rig
+    monkeypatch.setattr(navigator, "plan", lambda *_: [(1.0, 2.0)])
+    result = await governor.go_to("chambre")
+    assert not result.ok and "its mapped location is obstructed" in result.reason
+    assert not governor.moving
+
+
+async def test_route_cannot_report_arrival_at_a_different_snapped_goal(rig) -> None:
+    governor, link, _, _ = rig
+    link.position[:2] = [1.0, 2.0]
+    result = await governor._run_route(
+        "chambre", [(1.0, 2.0)], (0.3, 0.0, 0.8), "walk", governor.stop_generation
+    )
+    assert not result.ok and "its mapped location is obstructed" in result.reason
+
+
+async def test_route_cannot_report_arrival_with_unconfirmed_localization(rig, monkeypatch) -> None:
+    governor, _, _, navigator = rig
+    navigator.source.name = "estimated"
+
+    async def uncertain() -> PoseEstimate:
+        return PoseEstimate(2.0, 2.0, 0.0, 0.2, 0.1, False)
+
+    monkeypatch.setattr(navigator, "estimate", uncertain)
+    result = await governor._run_route(
+        "chambre", [(2.0, 2.0)], (0.3, 0.0, 0.8), "walk", governor.stop_generation
+    )
+    assert not result.ok and "cannot confirm" in result.reason
+
+
+async def test_route_stops_before_replanning_an_unreachable_waypoint(rig, monkeypatch) -> None:
+    governor, link, _, navigator = rig
+    navigator.map = room_with_wall(door=False)
+    monkeypatch.setattr(navigator, "plan", lambda *_: None)
+    link.records.clear()
+    result = await governor._run_route(
+        "chambre", [(2.0, 2.0)], (0.3, 0.0, 0.8), "walk", governor.stop_generation
+    )
+    assert not result.ok and "cannot keep a safe path" in result.reason
+    assert any(record.method == "robot.stop" for record in link.records)
+    assert not any(record.method == "robot.move" for record in link.records)
+
+
+async def test_route_stops_when_replanning_repeats_an_unsafe_segment(rig, monkeypatch) -> None:
+    governor, link, _, navigator = rig
+    navigator.map = room_with_wall(door=False)
+    monkeypatch.setattr(navigator, "plan", lambda *_: [(2.0, 2.0)])
+    link.records.clear()
+    result = await governor._run_route(
+        "chambre", [(2.0, 2.0)], (0.3, 0.0, 0.8), "walk", governor.stop_generation
+    )
+    assert not result.ok and "cannot keep a safe path" in result.reason
+    assert len([record for record in link.records if record.method == "robot.stop"]) >= 3
+    assert not any(record.method == "robot.move" for record in link.records)
 
 
 async def test_go_to_refusals(rig, tmp_path: Path) -> None:

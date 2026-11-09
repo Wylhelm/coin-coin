@@ -2,7 +2,8 @@
 
 Shared by the opt-in navigation tests. Callers hold the global simulator lock themselves (see
 docs/localization.md). The body server gains two test-only operations: `test_place` teleports the
-duck, `test_probe` reports its true pose and box contacts. Only tests read them.
+duck, `test_probe` reports its true pose and world-box contacts, including cumulative physics-step
+counts. Only tests read them.
 """
 
 from __future__ import annotations
@@ -34,11 +35,72 @@ def apartment_dir() -> Path:
     return STREAM / "scan_tout_lappart"
 
 
-BODY_BOOTSTRAP = """
-import math
+CONTACT_BOOTSTRAP = """
+import json
+import os
 import mujoco
-from mjlab_microduck.sim import body_server
 
+def box_contacts(model, data):
+    contacts = []
+    for contact in data.contact[:data.ncon]:
+        a, b = contact.geom1, contact.geom2
+        if model.geom_bodyid[b] == 0:
+            a, b = b, a
+        if (model.geom_bodyid[a] == 0 and model.geom_bodyid[b] != 0
+                and model.geom_type[a] == mujoco.mjtGeom.mjGEOM_BOX):
+            contacts.append((int(a), int(b), float(contact.dist)))
+    return contacts
+
+contact_steps = 0
+contact_events = 0
+contact_active = False
+contact_details = []
+contact_log = os.environ.get("DUCK_DIAG_CONTACT_LOG")
+if contact_log:
+    with open(contact_log, "w") as out:
+        out.write(json.dumps({"ready": True}) + "\\n")
+native_step = mujoco.mj_step
+def monitored_step(model, data, *args, **kwargs):
+    global contact_steps, contact_events, contact_active
+    result = native_step(model, data, *args, **kwargs)
+    contacts = box_contacts(model, data)
+    active = bool(contacts)
+    contact_steps += int(active)
+    contact_events += int(active and not contact_active)
+    if active and not contact_active:
+        world, robot, distance = contacts[0]
+        contact_details.append({
+            "event": contact_events,
+            "time_s": float(data.time),
+            "position": [float(x) for x in data.qpos[:2]],
+            "world_geom": world,
+            "world_position": [float(x) for x in model.geom_pos[world]],
+            "world_size": [float(x) for x in model.geom_size[world]],
+            "robot_geom": mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, robot),
+            "robot_body": mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[robot])
+            ),
+            "min_distance": distance,
+        })
+        if contact_log:
+            with open(contact_log, "a") as out:
+                out.write(json.dumps(contact_details[-1]) + "\\n")
+    elif active:
+        contact_details[-1]["min_distance"] = min(
+            contact_details[-1]["min_distance"], *(d for _, _, d in contacts)
+        )
+    contact_active = active
+    return result
+mujoco.mj_step = monitored_step
+"""
+
+BODY_BOOTSTRAP = (
+    """
+import math
+from mjlab_microduck.sim import body_server
+"""
+    + CONTACT_BOOTSTRAP
+    + """
 dispatch = body_server.Handler.dispatch
 def with_test_operations(self, body, request):
     if request.get("op") == "test_place":
@@ -55,14 +117,7 @@ def with_test_operations(self, body, request):
     if request.get("op") == "test_probe":
         with body.world.lock:
             model, data = body.world.model, body.world.data
-            contacts = []
-            for contact in data.contact[:data.ncon]:
-                a, b = contact.geom1, contact.geom2
-                if model.geom_bodyid[b] == 0:
-                    a, b = b, a
-                if (model.geom_bodyid[a] == 0 and model.geom_bodyid[b] != 0
-                        and model.geom_type[a] == mujoco.mjtGeom.mjGEOM_BOX):
-                    contacts.append(float(contact.dist))
+            contacts = box_contacts(model, data)
             return {
                 "position": [float(x) for x in data.qpos[body.trunk : body.trunk + 2]],
                 "yaw": float(
@@ -74,12 +129,17 @@ def with_test_operations(self, body, request):
                     )
                 ),
                 "contact_count": len(contacts),
-                "penetration": max([0.0, *(-d for d in contacts)]),
+                "penetration": max([0.0, *(-d for _, _, d in contacts)]),
+                "contact_steps": contact_steps,
+                "contact_events": contact_events,
+                "contact_details": contact_details[-20:],
+                "contact_step_s": float(model.opt.timestep),
             }
     return dispatch(self, body, request)
 body_server.Handler.dispatch = with_test_operations
 body_server.main()
 """
+)
 
 
 async def body_request(
