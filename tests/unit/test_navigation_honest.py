@@ -216,10 +216,15 @@ async def test_start_near_a_place_is_confirmed_by_a_head_sweep(tmp_path: Path) -
         assert math.dist(rig.link.position[:2], MAP.places["salon"]) < 0.35
 
 
-async def test_roller_is_refused_without_the_simulator_pose(tmp_path: Path) -> None:
+async def test_roller_is_refused_when_the_depth_stream_measures_no_glide(tmp_path: Path) -> None:
     async with Rig(tmp_path, [], "salon@0", (1.5, 1.5, 0.0)) as rig:
+        # The ToF stops delivering frames: with no glide to measure, a trip on skates would drift
+        # with nothing to check it against, so the refusal stands.
+        rig.depth.closed = True
+        await rig.run_for(1.0)
+        assert not rig.localizer.glide_odometry
         refused, _ = await rig.go_to("cuisine", mode="roller")
-        assert not refused.ok and "leg odometry cannot measure a glide" in refused.reason
+        assert not refused.ok and "no glide I can trust" in refused.reason
         assert "simulator pose" not in refused.reason
         assert rig.link.mode == "walk"  # refused, not switched behind the user's back
         rig.link.mode = "roller"
@@ -230,6 +235,18 @@ async def test_roller_is_refused_without_the_simulator_pose(tmp_path: Path) -> N
         assert not refused.ok and "set_mode walk" in refused.reason
         assert rig.link.mode == "roller" and rig.calls("robot.setMode") == 0
         assert rig.calls("robot.move") == 0
+
+
+async def test_go_to_on_skates_uses_the_glide_the_depth_frames_measure(tmp_path: Path) -> None:
+    async with Rig(tmp_path, [], "salon@0", (1.5, 1.5, 0.0)) as rig:
+        assert rig.localizer.glide_odometry
+        started, result = await rig.go_to("cuisine", mode="roller")
+        assert started.ok, started
+        assert "roller" in started.detail
+        assert rig.link.mode == "roller"
+        assert result is not None and result.ok, result
+        assert math.dist(rig.link.position[:2], MAP.places["cuisine"]) < 0.5
+        assert max(rig.errors) < 0.4
 
 
 async def test_status_says_where_the_duck_is(tmp_path: Path) -> None:

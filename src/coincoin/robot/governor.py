@@ -136,9 +136,9 @@ FALLEN_NEEDS_PERSON = (
 EQUIPMENT = {"roller": "fit the skates", "walk": "remove the skates"}
 PERSON_POLL_S = 0.5
 ROLLER_TRIP_REFUSED = (
-    "I only find my way on foot: on skates my leg odometry cannot measure a glide, so I would "
-    "lose track of where I am. Not switching by myself: offer to switch to walk mode first "
-    "(set_mode walk), then go_to again"
+    "I only find my way on foot right now: on skates my wheels report no motion, and the depth "
+    "camera is giving me no glide I can trust, so I would lose track of where I am. Not switching "
+    "by myself: offer to switch to walk mode first (set_mode walk), then go_to again"
 )
 
 
@@ -374,6 +374,16 @@ class Governor:
             localizer.confirmed = False
             self.navigation = ""
         localizer.glide = mode == "roller"
+
+    def _glide_measured(self) -> bool:
+        """Whether the skates' glide is currently measured from the depth frames.
+
+        On skates the wheels report no motion, so a trip without this measurement would drift
+        with nothing to check it against: better to stay put and say so.
+        """
+        navigator = self.navigator
+        localizer = navigator.localizer if navigator is not None else None
+        return localizer is not None and localizer.glide_odometry
 
     async def _refresh_mode(self) -> None:
         async with self._mode_lock:
@@ -1091,7 +1101,7 @@ class Governor:
             return self._refuse("go_to", f"unknown place; known: {', '.join(navigator.places)}")
         if mode is not None and mode not in ("walk", "roller"):
             return self._refuse("go_to", "mode must be walk or roller")
-        if navigator.honest and mode == "roller":
+        if navigator.honest and mode == "roller" and not self._glide_measured():
             return self._refuse("go_to", ROLLER_TRIP_REFUSED)
         generation = self._stop_generation
         try:
@@ -1104,7 +1114,7 @@ class Governor:
                 )
             if navigator.honest or mode is not None:
                 await self._refresh_mode()
-            if navigator.honest and self._mode == "roller":
+            if navigator.honest and self._mode == "roller" and not self._glide_measured():
                 return self._refuse("go_to", ROLLER_TRIP_REFUSED)
             if mode is not None:
                 if self._mode != mode:
@@ -1113,6 +1123,8 @@ class Governor:
                         return switched
                 if generation != self._stop_generation:
                     return self._refuse("go_to", "action cancelled by stop")
+                if navigator.honest and self._mode == "roller" and not self._glide_measured():
+                    return self._refuse("go_to", ROLLER_TRIP_REFUSED)
             await self._rise_if_sitting(generation, await self._prepare(generation))
             estimate = await navigator.estimate()
             # A manual move or turn was only tracked frame by frame, with no check that the
