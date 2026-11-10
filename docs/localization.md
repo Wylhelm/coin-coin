@@ -96,9 +96,10 @@ done here, and nothing here depends on maploc.
   robot's body: otherwise a box or door can be mistaken for a wall. The marks stay available for
   the next localization attempt until a match is accepted. This is conservative: if the tracked
   prior itself is badly wrong, the duck may have to refuse rather than guess.
-- With no start, `go_to` first sweeps the head and refuses ("I don't know where I am") unless a
-  match is confident.
-- **Head sweep:** the duck stands still and looks at −75…+75° in 25° steps. Odometry stitches the
+- With no start, `go_to` first sweeps the head over the whole flat and only refuses ("I don't
+  know where I am") when the sweep cannot settle it.
+- **Head sweep:** the duck stands still and looks at −150…+150° in 25° steps (the head turns to
+  ±170°, so a doorway behind it is in the sweep). Odometry stitches the
   frames into one composite, which is matched coarse-to-fine around the last estimate (0.6–1.5 m,
   limited heading tolerance). Frames are collected and odometry is propagated during the sweep,
   but individual frames do not correct the tracked pose while the head is moving. Upstream #127
@@ -111,7 +112,15 @@ done here, and nothing here depends on maploc.
 - A match that moves the pose more than 0.3 m or 0.2 rad from the tracked one is only taken if
   it fits the sweep at least 10 points better than the best match near the tracked pose: in the
   wide rooms, where the ToF reaches few walls, a look-alike a metre off can score as well.
-- A whole-flat search (`NAV_GLOBAL_RELOCALIZATION=1`) is opt-in. It can be confidently wrong.
+- A whole-flat search is the default (`NAV_GLOBAL_RELOCALIZATION=1`; set it to 0 for the strict
+  old behaviour). It never picks between look-alike places. The search keeps one candidate per
+  place (candidates closer than 1 m and 60° are the same place), refines them all, and compares
+  the best with the best *different* place. The best must explain the sweep by at least
+  `AMBIGUITY_MARGIN = 0.15` nats per beam more than that rival, otherwise the match is refused
+  with `location_ambiguous` and the duck asks to be put back on the dock or told where it is. The
+  margin is calibrated on the synthetic flat: the true place scores about +0.17 nats per beam and
+  a wrong look-alike −0.1 or worse, while two identical rooms differ by 0.00. An exact twin is
+  therefore refused rather than answered confidently and wrongly.
 - **While walking:** if the estimate stays unconverged for 3 s or is lost, the duck stops and
   sweeps. After two failed relocalizations on a route it gives up and says so: "I lost track of
   where I am on the way to X and stopped (…)".
@@ -164,7 +173,11 @@ cover:
 - tracking against drifting odometry;
 - kidnapping, which is reported lost;
 - relocalization by sweep near a prior, and a single wedge that is not trusted;
-- unknown starts, which are refused;
+- a whole-flat sweep from an unknown start, which is refused when the map offers two identical
+  rooms and converges in a distinctive one;
+- the ambiguity margin itself: two guesses about one place are one place, a look-alike 5 m away
+  is a rival, and the gap between them decides;
+- an unknown start, which now sweeps and then walks;
 - an unmapped chair, walked around;
 - a closed door, which ends in "blocked" without collision;
 - roller mode, which is refused with an explanation; the mode is never switched automatically
@@ -172,7 +185,9 @@ cover:
 - the beam and status model and the ToF TCP stream.
 
 In earlier synthetic runs, a whole-flat global relocalization was right in 2 of 3 cases, and in 3
-of 3 with a position and heading prior. That is why it is opt-in.
+of 3 with a position and heading prior. The 2 of 3 case is what `AMBIGUITY_MARGIN` now catches:
+the duck refuses when the two places score within the margin, instead of betting on the better
+one.
 
 ### Live simulator (historical, before the latest localization changes)
 
@@ -353,8 +368,10 @@ of the localization model and should not be read as validation of the current co
 The available sensors and map have important limitations:
 
 - **Unknown start / global relocalization.** An 8x8, 45° sensor sees too little to tell similar
-  rooms or corridor sections apart; a whole-flat match can be confidently wrong. Start at the dock
-  (or tell it where it is).
+  rooms or corridor sections apart. The duck now sweeps the whole flat by default and refuses
+  honestly when two places fit the sweep equally well (`location_ambiguous`), but a distinctive
+  room that the margin passes can still be matched slightly off. Start at the dock (or tell it
+  where it is) when a trip must be reliable.
 - **Unmapped obstacles near walls, and areas where the map disagrees with the 3D world.** A 10–25
   cm pose bias turns walls into false obstacles. Clutter changes with time (chairs, bags), so this
   will happen at home.

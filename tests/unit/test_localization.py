@@ -11,6 +11,7 @@ import pytest
 from coincoin.clock import FakeClock
 from coincoin.robot.jsonrpc import JsonRpcConnection
 from coincoin.robot.localization import (
+    AMBIGUITY_MARGIN,
     CONVERGED_XY_M,
     FLOOR_FIT_INLIER_M,
     EstimatedPose,
@@ -23,15 +24,18 @@ from coincoin.robot.localization import (
     ParticleFilter,
     PoseEstimate,
     Scan,
+    SweepVerdict,
     TcpTofStream,
     blocking_points,
     global_search,
     obstacle_points,
     parse_tof_frame,
+    same_place,
     scan_from,
+    sweep_verdict,
 )
 from coincoin.robot.navigation import NavigationMap, Navigator, Pose, SimPose
-from tests.fakes.fake_tof import ClockedTof, TofRobotLink, World, feed, flat, nav_map
+from tests.fakes.fake_tof import ClockedTof, TofRobotLink, World, feed, flat, nav_map, twin_flat
 
 GRID = flat()
 MAP = nav_map(GRID)
@@ -400,14 +404,23 @@ def test_sweep_refinement_respects_its_position_and_heading_window(
 
 
 def kit(
-    *, odom_scale: float = 1.1, odom_yaw_scale: float = 0.94, boxes=None, particles: int = 400
+    *,
+    odom_scale: float = 1.1,
+    odom_yaw_scale: float = 0.94,
+    boxes=None,
+    particles: int = 400,
+    grid: np.ndarray | None = None,
 ) -> tuple[FakeClock, TofRobotLink, EstimatedPose, ClockedTof]:
     clock = FakeClock()
     link = TofRobotLink(
-        clock, World(GRID, boxes or []), odom_scale=odom_scale, odom_yaw_scale=odom_yaw_scale
+        clock,
+        World(GRID if grid is None else grid, boxes or []),
+        odom_scale=odom_scale,
+        odom_yaw_scale=odom_yaw_scale,
     )
     depth = ClockedTof(link, clock)
-    localizer = EstimatedPose(MAP, link.state, depth, clock=clock.now, particles=particles)
+    nav = MAP if grid is None else nav_map(grid)
+    localizer = EstimatedPose(nav, link.state, depth, clock=clock.now, particles=particles)
     return clock, link, localizer, depth
 
 
@@ -474,8 +487,9 @@ async def test_kidnapped_robot_is_reported_lost() -> None:
 
 
 async def sweep(clock: FakeClock, link: TofRobotLink, localizer: EstimatedPose) -> list:
+    """Turn the head through the governor's whole sweep and return the frames it collected."""
     since = localizer.latest_t_ns() or 0
-    for degrees in (-75, -50, -25, 0, 25, 50, 75, 0):
+    for degrees in (*range(-150, 151, 25), 0):
         link.head[2] = math.radians(degrees)
         for _ in range(18):
             clock.advance(0.05)
@@ -529,6 +543,78 @@ async def test_a_single_wedge_is_not_trusted() -> None:
         task.cancel()
     assert not localizer.current().converged
     assert not localizer.relocalize([])
+
+
+def test_sweep_verdict_needs_a_gap_between_different_places() -> None:
+    """A whole-map match is trusted only when the best place clearly beats the best other one."""
+    beams = 600
+    best = Hypothesis(Pose(1.5, 2.5, 0.0), 300.0, beams)
+    assert sweep_verdict([]) is None
+    alone = sweep_verdict([best])
+    assert alone is not None and alone.rival is None
+    assert alone.margin == math.inf and not alone.ambiguous
+    # A second guess about the same place is not a second place.
+    nearby = Hypothesis(Pose(1.6, 2.4, 0.05), 290.0, beams)
+    assert same_place(best.pose, nearby.pose)
+    assert sweep_verdict([best, nearby]).rival is None  # type: ignore[union-attr]
+    # A look-alike 5 m away that explains the sweep almost as well: refuse rather than guess.
+    twin = Hypothesis(Pose(6.5, 2.5, 0.0), 270.0, beams)
+    assert not same_place(best.pose, twin.pose)
+    verdict = sweep_verdict([best, nearby, twin])
+    assert isinstance(verdict, SweepVerdict) and verdict.rival == twin
+    assert verdict.margin == pytest.approx(0.05)
+    assert verdict.margin < AMBIGUITY_MARGIN and verdict.ambiguous
+    # Two headings at one spot are two answers too: the duck would set off in the wrong one.
+    turned = sweep_verdict([best, Hypothesis(Pose(1.5, 2.5, math.pi), 300.0, beams)])
+    assert turned is not None and turned.ambiguous
+    exact = sweep_verdict([best, Hypothesis(Pose(6.5, 2.5, 0.0), 300.0, beams)])
+    assert exact is not None and exact.margin == pytest.approx(0.0) and exact.ambiguous
+    # Clearly the better place: trusted.
+    clear = sweep_verdict([best, Hypothesis(Pose(6.5, 2.5, 0.0), 200.0, beams)])
+    assert clear is not None and clear.margin == pytest.approx(1 / 6)
+    assert not clear.ambiguous
+    assert f"needs {AMBIGUITY_MARGIN:.2f}" in clear.describe()
+
+
+async def test_whole_map_sweep_refuses_two_identical_rooms() -> None:
+    """Two identical rooms fit one sweep: the duck says so instead of picking one and walking."""
+    clock, link, localizer, depth = kit(grid=twin_flat())
+    link.place_at(1.5, 2.5, 0.0)
+    task = asyncio.create_task(feed(localizer, link, depth))
+    try:
+        scans = await sweep(clock, link, localizer)
+    finally:
+        await depth.close()
+        task.cancel()
+    assert len(scans) > 100  # about 5 Hz of usable frames over the 13 s sweep
+    assert not localizer.relocalize(scans)
+    verdict = localizer.last_verdict
+    assert verdict is not None and verdict.ambiguous
+    assert verdict.rival is not None
+    apart = math.dist(
+        (verdict.best.pose.x, verdict.best.pose.y), (verdict.rival.pose.x, verdict.rival.pose.y)
+    )
+    assert apart > 1.0
+    assert not localizer.current().converged
+
+
+async def test_whole_map_sweep_converges_in_a_distinctive_room() -> None:
+    """With no prior, a room the map makes unique is still found from the sweep alone."""
+    clock, link, localizer, depth = kit()
+    link.place_at(1.5, 2.0, 0.3)
+    task = asyncio.create_task(feed(localizer, link, depth))
+    try:
+        scans = await sweep(clock, link, localizer)
+    finally:
+        await depth.close()
+        task.cancel()
+    assert localizer.relocalize(scans)
+    verdict = localizer.last_verdict
+    assert verdict is not None and not verdict.ambiguous
+    assert verdict.margin >= AMBIGUITY_MARGIN
+    estimate = localizer.current()
+    assert estimate.converged
+    assert math.dist((estimate.x, estimate.y), (1.5, 2.0)) < CONVERGED_XY_M
 
 
 def test_rejected_sweep_candidate_does_not_replace_the_prior(

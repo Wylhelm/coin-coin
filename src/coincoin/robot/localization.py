@@ -129,11 +129,20 @@ FIT_NEAR_M = 0.12
 RELOC_JUMP_M = 0.3
 RELOC_JUMP_RAD = 0.2
 RELOC_JUMP_FIT_MARGIN = 0.1
+# Two hypotheses closer than this in position and heading are one guess, not two places.
+HYPOTHESIS_CLUSTER_M = 1.0
+HYPOTHESIS_CLUSTER_RAD = math.radians(60)
+# A whole-map sweep must not choose between look-alike places: the best one has to explain the
+# sweep by this many log-likelihood nats per beam more than the best *other* place before it is
+# trusted. Measured on the synthetic flat: the true place scores about +0.17 per beam and a wrong
+# look-alike -0.1 or worse, while two identical rooms differ by 0.00. So 0.15 keeps every correct
+# match seen and refuses an exact twin, instead of being confidently wrong about it.
+AMBIGUITY_MARGIN = 0.15
 # Heading changes smaller than this are gait sway, not rotation that may have drifted.
 ROTATION_STEP_RAD = 0.2
 STATE_HISTORY = 200
-# Long enough to hold a whole head sweep (8 directions, about 8 s at 15 Hz).
-FRAME_HISTORY = 180
+# Long enough to hold a whole head sweep (14 directions, about 13 s at 15 Hz).
+FRAME_HISTORY = 300
 
 
 def tof_beams(rows: int = TOF_ROWS, cols: int = TOF_COLS, fov: float = TOF_FOV_RAD) -> FloatArray:
@@ -547,6 +556,68 @@ class LikelihoodField:
 class Hypothesis:
     pose: Pose
     score: float
+    beams: int = 0
+
+
+@dataclass(frozen=True)
+class SweepVerdict:
+    """The two best different places a whole-map sweep matched, and the gap between them."""
+
+    best: Hypothesis
+    rival: Hypothesis | None
+    beams: int
+
+    @property
+    def margin(self) -> float:
+        """Log-likelihood per beam by which the best place beats the best different one."""
+        if self.rival is None or self.beams <= 0:
+            return math.inf
+        return (self.best.score - self.rival.score) / self.beams
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.margin < AMBIGUITY_MARGIN
+
+    def describe(self) -> str:
+        best = f"({self.best.pose.x:+.2f}, {self.best.pose.y:+.2f})"
+        if self.rival is None:
+            return f"{best} is the only place that fits the sweep"
+        rival = f"({self.rival.pose.x:+.2f}, {self.rival.pose.y:+.2f})"
+        return (
+            f"{best} beats {rival} by {self.margin:+.2f} nats per beam "
+            f"(needs {AMBIGUITY_MARGIN:.2f})"
+        )
+
+
+def same_place(a: Pose, b: Pose) -> bool:
+    """Whether two poses are one guess about one place, not two competing guesses."""
+    return (
+        math.dist((a.x, a.y), (b.x, b.y)) <= HYPOTHESIS_CLUSTER_M
+        and abs(float(_wrap(a.yaw - b.yaw))) <= HYPOTHESIS_CLUSTER_RAD
+    )
+
+
+def sweep_verdict(hypotheses: Sequence[Hypothesis]) -> SweepVerdict | None:
+    """Judge a whole-map sweep: the best place, and the best place that is really another one."""
+    if not hypotheses:
+        return None
+    best = hypotheses[0]
+    rival = next((h for h in hypotheses[1:] if not same_place(best.pose, h.pose)), None)
+    return SweepVerdict(best, rival, best.beams)
+
+
+def _distinct(
+    candidates: list[tuple[float, float, float, float]], keep: int
+) -> list[tuple[float, float, float, float]]:
+    """The best coarse candidate of each place, best first, up to `keep` places."""
+    kept: list[tuple[float, float, float, float]] = []
+    for candidate in sorted(candidates, reverse=True):
+        pose = Pose(candidate[1], candidate[2], candidate[3])
+        if all(not same_place(pose, Pose(k[1], k[2], k[3])) for k in kept):
+            kept.append(candidate)
+            if len(kept) >= keep:
+                break
+    return kept
 
 
 def global_search(
@@ -598,7 +669,11 @@ def global_search(
             (float(flat[i]), float(x.ravel()[i]), float(y.ravel()[i]), float(yaw.ravel()[i]))
             for i in top
         )
-        best = sorted(best, reverse=True)[:keep]
+        # Neighbouring coarse cells are the same place, and a wide room offers many of them. Keep
+        # a wider pool, then one candidate per place: otherwise the whole top of the pool is one
+        # peak's own neighbourhood and a look-alike elsewhere is never refined or compared.
+        best = sorted(best, reverse=True)[: keep * 4]
+    best = _distinct(best, keep)
     # The coarse grid is 10 cm and 5 degrees; at 3 m that is a quarter-metre miss, so the true
     # pose's peak is easily stepped over. Each candidate is climbed to its local optimum with the
     # full composite before the candidates are compared.
@@ -656,7 +731,7 @@ def _refine(
             continue
         step_m /= 2
         step_yaw /= 2
-    return Hypothesis(Pose(x, y, float(_wrap(yaw))), score)
+    return Hypothesis(Pose(x, y, float(_wrap(yaw))), score, len(hits))
 
 
 class ParticleFilter:
@@ -1053,6 +1128,8 @@ class EstimatedPose:
         self._fit_conflicted = False
         self._near_obstacle_streak = 0
         self.collecting_sweep = False
+        # What the last head-sweep match could tell apart: None unless a whole-map sweep ran.
+        self.last_verdict: SweepVerdict | None = None
         self.frame_event = asyncio.Event()
 
     # Lifecycle -----------------------------------------------------------------------------
@@ -1434,8 +1511,11 @@ class EstimatedPose:
         look-alikes a rectangular room offers. With the tracked `prior`, a match away from it is
         only taken when it explains the sweep clearly better than the best match near it: in a
         wide room the ToF reaches few walls, and a look-alike a metre off may score as well.
+        Without a window or a prior there is nothing to prefer one place to another, so the match
+        is refused when the best place does not beat the best other place by AMBIGUITY_MARGIN.
         """
         if not scans:
+            self.last_verdict = None
             return []
         if exclude_unmapped and prior is None:
             raise ValueError("excluding unmapped sweep returns needs a prior pose")
@@ -1459,6 +1539,13 @@ class EstimatedPose:
             heading_tolerance=heading_tolerance,
         )
         if not hypotheses:
+            self.last_verdict = None
+            return []
+        # Over the whole map, two look-alike places are two answers, and picking the better-scoring
+        # one is a guess. Only a windowed search is already disambiguated by where the duck was.
+        self.last_verdict = sweep_verdict(hypotheses) if centre is None and prior is None else None
+        if self.last_verdict is not None and self.last_verdict.ambiguous:
+            self.confirmed = False
             return []
         if prior is not None:
             best = hypotheses[0].pose

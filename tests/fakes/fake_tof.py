@@ -52,6 +52,17 @@ def flat() -> np.ndarray:
     return grid
 
 
+def twin_flat() -> np.ndarray:
+    """An 8 x 5 m flat in two identical rooms, so one place cannot be told from the other.
+
+    `flat()` is repeated rotated 180 degrees about the flat's centre, which is the one symmetry a
+    pose can express: a mirrored room would need a reflection, not a rotation, and the search
+    would never propose it. The two look-alikes are (1.5, 2.5) and (6.5, 2.45).
+    """
+    grid = flat()
+    return grid | np.rot90(grid, 2)
+
+
 def nav_map(
     grid: np.ndarray, places: dict[str, tuple[float, float]] | None = None
 ) -> NavigationMap:
