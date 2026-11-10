@@ -4,6 +4,8 @@
         --realism real --seed 0 --prelude --out logs/nav_repro/real0.jsonl salon "ma chambre" départ
 
 `--prelude` does what the user did first: move forward 0.25 m/s for 5 s, then turn 180 degrees.
+`--start ''` drops the prior: the duck must find itself globally before going anywhere.
+`--mode roller` sends go_to in skates, which needs glide odometry to be honest.
 Every 0.25 s a JSON line records the phase, the true pose (scoring only), odometry yaw and the
 estimate. The controller never reads the truth.
 """
@@ -161,7 +163,8 @@ async def main(args: argparse.Namespace) -> list[dict[str, Any]]:
             localizer = EstimatedPose(
                 nav_map, stack.link.state, TcpTofStream(stack.tof_url), clock=SystemClock().now
             )
-            localizer.start_at("départ@0")
+            if args.start:
+                localizer.start_at(args.start)
             localizer.start()
             navigator = Navigator(
                 nav_map, localizer, oracle=SimPose(stack.body_url), localizer=localizer
@@ -186,7 +189,7 @@ async def main(args: argparse.Namespace) -> list[dict[str, Any]]:
                         ("turn", lambda: governor.turn(180)),
                     ]
                 for place in args.places:
-                    steps.append((place, lambda place=place: governor.go_to(place, mode="walk")))
+                    steps.append((place, lambda place=place: governor.go_to(place, mode=args.mode)))
                 for name, call in steps:
                     samples_before = len(trace.rows.get(name, []))
                     trace.phase = name
@@ -231,6 +234,12 @@ if __name__ == "__main__":
     parser.add_argument("--prelude", action="store_true")
     parser.add_argument("--stop-on-failure", action="store_true")
     parser.add_argument("--overrides", default="", help="JSON realism profile field overrides")
+    parser.add_argument(
+        "--start",
+        default="départ@0",
+        help="start_at prior; pass an empty string for an unknown start (global relocalization)",
+    )
+    parser.add_argument("--mode", default="walk", choices=["walk", "roller"])
     parser.add_argument("--out", default="logs/nav_repro/run.jsonl")
     parser.add_argument("places", nargs="*", default=["salon", "ma chambre", "départ"])
     asyncio.run(main(parser.parse_args()))
