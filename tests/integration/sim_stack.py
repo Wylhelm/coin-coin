@@ -118,14 +118,18 @@ def with_test_operations(self, body, request):
         with body.world.lock:
             model, data = body.world.model, body.world.data
             contacts = box_contacts(model, data)
+            qw, qx, qy, qz = (float(v) for v in data.qpos[body.trunk + 3 : body.trunk + 7])
             return {
                 "position": [float(x) for x in data.qpos[body.trunk : body.trunk + 2]],
+                "height": float(data.qpos[body.trunk + 2]),
+                "roll": math.degrees(
+                    math.atan2(2 * (qw * qx + qy * qz), 1 - 2 * (qx**2 + qy**2))
+                ),
+                "pitch": math.degrees(math.asin(max(-1.0, min(1.0, 2 * (qw * qy - qz * qx))))),
                 "yaw": float(
                     math.atan2(
-                        2 * (data.qpos[body.trunk + 3] * data.qpos[body.trunk + 6]
-                             + data.qpos[body.trunk + 4] * data.qpos[body.trunk + 5]),
-                        1 - 2 * (data.qpos[body.trunk + 5] ** 2
-                                 + data.qpos[body.trunk + 6] ** 2),
+                        2 * (qw * qz + qx * qy),
+                        1 - 2 * (qy**2 + qz**2),
                     )
                 ),
                 "contact_count": len(contacts),

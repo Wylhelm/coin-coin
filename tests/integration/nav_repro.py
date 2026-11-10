@@ -58,6 +58,9 @@ class Trace:
             "odom_yaw": round(math.degrees(odom.get("yaw", math.nan)), 1),
             "odom_xy": [odom_pose.x, odom_pose.y] if odom_pose is not None else None,
             "contacts": probe["contact_count"],
+            "height": round(probe["height"], 3),
+            "roll": round(probe["roll"], 1),
+            "pitch": round(probe["pitch"], 1),
         }
         if estimate.std_xy < math.inf:
             row.update(

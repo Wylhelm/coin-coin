@@ -16,6 +16,7 @@ from coincoin.robot.localization import (
     FLOOR_FIT_INLIER_M,
     GLIDE_MAX_MISSES,
     GLIDE_MAX_SIGMA_M,
+    ROLLER_BLIND_GRACE_S,
     EstimatedPose,
     FloorTracker,
     GlideStep,
@@ -1211,13 +1212,91 @@ def test_the_filter_moves_by_the_measured_glide_and_diffuses_only_where_blind() 
     diffused.predict(0.0, 0.0, 0.0, 1 / 15, True)
     assert np.mean(measured.x) - 1.5 == pytest.approx(0.03, abs=0.003)
     assert np.std(measured.x) == pytest.approx(0.008, abs=0.003)
-    # The axis the match left blind diffuses, and the speed comes from the measured step.
+    # The axis the match left blind diffuses, and the speed follows the measured step.
     assert np.mean(measured.y) - 1.5 == pytest.approx(0.0, abs=0.003)
     assert np.std(measured.y) > 0.003
-    assert np.allclose(measured.speed, 0.03 * 15)
+    # One frame's match is not a speed: averaged into the belief, it only half-convinces it,
+    # so a run of bad frames costs a lag instead of walking the pose away.
+    assert np.allclose(measured.speed, 0.5 * 0.03 * 15)
     # Without a step the skates report nothing, so the particles only spread.
     assert np.mean(diffused.x) - 1.5 == pytest.approx(0.0, abs=0.005)
     assert np.std(diffused.x) > 0.001
+
+
+def test_a_push_the_tof_never_confirms_stops_moving_the_estimate() -> None:
+    # A duck jammed against a wall keeps being told to push, and its head is too close for the
+    # ToF to match anything. The command may carry the belief through the wheels' lag, but past
+    # that the belief has to decay: believing 0.38 m/s for the fifteen seconds it spent pinned
+    # walked the estimate 0.63 m off the map while `fit` still read 1.00.
+    field = LikelihoodField(MAP)
+    stuck = ParticleFilter(field, count=400, seed=5)
+    stuck.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    for _ in range(90):
+        stuck.predict(0.0, 0.0, 0.0, 1 / 15, True, None, twist=(0.25, 0.0))
+    assert stuck.blind_s > ROLLER_BLIND_GRACE_S
+    walked = np.mean(stuck.x) - 1.5
+    # Six seconds of pushing at 0.38 m/s would be 2.3 m; the grace only lets the start through.
+    assert 0.1 < walked < 0.3
+    # A match hands the belief back: the command becomes a prior again on the next frame.
+    stuck.predict(
+        0.0,
+        0.0,
+        0.0,
+        1 / 15,
+        True,
+        GlideStep(0.03, 0.0, 0.0, 0.008, math.inf, 0.01, 20, 1.0, 0.004),
+    )
+    assert stuck.blind_s == 0.0
+
+
+def test_a_coast_keeps_gliding_instead_of_reverting_to_the_zero_throttle() -> None:
+    # A throttle inside the dead band is a coast, not a brake: the duck loses 0.02 m/s^2, so a
+    # released glide runs for seconds. Reverting the belief to the commanded zero with the 0.3 s
+    # time constant froze the estimate on every coast between two pushes -- on the leg to
+    # `ma chambre` it advanced 0.57 m while the duck covered 1.53 m -- and the controller then
+    # steered on a pose it no longer had.
+    field = LikelihoodField(MAP)
+    coasting = ParticleFilter(field, count=400, seed=7)
+    coasting.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    coasting.predict(
+        0.0,
+        0.0,
+        0.0,
+        1 / 15,
+        True,
+        GlideStep(0.05, 0.0, 0.0, 0.008, math.inf, 0.01, 20, 1.0, 0.004),
+    )
+    primed = float(np.mean(coasting.speed))
+    assert primed == pytest.approx(0.5 * 0.05 * 15)
+    for _ in range(8):
+        coasting.predict(0.0, 0.0, 0.0, 1 / 15, True, None, twist=(0.0, 0.0))
+    # Eight frames of coasting at 0.37 m/s covers 0.19 m. Decaying towards the zero throttle would
+    # have walked 0.11 m and left the rest of the glide unaccounted for.
+    assert coasting.blind_s <= ROLLER_BLIND_GRACE_S
+    assert float(np.mean(coasting.x)) - 1.5 > 0.15
+    assert float(np.mean(coasting.speed)) > 0.8 * primed
+
+
+def test_a_coast_that_outlasts_the_grace_still_stops_moving_the_estimate() -> None:
+    # The coast is only honest while the ToF is still trying: a duck pinned against a wall is
+    # coasting too, and there the glide belief has to die as it always did.
+    field = LikelihoodField(MAP)
+    jammed = ParticleFilter(field, count=400, seed=9)
+    jammed.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    jammed.predict(
+        0.0,
+        0.0,
+        0.0,
+        1 / 15,
+        True,
+        GlideStep(0.05, 0.0, 0.0, 0.008, math.inf, 0.01, 20, 1.0, 0.004),
+    )
+    for _ in range(60):
+        jammed.predict(0.0, 0.0, 0.0, 1 / 15, True, None, twist=(0.0, 0.0))
+    assert jammed.blind_s > ROLLER_BLIND_GRACE_S
+    # Four seconds of coasting at 0.37 m/s would be 1.5 m; only the grace gets through.
+    assert float(np.mean(jammed.x)) - 1.5 < 0.4
+    assert float(np.mean(jammed.speed)) < 0.05
 
 
 async def test_the_localizer_publishes_the_glide_it_measures() -> None:

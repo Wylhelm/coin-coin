@@ -52,10 +52,12 @@ NAV_REPLANS = 3
 # this many times per route before giving up and saying so.
 NAV_RELOCALIZATIONS = 2
 NAV_UNCERTAIN_S = 3.0
-# A relocalization searches around the last estimate within this radius (and heading tolerance).
-# With no usable estimate at all it searches the whole flat, and then refuses an ambiguous match
-# rather than guessing (docs/localization.md).
-RELOC_RADIUS_M = (0.6, 1.5)
+# A relocalization searches around the last estimate within a window that grows with that
+# estimate's own spread and with the travel and rotation nobody checked since the last fix, and
+# never wider than this. The floor stays small on purpose: a fixed 0.6 m floor let a sweep slide
+# the pose half a metre down a corridor whose walls look the same everywhere, and the duck then
+# set off from a pose that was only 5 cm wrong (docs/localization.md).
+RELOC_RADIUS_M = (0.15, 1.5)
 RELOC_PRIOR_MAX_M = 1.0
 RELOC_HEADING_RAD = (0.35, 1.0)
 # Share of the odometry travel and rotation since the last fix that the match window allows.
@@ -140,6 +142,10 @@ ROLLER_TRIP_REFUSED = (
     "camera is giving me no glide I can trust, so I would lose track of where I am. Not switching "
     "by myself: offer to switch to walk mode first (set_mode walk), then go_to again"
 )
+# Rising onto the skates swings the head, and those frames honestly cannot match: the glide is
+# measurable again a frame or two after the body is still, so a trip right after the switch waits
+# this long for the depth camera to vouch for it instead of refusing outright.
+GLIDE_SETTLE_S = 2.0
 
 
 def person_wait_reason(mode: str, *, assisted: bool = False) -> str:
@@ -384,6 +390,21 @@ class Governor:
         navigator = self.navigator
         localizer = navigator.localizer if navigator is not None else None
         return localizer is not None and localizer.glide_odometry
+
+    async def _await_glide(self, generation: int) -> bool:
+        """Wait briefly for the depth frames to measure the glide again after the body moved.
+
+        The rise onto the skates (or off them) swings the head, and those frames cannot match:
+        the glide is only measurable once the body is still. Refusing before that moment would
+        turn away a trip the camera is about to vouch for.
+        """
+        deadline = self.clock.now() + GLIDE_SETTLE_S
+        while not self._glide_measured():
+            self._check_safety(generation)
+            if self.clock.now() >= deadline:
+                return False
+            await self.clock.sleep(0.1)
+        return True
 
     async def _refresh_mode(self) -> None:
         async with self._mode_lock:
@@ -1101,7 +1122,16 @@ class Governor:
             return self._refuse("go_to", f"unknown place; known: {', '.join(navigator.places)}")
         if mode is not None and mode not in ("walk", "roller"):
             return self._refuse("go_to", "mode must be walk or roller")
-        if navigator.honest and mode == "roller" and not self._glide_measured():
+        # Decided before anything is switched: a trip the camera cannot vouch for must be turned
+        # away rather than silently changing the robot's gait behind the user's back. Already on
+        # skates, the frames get their settle time below instead: the duck has only just stopped,
+        # and refusing on the instant would turn away a trip the camera is about to vouch for.
+        if (
+            navigator.honest
+            and mode == "roller"
+            and self._mode not in (None, "roller")
+            and not self._glide_measured()
+        ):
             return self._refuse("go_to", ROLLER_TRIP_REFUSED)
         generation = self._stop_generation
         try:
@@ -1114,7 +1144,11 @@ class Governor:
                 )
             if navigator.honest or mode is not None:
                 await self._refresh_mode()
-            if navigator.honest and self._mode == "roller" and not self._glide_measured():
+            if (
+                navigator.honest
+                and self._mode == "roller"
+                and not await self._await_glide(generation)
+            ):
                 return self._refuse("go_to", ROLLER_TRIP_REFUSED)
             if mode is not None:
                 if self._mode != mode:
@@ -1123,7 +1157,11 @@ class Governor:
                         return switched
                 if generation != self._stop_generation:
                     return self._refuse("go_to", "action cancelled by stop")
-                if navigator.honest and self._mode == "roller" and not self._glide_measured():
+                if (
+                    navigator.honest
+                    and self._mode == "roller"
+                    and not await self._await_glide(generation)
+                ):
                     return self._refuse("go_to", ROLLER_TRIP_REFUSED)
             await self._rise_if_sitting(generation, await self._prepare(generation))
             estimate = await navigator.estimate()
@@ -1477,6 +1515,27 @@ class Governor:
                     if deviation_replans < NAV_REPLANS:
                         replanned = await asyncio.to_thread(navigator.plan, here, goal)
                     self._check_safety(generation)
+                    if (
+                        replanned is None
+                        and navigator.honest
+                        and relocalizations < NAV_RELOCALIZATIONS
+                    ):
+                        # A route stops being traversable when the estimate slides into a wall,
+                        # and that is usually the estimate rather than the room: sweep before
+                        # refusing to go on.
+                        self.journal.write("navigation", place=place, event="verify_deviation")
+                        relocalizations += 1
+                        estimate = await self._relocalize(generation, navigator, estimate)
+                        if not estimate.converged:
+                            raise RobotRefused(
+                                f"I cannot keep a safe path to {place}; I lost track of where I "
+                                "am and stopped"
+                            )
+                        pose = estimate.pose
+                        here = (pose.x, pose.y)
+                        deviation_anchor, deviation_replans = here, 0
+                        replanned = await asyncio.to_thread(navigator.plan, here, goal)
+                        self._check_safety(generation)
                     if replanned is None:
                         raise RobotRefused(f"cannot keep a safe path to {place}; I stopped")
                     deviation_replans += 1

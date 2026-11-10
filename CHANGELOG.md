@@ -6,6 +6,71 @@
 > commits mentionnés dans les relevés correspondent à l'historique local
 > d'origine, dont les identifiants diffèrent de l'historique public.
 
+## Patins — commande en throttle, poussée longue, tour complet réussi une fois
+
+- Treat the roller command as a throttle, not a speed: measured on the scanned apartment,
+  0.10 and 0.20 move nothing, 0.25 gives 0.38 m/s and 0.60 saturates at 0.56 m/s. The filter's
+  speed model now uses that curve (dead band below 0.22) instead of the commanded value, with a
+  0.3 s time constant, 0.02 m/s² of coasting decel and a `ROLLER_BLIND_GRACE_S` window during
+  which the glide is admitted to be unmeasured.
+- Replace the 0.3 s bursts by a 2 s blind push (`ROLLER_BLIND_S`) followed by 0.4 s of coast
+  (`ROLLER_DWELL_S`) before the speed is judged again. Static friction absorbs a short burst —
+  0.3 s every 0.65 s moved the duck 0.11 m in 40 s — while a single 2 s push reaches 0.33 m/s and
+  3 s reaches 0.44 m/s. A sustained brake rears the duck to 26–29° and tips it over, so braking
+  stays pulsed at 0.25/0.20 s; a 0.454 m/s coast for 8 s stays under 9.2° of pitch.
+- Diffuse the glide along the axes the depth frames cannot pin instead of dropping the whole
+  step, keep the yaw on the IMU, and stop trusting the match's lateral axis. Raise
+  `RELOC_JUMP_FIT_MARGIN` to 0.15 so a relocalization that jumps must beat the nearby match by
+  a wider margin.
+- The full apartment tour `salon → ma chambre → départ` has completed once on `--realism real`:
+  4/4 legs, no fall, height steady at 0.116 m, worst pitch 19.2°, long legs at 0.173 m/s average.
+  It is **not reproducible yet**: four runs of the same command gave 4/4, 3/4, 2/4 and 1/4 legs.
+  The estimate slides 0.7 m ahead of the truth in a corridor while the map fit stays near 1.0,
+  and a head sweep can then settle on a wrong pose 1.7 m away because the corridor matches at
+  several offsets. A route that stops being traversable now sweeps the head before refusing
+  (`verify_deviation`), which turns some abandons into recoveries, but it cannot bound along-track
+  drift between two doorways. The estimate still lags the truth by up to 0.36 m while moving and
+  snaps back at rest, so the duck stops short of the place it names; `docs/localization.md`
+  records the curve, the failure modes and the four measured runs.
+
+## Gel du filtre pendant le balayage de relocalisation
+
+- Freeze the particle filter while a relocalization sweep collects frames: the duck
+  stands still by construction, and every frame-to-frame glide match is rejected while
+  the head turns (25° jumps change the viewpoint), so predicting between frames
+  diffused a stopped robot — up to 0.5 m of invented glide on skates over the 13 s
+  sweep. The composite match re-seeds the particles right after, and a rejected frame
+  during the sweep no longer counts as a lost glide.
+
+## Localisation globale honnête — balayage large et refus d'ambiguïté
+
+- Sweep the head −150…+150° in 25° steps (the head turns to ±170°, so a doorway behind
+  the duck is in the sweep) and stitch the frames into one composite; `robot.look` now
+  takes a unit direction vector so the yaw does not repeat the quadrant past 90°.
+  Upstream #127 found that wide composites relocalize while narrow wedges do not.
+- The whole-flat search keeps one coarse candidate per place (1 m, 60°) after a wider
+  pool, refines them all, and the best must explain the composite by
+  `AMBIGUITY_MARGIN = 0.15` nats per beam more than the best *different* place.
+  Measured on the synthetic flat: the true place scores about +0.17, a wrong look-alike
+  −0.1, identical twin rooms 0.00 — an exact twin is refused rather than answered
+  confidently and wrongly.
+- An insufficient margin makes `go_to` refuse with `LOCATION_AMBIGUOUS` ("another place
+  fits what I see as well, so put me back on the dock or tell me where I am") and
+  journal a `location_ambiguous` event. `NAV_GLOBAL_RELOCALIZATION` defaults to True, so
+  an unknown start sweeps the whole flat and then walks; set it to 0 for the old strict
+  no-prior refusal.
+
+## Relevage d'un robot tombé en simulation
+
+- Stand a fallen simulated robot back up through the equipment assistant: the WebRTC
+  path refused a fallen robot before the assistant could run, so the duck stayed down
+  until someone touched the simulator. Re-selecting the current mode is the recovery
+  request (robotd turns it into a `mode_support` stand-up) once the assistant's robot is
+  confirmed simulated; other safety reasons still refuse, and the wait releases only
+  once the robot reports upright and homed.
+- The tool description no longer tells the model that a person must pick the duck up
+  when the simulator can do it; the stand description and the robot context say so.
+
 ## Glisse mesurée par la caméra de profondeur — go_to autonome en patins
 
 - Measure the skates' glide from consecutive ToF frames: each 8×8 depth frame is

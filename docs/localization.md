@@ -105,6 +105,80 @@ succeeded within the last 10 frames and a frame arrived within 0.5 s. On the syn
 a 90th percentile of 0.5 cm; the rest diffuse. `go_to` on skates is refused with an explanation
 when `glide_odometry` is false, and the mode is never switched automatically.
 
+### Driving the skates
+
+The roller command's first component is a **throttle**, not a speed: the wheels are passive, and
+what the duck does with a throttle depends on the surface, on its load and on whether it is
+already moving. Benched on the scanned apartment scene:
+
+| throttle | measured speed |
+|---|---|
+| 0.10 | 0.000 m/s |
+| 0.20 | 0.002 m/s |
+| 0.25 | 0.378 m/s |
+| 0.30 | 0.516 m/s |
+| 0.40 | 0.516 m/s |
+| 0.60 | 0.559 m/s |
+
+So there is a dead band below about 0.22 and saturation near 0.56 m/s, and the controller's speed
+model has to come from that curve rather than from the throttle value. Free rolling decays at
+about 0.02 m/s² (0.06 m/s² on the apartment floor); a held negative throttle measures about
+0.32 m/s². A negative throttle is not a brake once the duck has stopped: at −0.45 it drives the
+duck backwards, so the brake is pulsed (`ROLLER_BRAKE_PULSE_S` 0.25 s on, `ROLLER_BRAKE_REST_S`
+0.2 s off).
+
+Two failure modes set the shape of the loop:
+
+- **A sustained brake is fatal.** Held for 0.75 s or more it rears the duck to 26–29° of pitch and
+  tips it over at 79–87°. Pulsed 0.25/0.20 it stays under 8.4°. Sustained push is bounded the same
+  way: 3 s is stable (pitch 9.8–11.6°), 5 s reaches 26.8° of pitch and 15.7° of roll, 7 s falls at
+  86°. Speed alone is harmless — coasting at 0.454 m/s for 8 s stays at 9.2°.
+- **Short bursts cannot start from rest.** Pushing 0.3 s every 0.65 s moved the duck 0.11 m in
+  40 s (0.012 m/s) on the real route: static friction absorbs each burst, and the duty cycle only
+  decays a speed already acquired. A single 2 s push reaches 0.33 m/s, a 3 s push 0.44 m/s.
+
+The loop therefore pushes blind for `ROLLER_BLIND_S = 2.0 s` (a speed built in 0.3 s is not
+measurable, and re-deciding from it makes the duck oscillate at 7 Hz), then coasts
+`ROLLER_DWELL_S = 0.4 s` before judging the speed again and choosing push, coast or brake around
+`ROLLER_CRUISE = 0.38 m/s` ± `ROLLER_SPEED_BAND_MPS = 0.08`. The measured speed comes from a
+0.45 s sliding window whose noise gate zeroes anything under 35 mm: below about 0.08 m/s the
+controller is blind and reads the duck as stopped, which is why the push must be long enough to
+leave that zone in one go.
+
+Turning is asymmetric. A throttle of 0.30 gives 0.78–0.89 rad/s counter-clockwise but nothing at
+all clockwise (which needs −0.50 for −0.72 rad/s, or ±0.80 for 4.2–4.9); yaw while sliding is
+cheaper, 1.04 rad/s at 0.15 and 1.68 at 0.30 on a 0.25 m/s glide. In-place pivots from rest also
+barely move on the bench (2–4° in 5 s) where the tracked runs show 66° in 2.5 s, so the pivot gain
+ramps from `ROLLER_PIVOT = 0.3` to `ROLLER_PIVOT_MAX = 0.5` when 0.4 s brings less than
+`ROLLER_PIVOT_PROGRESS_RAD = 0.05` rad.
+
+With those settings the full apartment tour `salon → ma chambre → départ` has completed once on
+`--realism real`, seed 0, without a fall: 4/4 legs, height steady at 0.116 m, worst pitch 19.2°
+and worst roll 5.2°. The long legs average 0.173 m/s (11.42 m to the bedroom, 9.98 m to the dock)
+against a 0.38 m/s cruise, and the drive log is dominated by push (885 ticks) and coast (395),
+with only 11 brake ticks.
+
+That tour is **not reproducible yet**. Four runs of the same command gave 4/4, 3/4, 2/4 and 1/4
+legs, and the losing legs are always the long ones. Two failure modes show up in the traces:
+
+- The estimate slides 0.7 m ahead of the truth in a corridor while the map fit stays high
+  (0.9–1.0) and the spread stays small (σxy 0.03): the filter is confident and wrong. The route
+  then crosses an occupied cell, `navigator.plan` returns `None`, and the governor sweeps the
+  head before refusing (`verify_deviation`) instead of abandoning on the first replan failure.
+- The head sweep can land on a **wrong** pose 1.7 m away with a fit of 1.0, because a long
+  featureless corridor matches equally well at several offsets. The duck then drives off from
+  that pose, hits things, and the run is lost (18 contacts, rms 1.66 m).
+
+So the glide is measured well enough to keep the skates upright and to stop short of a wall, but
+not well enough to bound along-track drift between two doorways — the limit already noted above
+for long featureless corridors, and the reason the real duck cannot be asked to cross the flat
+on skates without a landmark in range.
+
+One honest caveat: while the duck moves, the estimate lags the truth by up to about 0.36 m and
+snaps back at rest. The controller stops on the *estimated* pose, so it stops roughly that far
+short of the place, and the arrival check still holds — the final distance in the run tables
+below is measured on the simulator truth, not on the estimate.
+
 ## Start and relocalization
 
 - `NAV_START` gives a known start: a place, `place@heading_deg` or `x,y,heading_deg`. In the
@@ -136,8 +210,11 @@ when `glide_odometry` is false, and the mode is never switched automatically.
 - **Head sweep:** the duck stands still and looks at −150…+150° in 25° steps (the head turns to
   ±170°, so a doorway behind it is in the sweep). Odometry stitches the
   frames into one composite, which is matched coarse-to-fine around the last estimate (0.6–1.5 m,
-  limited heading tolerance). Frames are collected and odometry is propagated during the sweep,
-  but individual frames do not correct the tracked pose while the head is moving. Upstream #127
+  limited heading tolerance). Frames are collected during the sweep, but the tracked pose is
+  neither corrected nor predicted while the head is moving: the duck stands still by
+  construction, and the composite match re-seeds the particles right after, so diffusing a
+  stopped robot (on skates, where every frame-to-frame match is rejected while the head turns)
+  would invent a glide it does not have. Upstream #127
   found that wide composites relocalize while narrow wedges do not, and that matches here: a
   single wedge is never trusted.
 - The filter tracks during every motion (manual `move`/`turn` too), but a manual motion is not
