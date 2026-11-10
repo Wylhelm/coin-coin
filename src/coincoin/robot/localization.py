@@ -1707,6 +1707,10 @@ class EstimatedPose:
         self.glide_step = step
         if previous is None or previous_t is None or not self.filter.initialized:
             return
+        if self.collecting_sweep:
+            # A sweep stands still and turns the head on purpose, and its match re-seeds the
+            # particles: predicting here would diffuse a stopped robot as if it were gliding.
+            return
         dt = max(0.0, (t_ns - previous_t) / 1e9)
         c, s = math.cos(previous.yaw), math.sin(previous.yaw)
         dx, dy = odom.x - previous.x, odom.y - previous.y
@@ -1737,6 +1741,10 @@ class EstimatedPose:
             return None
         before, after = self._scans[-2], self._scans[-1]
         self._last_frame_at = self._clock()
+        if self.collecting_sweep:
+            # The head jumps between sweep positions, so consecutive frames see different
+            # viewpoints: a rejection is the sweep's doing, not evidence the glide is lost.
+            return None
         step = match_glide(
             before.hits[:, :2],
             after.hits[:, :2],
