@@ -296,7 +296,7 @@ Restart the service after changing them.
 | `MAX_MOVE_S`, `MOVE_HZ` | Maximum command duration `5 s`; command streaming `20 Hz`. |
 | `NAV_MAP`, `SIM_POSE_LINK` | Empty: no `go_to`. Navigation map and simulator body-server address; set together by `--places`. |
 | `NAV_POSE`, `NAV_START`, `TOF_LINK` | `estimated` (odometry + ToF, default) or `oracle` (simulator truth, evaluation only); known start such as `départ@0` (empty: unknown); ToF source: a relay `tcp://` endpoint, or `link` to subscribe to `tof.stream` over the WebRTC robot link itself. `--places` sets them (`link` with `--link webrtc`). |
-| `NAV_GLOBAL_RELOCALIZATION` | `false`: relocalize only near the last estimate; a whole-flat match can be confidently wrong. |
+| `NAV_GLOBAL_RELOCALIZATION` | `true`: with no usable estimate, sweep the head and match the whole flat; refuse (`location_ambiguous`) when two places fit equally well. `false`: relocalize only near the last estimate, and refuse an unknown start. |
 | `WAKE_ENGINE`, `WAKE_THRESHOLD` | `vosk`, `0.9`; threshold remains provisional. |
 | `FOLLOWUP_S` | Conversation follow-up timeout, `420 s`. |
 | `QUACK_SINK` | `stream` (browser output) or `robot`. |

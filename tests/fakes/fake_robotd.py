@@ -127,11 +127,12 @@ class FakeRobotLink:
                 }
             case "robot.look":
                 params = params or {}
+                x, y, z = params.get("x", 1), params.get("y", 0), params.get("z", 0)
                 return {
                     "head": {
                         "neck_pitch": 0.0,
-                        "head_pitch": math.atan2(params.get("z", 0), params.get("x", 1)),
-                        "head_yaw": math.atan2(params.get("y", 0), params.get("x", 1)),
+                        "head_pitch": math.atan2(z, math.hypot(x, y)),
+                        "head_yaw": math.atan2(y, x),
                         "head_roll": 0.0,
                     },
                     "clamped": False,

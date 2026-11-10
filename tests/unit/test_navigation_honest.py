@@ -15,7 +15,16 @@ from coincoin.journal import Journal
 from coincoin.robot.governor import Governor, ImmediateToolResult
 from coincoin.robot.localization import EstimatedPose, LikelihoodField, Odom
 from coincoin.robot.navigation import Navigator, Pose
-from tests.fakes.fake_tof import Box, ClockedTof, TofRobotLink, World, feed, flat, nav_map
+from tests.fakes.fake_tof import (
+    Box,
+    ClockedTof,
+    TofRobotLink,
+    World,
+    feed,
+    flat,
+    nav_map,
+    twin_flat,
+)
 
 GRID = flat()
 MAP = nav_map(GRID)
@@ -36,19 +45,35 @@ def _deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class Rig:
-    def __init__(self, tmp_path: Path, boxes: list[Box], start: str, truth: tuple[float, ...]):
+    def __init__(
+        self,
+        tmp_path: Path,
+        boxes: list[Box],
+        start: str,
+        truth: tuple[float, ...],
+        *,
+        grid: np.ndarray = GRID,
+        places: dict[str, tuple[float, float]] | None = None,
+        settings: Settings | None = None,
+    ):
         self.clock = FakeClock()
+        self.map = MAP if grid is GRID else nav_map(grid, places)
+        self.walls = LikelihoodField(self.map)
         self.link = TofRobotLink(
-            self.clock, World(GRID, boxes), odom_scale=1.05, odom_yaw_scale=0.97
+            self.clock, World(grid, boxes), odom_scale=1.05, odom_yaw_scale=0.97
         )
         self.link.place_at(*truth)
         self.depth = ClockedTof(self.link, self.clock, before=self.track)
-        self.localizer = EstimatedPose(MAP, self.link.state, self.depth, clock=self.clock.now)
+        self.localizer = EstimatedPose(self.map, self.link.state, self.depth, clock=self.clock.now)
         self.localizer.start_at(start)
-        self.navigator = Navigator(MAP, self.localizer, localizer=self.localizer)
+        self.navigator = Navigator(self.map, self.localizer, localizer=self.localizer)
         self.journal_dir = tmp_path
         self.governor = Governor(
-            self.link, Settings(), self.clock, Journal(tmp_path), navigator=self.navigator
+            self.link,
+            settings or Settings(),
+            self.clock,
+            Journal(tmp_path),
+            navigator=self.navigator,
         )
         self.boxes = boxes
         self.closest = math.inf
@@ -62,7 +87,7 @@ class Rig:
             dy = max(box.y0 - y, 0, y - box.y1)
             self.closest = min(self.closest, math.hypot(dx, dy))
         # Gap between the body and the nearest mapped wall: the fake world lets it pass through.
-        gap = float(WALLS.lookup(np.array([x]), np.array([y]))[0]) - MAP.robot_radius
+        gap = float(self.walls.lookup(np.array([x]), np.array([y]))[0]) - self.map.robot_radius
         self.wall = min(self.wall, gap)
         if self.localizer.current().converged:
             estimate = self.localizer.current()
@@ -127,15 +152,58 @@ async def test_honest_go_to_from_a_known_start_arrives(tmp_path: Path) -> None:
     assert finals and all(r["pose_source"] == "estimated" for r in finals)
 
 
-async def test_unknown_start_sweeps_then_refuses(tmp_path: Path) -> None:
+async def test_unknown_start_now_searches_the_whole_map(tmp_path: Path) -> None:
+    """With no idea where it is, the duck sweeps the map and then walks to the room."""
     async with Rig(tmp_path, [], "", (1.5, 1.5, 0.0)) as rig:
+        started, result = await rig.go_to("cuisine")
+        assert started.ok, started
+        assert rig.calls("robot.look") >= 13
+        assert result is not None and result.ok, result
+        assert math.dist(rig.link.position[:2], MAP.places["cuisine"]) < 0.35
+    events = [r.get("event") for r in rig.journal() if r.get("type") == "localization"]
+    assert "sweep" in events and "relocalized" in events and "no_prior" not in events
+
+
+async def test_the_strict_flag_still_refuses_an_unknown_start(tmp_path: Path) -> None:
+    strict = Settings(nav_global_relocalization=False)
+    async with Rig(tmp_path, [], "", (1.5, 1.5, 0.0), settings=strict) as rig:
         started, _ = await rig.go_to("cuisine")
         assert not started.ok
         assert "I do not know where I am, so I will not walk to cuisine" in started.reason
-        assert rig.calls("robot.look") >= 7
         assert rig.calls("robot.move") == 0
     events = [r.get("event") for r in rig.journal() if r.get("type") == "localization"]
-    assert "sweep" in events and "no_prior" in events
+    assert "no_prior" in events and "relocalized" not in events
+
+
+async def test_an_ambiguous_map_is_refused_honestly(tmp_path: Path) -> None:
+    """Two identical rooms: the duck says it cannot tell, rather than walking off on a guess."""
+    places = {"salon": (1.5, 2.5), "cuisine": (6.5, 2.5), "coin": (6.8, 4.3)}
+    async with Rig(tmp_path, [], "", (1.5, 2.5, 0.0), grid=twin_flat(), places=places) as rig:
+        started, _ = await rig.go_to("cuisine")
+        assert not started.ok
+        assert "another place fits what I see as well" in started.reason
+        assert "put me back on the dock" in started.reason
+        assert "I will not walk to cuisine" in started.reason
+        assert rig.calls("robot.move") == 0
+    events = [r.get("event") for r in rig.journal() if r.get("type") == "localization"]
+    assert "location_ambiguous" in events
+    assert "relocalized" not in events
+
+
+async def test_the_head_sweep_covers_plus_or_minus_150_degrees(tmp_path: Path) -> None:
+    """The head turns nearly as far as it can, so a doorway behind the duck is in the sweep."""
+    async with Rig(tmp_path, [], "", (1.5, 1.5, 0.0)) as rig:
+        await rig.go_to("cuisine")
+    looks = [
+        record.params
+        for record in rig.link.records
+        if record.method == "robot.look" and record.params
+    ]
+    headings = {round(math.degrees(math.atan2(p["y"], p["x"]))) for p in looks}
+    assert len(headings) >= 13
+    assert min(headings) <= -150 and max(headings) >= 150
+    assert all(abs(p["z"]) < 1e-9 for p in looks)
+    assert all(math.isclose(math.hypot(p["x"], p["y"]), 1.0) for p in looks)
 
 
 async def test_start_near_a_place_is_confirmed_by_a_head_sweep(tmp_path: Path) -> None:

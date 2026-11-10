@@ -33,7 +33,7 @@ def test_master_defaults() -> None:
         "nav_map": "",
         "nav_pose": "estimated",
         "nav_start": "",
-        "nav_global_relocalization": False,
+        "nav_global_relocalization": True,
         "tof_link": "",
         "sim_pose_link": "",
         "log_audio": False,

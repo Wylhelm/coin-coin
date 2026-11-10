@@ -52,16 +52,24 @@ NAV_REPLANS = 3
 # this many times per route before giving up and saying so.
 NAV_RELOCALIZATIONS = 2
 NAV_UNCERTAIN_S = 3.0
-# A relocalization searches around the last estimate within this radius (and heading tolerance),
-# never across the whole flat: a global match can be confidently wrong (docs/localization.md).
+# A relocalization searches around the last estimate within this radius (and heading tolerance).
+# With no usable estimate at all it searches the whole flat, and then refuses an ambiguous match
+# rather than guessing (docs/localization.md).
 RELOC_RADIUS_M = (0.6, 1.5)
 RELOC_PRIOR_MAX_M = 1.0
 RELOC_HEADING_RAD = (0.35, 1.0)
 # Share of the odometry travel and rotation since the last fix that the match window allows.
 RELOC_DRIFT_FRACTION = 0.1
 # Head sweep for relocalization: wide composites relocalize, narrow wedges do not (microduck#127).
-SWEEP_DEGREES = (-75, -50, -25, 0, 25, 50, 75)
+# The head turns +-170 degrees; a quarter of the flat can hide in the 45 degree ToF wedge, so the
+# sweep goes as wide as the neck allows in 25 degree steps.
+SWEEP_DEGREES = (-150, -125, -100, -75, -50, -25, 0, 25, 50, 75, 100, 125, 150)
 SWEEP_HOLD_S = 0.9
+# Said when a whole-flat sweep matched two places equally well: never walk on a guess.
+LOCATION_AMBIGUOUS = (
+    "I cannot tell where I am without risking a mistake: another place fits what I see as well, "
+    "so put me back on the dock or tell me where I am"
+)
 # Obstacles the map does not hold: stop when ToF returns sit on the next stretch of route. The
 # stretch covers the duck's radius, the distance walked during the sensor's latency (frame period,
 # state lag and one control tick) and braking, plus a margin. Two scans in a row must agree.
@@ -1096,10 +1104,7 @@ class Governor:
             if navigator.honest and (not estimate.converged or self._unsupervised_motion):
                 estimate = await self._relocalize(generation, navigator, estimate)
                 if not estimate.converged:
-                    raise RobotRefused(
-                        f"I do not know where I am, so I will not walk to {place} "
-                        f"({estimate.describe()})"
-                    )
+                    raise RobotRefused(self._lost_reason(place, navigator, estimate))
                 self._unsupervised_motion = False
             navigator.clear_obstacles()
             self._blocked_anchor = None
@@ -1598,6 +1603,8 @@ class Governor:
             self._blocked_anchor is not None or navigator.obstacles or localizer.obstacle_conflict
         )
         localizer.confirmed = False
+        # A verdict belongs to the sweep that produced it: never report a stale one.
+        localizer.last_verdict = None
         await self._stop_other_motion(generation)
         localizer.collecting_sweep = True
         try:
@@ -1668,14 +1675,29 @@ class Governor:
             estimate = replace(estimate, converged=False)
         elif estimate.converged:
             self._blocked_anchor = None
+        verdict = localizer.last_verdict
+        if estimate.converged:
+            event = "relocalized"
+        elif verdict is not None and verdict.ambiguous:
+            event = "location_ambiguous"
+        else:
+            event = "relocalization_failed"
         self.journal.write(
             "localization",
-            event="relocalized" if estimate.converged else "relocalization_failed",
+            event=event,
             scans=len(scans),
             hypotheses=len(hypotheses),
             estimate=estimate.describe(),
+            **({"verdict": verdict.describe()} if verdict is not None else {}),
         )
         return estimate
+
+    def _lost_reason(self, place: str, navigator: Navigator, estimate: PoseEstimate) -> str:
+        """Refuse a trip honestly, saying so when the sweep could not tell two places apart."""
+        verdict = navigator.localizer.last_verdict if navigator.localizer is not None else None
+        if verdict is not None and verdict.ambiguous:
+            return f"{LOCATION_AMBIGUOUS}; I will not walk to {place} ({estimate.describe()})"
+        return f"I do not know where I am, so I will not walk to {place} ({estimate.describe()})"
 
     async def _sweep(self, generation: int, localizer: EstimatedPose) -> list[Scan]:
         """Look across the room and return the ToF scans gathered on the way."""
@@ -1684,7 +1706,13 @@ class Governor:
         await self._cancel(self._look)
         self._look = None
         for degrees in (*SWEEP_DEGREES, 0):
-            point = {"x": 1.0, "y": math.tan(math.radians(degrees)), "z": 0.0}
+            # A look point is a direction vector: its yaw is atan2(y, x), so the x must go negative
+            # past +-90 degrees instead of leaning on tan(), which repeats the quadrant.
+            point = {
+                "x": math.cos(math.radians(degrees)),
+                "y": math.sin(math.radians(degrees)),
+                "z": 0.0,
+            }
             result = await self._action_call(generation, "robot.look", point)
             head = result.get("head") if isinstance(result, dict) else None
             if not isinstance(head, dict) or not _finite(*(head.get(name) for name in names)):
