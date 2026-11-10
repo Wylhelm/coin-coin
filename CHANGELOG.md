@@ -6,6 +6,28 @@
 > commits mentionnés dans les relevés correspondent à l'historique local
 > d'origine, dont les identifiants diffèrent de l'historique public.
 
+## Glisse mesurée par la caméra de profondeur — go_to autonome en patins
+
+- Measure the skates' glide from consecutive ToF frames: each 8×8 depth frame is
+  projected into a level body frame (head yaw and IMU tilt removed), so the rigid
+  displacement between two projected frames is the body's slide. A four-round
+  point-to-point ICP over the projected returns, with a 12 cm gate, reports
+  `(dx, dy, dyaw)` plus a per-axis sigma. `ParticleFilter.predict(glide=True)` now
+  moves by that measurement instead of diffusing, and diffuses only on the axes the
+  depth frames cannot pin.
+- Reject a match rather than integrate it: fewer than 8 returns in either frame, less
+  than half of the previous returns inside the gate, frames 5–150 ms apart, a 5 cm
+  residual, more than 0.25 rad of turn disagreement with the IMU, a step the skates
+  could not make, or a sigma above 2 cm on both axes. A rejected frame falls back to
+  the previous diffusion, so the filter keeps admitting it is blind.
+- `go_to` now runs on skates while `glide_odometry` is live, still at the roller
+  limits (0.3 m/s, no strafing, 0.3 rad/s) and with the wider roller waypoint and
+  arrival radii. Without depth frames, or once the last frame is 0.5 s old, the
+  refusal stays and says the glide cannot be estimated.
+- A synthetic sweep over 192 poses measures the glide in 74 % of views; the forward
+  error is 0.23 cm median, 0.51 cm at p90. `docs/localization.md` records the method,
+  the rejection rules and the measurements.
+
 ## Intégration sim-réalisme — runtime 0.18.9, API 52
 
 - Merge the parity/bring-up kit (contract tests, session record/replay, bring-up and

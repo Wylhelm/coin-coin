@@ -23,8 +23,9 @@ This note covers the design, the measured results and a verdict for the scanned 
 In honest mode `SIM_POSE_LINK` is still read, but **only to score** the estimate. The journal and
 tests record the error; the controller never sees the true pose. `SimPose` asks the body server for
 `oracle.pose` (the sim-realism op) and falls back to `read` (trunk + `imu.quat`) on older
-simulators. Honest mode refuses roller (skates) navigation, because there is no contact odometry
-while gliding.
+simulators. On skates the wheels carry no contact odometry, so honest mode measures the glide from
+consecutive ToF frames (*Glide odometry* below) and only accepts roller navigation while that
+measurement holds.
 
 A future `maploc` source (upstream microduck#127, `robot.map` with a map-frame pose from SLAM+MCL
 inside robotd) only needs to implement the same `PoseSource` protocol: `current()` returning a
@@ -36,8 +37,9 @@ done here, and nothing here depends on maploc.
 
 - **Particles:** 600, in map x, y and yaw.
 - **Prediction:** each `robot.state` odometry delta, with a noise model of 8 % of translation,
-  5 % of rotation, cross terms and small floors. In roller mode the gliding model spreads the
-  particles because leg odometry cannot observe the glide; navigation remains disabled.
+  5 % of rotation, cross terms and small floors. In roller mode that delta is ignored: the
+  particles move by the glide measured from the last two frames, with that match's own σ per axis,
+  and diffuse along an axis the view could not pin (*Glide odometry*).
 - **Correction:** each ToF frame. Each zone becomes a beam from the head's ToF frame, levelled
   with the IMU:
   - **valid** (status 5/9): a hit, scored against a two-sided likelihood field of the map
@@ -66,9 +68,42 @@ done here, and nothing here depends on maploc.
   not trigger this object-specific suspension.
 - **Dispersion and fit:** the particle standard deviations and a map-fit score are not bounds on
   the actual error. A tight, good-fitting cluster can still be wrong. `converged` also requires a
-  known origin or accepted sweep, adequate fit and walking mode. The lost flag means σxy > 0.5 m,
-  σyaw > 0.5 rad, or low map fit; navigation permits a short persistence before stopping for
-  non-convergence.
+  known origin or accepted sweep, adequate fit, and a depth frame within 0.5 s on skates. The lost
+  flag means σxy > 0.5 m, σyaw > 0.5 rad, or low map fit; navigation permits a short persistence
+  before stopping for non-convergence.
+
+### Glide odometry (skates)
+
+`scan_from` already removes the head pose and the IMU tilt, so two consecutive frames' returns
+differ by the body's own rigid motion — the glide the passive wheels cannot report. `match_glide`
+recovers it from the ToF stream alone, with nothing the real robot lacks: nearest-neighbour ICP,
+4 rounds, seeded with the IMU's heading, on the 2D level-frame returns (64 points at most, so the
+cost is small).
+
+The match is refused, and the filter diffuses instead — a wrong step is worse than no step — when:
+
+- either frame has fewer than 8 returns, or fewer than half the previous frame's returns keep a
+  correspondence within 12 cm;
+- the frames are closer than 5 ms or further apart than 150 ms (a 15 Hz stream; a longer gap
+  means the body may have moved unmeasured);
+- the 2D RMS residual exceeds 5 cm;
+- the fit's turn disagrees with the IMU by more than 0.25 rad;
+- the step is faster than the skates can go (0.6 m/s, plus an 8 cm margin).
+
+A view only measures the glide it can tell apart from standing still: a wall the robot faces pins
+the step towards it and says nothing about sliding along it, however good the fit looks. The match
+therefore reports a σ per body axis, from a point-to-plane information matrix (Schur-complement
+marginal precision, inflated 1.5×, floored at 0.8 cm and never below the residual). An axis whose
+σ exceeds 2 cm comes back unmeasured and the filter diffuses along it; if both axes are
+unmeasured the whole step is refused. Returns closer than 2 cm are one surface sample — the zone
+grid stacks the rows of a column onto the same 2D point — and are deduplicated before the normals
+are computed.
+
+`EstimatedPose.glide_odometry` says whether the stream is currently measuring: the last match
+succeeded within the last 10 frames and a frame arrived within 0.5 s. On the synthetic flat, a
+192-pose grid with a 2 cm glide measures 74 % of poses, with a median forward error of 0.2 cm and
+a 90th percentile of 0.5 cm; the rest diffuse. `go_to` on skates is refused with an explanation
+when `glide_odometry` is false, and the mode is never switched automatically.
 
 ## Start and relocalization
 
@@ -167,8 +202,9 @@ cover:
 - unknown starts, which are refused;
 - an unmapped chair, walked around;
 - a closed door, which ends in "blocked" without collision;
-- roller mode, which is refused with an explanation; the mode is never switched automatically
-  (the user is offered `set_mode walk` first);
+- roller mode: a trip on skates is accepted while the ToF measures the glide, and refused with an
+  explanation otherwise; the mode is never switched automatically (the user is offered
+  `set_mode walk` first);
 - the beam and status model and the ToF TCP stream.
 
 In earlier synthetic runs, a whole-flat global relocalization was right in 2 of 3 cases, and in 3
