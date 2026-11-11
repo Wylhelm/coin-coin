@@ -73,6 +73,13 @@ class Trace:
                 err=math.dist(probe["position"], (estimate.x, estimate.y)),
                 yaw_err=round(math.degrees(_wrap(probe["yaw"] - estimate.yaw)), 1),
             )
+        filt = getattr(self.localizer, "filter", None)
+        if filt is not None:
+            row["blind"] = round(filt.blind_s, 2)
+            row["bel"] = round(float(np.mean(filt.speed)), 2)
+        applied = (state.get("move") or {}).get("applied")
+        if isinstance(applied, (list, tuple)) and applied:
+            row["cmd"] = round(float(applied[0]), 2)
         scan = self.localizer.latest_scan()
         if scan is not None:
             row["scan_t_ns"] = scan.t_ns

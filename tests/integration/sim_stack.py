@@ -14,7 +14,7 @@ import json
 import os
 import socket
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -166,23 +166,25 @@ class SimStack:
     tof_url: str
     probe_reader: asyncio.StreamReader
     probe_writer: asyncio.StreamWriter
+    # One request at a time: the trace sampler and the governor both probe the same pipe.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def body_url(self) -> str:
         return f"tcp://127.0.0.1:{self.body_port}"
 
+    async def request(self, request: dict[str, Any]) -> dict[str, Any]:
+        async with self.lock:
+            return await body_request(self.probe_reader, self.probe_writer, request)
+
     async def probe(self) -> dict[str, Any]:
-        return await body_request(self.probe_reader, self.probe_writer, {"op": "test_probe"})
+        return await self.request({"op": "test_probe"})
 
     async def place(self, position: list[float], yaw: float) -> None:
-        await body_request(
-            self.probe_reader,
-            self.probe_writer,
-            {"op": "test_place", "position": position, "yaw": yaw},
-        )
+        await self.request({"op": "test_place", "position": position, "yaw": yaw})
 
     async def read(self) -> dict[str, Any]:
-        return await body_request(self.probe_reader, self.probe_writer, {"op": "read"})
+        return await self.request({"op": "read"})
 
 
 @contextlib.asynccontextmanager
