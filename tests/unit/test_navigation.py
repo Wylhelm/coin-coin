@@ -436,8 +436,44 @@ def test_roller_keeps_its_push_where_walls_are_close() -> None:
     # before tipping over. The clock is seconds long, not tenths: a 0.3 s burst never broke
     # the static friction the skates sit in and the f18 salon leg covered 0.11 m in 40 s.
     assert steering_command(steering, Pose(0.44, 0, 0), 2.2)["vx"] == 0.0
-    # Past the coast, the glide has lost its speed again, so the next push starts.
-    assert steering_command(steering, Pose(0.48, 0, 0), 2.7)["vx"] == 0.25
+    # A coast follows every push before the speed is judged again, and it is longer than the
+    # dwell: the estimate lags the glide, so a push decided 0.4 s after the last one read
+    # "slow" while the duck was already fast and pushed again.
+    assert steering_command(steering, Pose(0.55, 0, 0), 2.7)["vx"] == 0.0
+    # Past the mandatory coast, the glide has lost its speed again, so the next push starts.
+    assert steering_command(steering, Pose(0.86, 0, 0), 4.3)["vx"] == 0.25
+
+
+def test_roller_coasts_a_whole_two_seconds_after_every_push() -> None:
+    # Capping the push was not enough. The controller reads its speed off the estimated pose,
+    # and that estimate lags the glide by up to 0.36 m, so it read "slow" 0.4 s after a push
+    # while the duck was already fast and pushed again: on the seed 0 bedroom leg the true
+    # glide climbed 0.34 -> 0.46 m/s while `forward` never left the band, the frame match fell
+    # to 0.32-0.62 and the error ran 0.67 -> 1.40 m until a wall stopped it. A mandatory coast
+    # bounds the speed without needing a trustworthy measurement. Two seconds of push reaches
+    # 0.33 m/s, two seconds of coast loses 0.12 at the 0.06 m/s^2 measured on the apartment, so
+    # the glide stays under the 0.45 m/s where the depth match gives up.
+    steering = Steering([(9.0, 0.0)], (0.3, 0.0, 0.3), "roller")
+
+    def pose(now: float) -> Pose:
+        return Pose(max(0.0, 0.25 * (now - 0.3)), 0.0, 0.0)
+
+    steering.update(pose(0.0), 0.0)
+    assert steering_command(steering, pose(0.1), 0.1)["vx"] == 0.25
+    assert steering._push_rest
+    # From rest the long push runs its full clock, or static friction eats it.
+    assert steering_command(steering, pose(1.9), 1.9)["vx"] == 0.25
+    assert steering_command(steering, pose(2.05), 2.05)["vx"] == 0.0
+    # The speed reads 0.25, under the band, so every tick here would have pushed again.
+    assert steering_command(steering, pose(2.5), 2.5)["vx"] == 0.0
+    assert steering_command(steering, pose(3.0), 3.0)["vx"] == 0.0
+    assert steering_command(steering, pose(3.9), 3.9)["vx"] == 0.0
+    # Once the coast is served, the push is allowed back -- and it is still the short one,
+    # because the glide is moving.
+    assert steering_command(steering, pose(4.4), 4.4)["vx"] == 0.25
+    assert not steering._push_rest
+    assert steering_command(steering, pose(4.8), 4.8)["vx"] == 0.25
+    assert steering_command(steering, pose(4.95), 4.95)["vx"] == 0.0
 
 
 def test_roller_brakes_most_of_a_metre_before_the_goal() -> None:

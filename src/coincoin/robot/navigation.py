@@ -470,7 +470,29 @@ class Steering:
     # Long enough to break away and reach the plateau, short enough that the pitch the push
     # builds up has not started to run away: 3 s of unbroken push measured 9.8 to 11.6
     # degrees of pitch and stayed upright, 5 s reached 26.8 and rolled 15.7 degrees.
+    #
+    # Only a push that has to break the skates loose needs all of it. Pushing for two seconds
+    # from an already rolling 0.30 m/s overshoots the band to 0.5 m/s, and there the depth
+    # odometry gives up: the frame-to-frame match needs a stable viewpoint, and past about
+    # 0.45 m/s the fit fell to 0.4-0.7 and was rejected. The controller reads its speed off
+    # the estimated pose, so a lagging estimate read "slow" and pushed again -- in the f21
+    # bedroom leg the true glide sat at 0.5 m/s while the estimate crawled at 0.11 and the
+    # error grew 0.2 -> 1.8 m in six seconds. A rolling push is therefore short enough that
+    # the glide answers before the speed leaves the band.
     ROLLER_BLIND_S = 2.0
+    ROLLER_BLIND_ROLLING_S = 0.5
+    # Capping the push was not enough: the controller judged the next push on a speed read
+    # off the estimated pose, and that estimate lags the glide by up to 0.36 m, so it read
+    # "slow" while the duck was already fast and pushed again. On the seed 0 bedroom leg the
+    # true glide climbed 0.34 -> 0.46 m/s while `forward` never left the band, the frame match
+    # fell to 0.32-0.62 and the error ran 0.67 -> 1.40 m until a wall stopped it; seed 2 lost
+    # the way home the same way, 2.9 m off with 31 contacts. A mandatory coast after every
+    # push bounds the speed without needing a trustworthy measurement: one 2 s push reaches
+    # 0.33 m/s, two seconds of coast loses 0.12 at the 0.06 m/s^2 measured on the apartment,
+    # so the glide stays under the 0.45 m/s where the depth match gives up and averages about
+    # 0.25 m/s. The dwell alone was too short to serve as this brake: it is 0.4 s, and the
+    # estimate has not caught up in 0.4 s.
+    ROLLER_COAST_S = 2.0
     # The speed is a difference of two poses, and the estimated pose is a particle filter's:
     # frame to frame it wanders by a couple of centimetres, which at 20 Hz reads as
     # +-0.45 m/s. Every consumer of the speed -- the brake distance, the arrival latch, the
@@ -524,6 +546,8 @@ class Steering:
         self._arriving = False
         self._brake_at: float | None = None
         self._push_started: float | None = None
+        self._push_ended_at: float | None = None
+        self._push_rest = True
         self._drive = 0
         self._drive_at: float | None = None
         self._drive_brake_at: float | None = None
@@ -779,7 +803,8 @@ class Steering:
         self, forward: float, desired: float, push_vx: float, brake_vx: float, now: float
     ) -> float:
         """Push, coast or brake, holding each choice long enough for the glide to answer."""
-        if self._push_started is not None and now - self._push_started >= self.ROLLER_BLIND_S:
+        blind = self.ROLLER_BLIND_S if self._push_rest else self.ROLLER_BLIND_ROLLING_S
+        if self._push_started is not None and now - self._push_started >= blind:
             # The glide match rejects the frames of a push, so the measured speed freezes
             # while the real one climbs. A push has to last long enough to break the skates
             # loose: 0.3 s bursts every 0.65 s moved the duck 0.11 m in 40 s, because static
@@ -790,8 +815,12 @@ class Steering:
             # by ROLLER_DWELL_S of coast before the speed is judged again.
             self._set_drive(0, now)
             self._push_started = None
+            self._push_ended_at = now
         elif self._drive_at is None or now - self._drive_at >= self.ROLLER_DWELL_S:
-            if forward < desired - self.ROLLER_SPEED_BAND_MPS:
+            coasting = (
+                self._push_ended_at is not None and now - self._push_ended_at < self.ROLLER_COAST_S
+            )
+            if forward < desired - self.ROLLER_SPEED_BAND_MPS and not coasting:
                 self._set_drive(1, now)
             elif forward > desired + self.ROLLER_SPEED_BAND_MPS:
                 self._set_drive(-1, now)
@@ -800,8 +829,11 @@ class Steering:
         if self._drive > 0:
             if self._push_started is None:
                 self._push_started = now
+                self._push_rest = forward < self.ROLLER_STOPPED
             self._drive_brake_at = None
             return push_vx
+        if self._push_started is not None:
+            self._push_ended_at = now
         self._push_started = None
         if self._drive < 0:
             # The brake rears the skates up if it is held: the f17 cruise ran the overspeed brake
