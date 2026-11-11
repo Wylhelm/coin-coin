@@ -42,21 +42,11 @@ from coincoin.robot.governor import Governor, ImmediateToolResult
 from coincoin.robot.localization import EstimatedPose, LinkTofStream
 from coincoin.robot.navigation import NavigationMap, Navigator, SimPose
 from coincoin.robot.webrtc_link import WebRtcLink
-from tests.integration.nav_repro import Trace, summarize
+from tests.integration.nav_repro import Trace, free_route_failures, read_contact_events, summarize
 from tests.integration.sim_stack import COIN, CONTACT_BOOTSTRAP, STREAM, apartment_dir
 
 sys.path.insert(0, str(COIN / "scripts"))
 import live_stack  # noqa: E402  # pyright: ignore[reportMissingImports]
-
-
-def read_contact_events(path: Path) -> int:
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    if not rows or rows[0] != {"ready": True}:
-        raise RuntimeError("the isolated simulator did not enable contact monitoring")
-    for expected, row in enumerate(rows[1:], 1):
-        if row.get("event") != expected:
-            raise RuntimeError("the contact monitor produced an incomplete event log")
-    return len(rows) - 1
 
 
 class LiveStack:
@@ -267,59 +257,6 @@ async def run_steps(args: argparse.Namespace, state: Path, out: Any) -> list[dic
             }
         )
     return results
-
-
-def free_route_failures(results: list[dict[str, Any]]) -> list[str]:
-    failures: list[str] = []
-    for row in results:
-        step = row["step"]
-        after = row.get("after") or {}
-        contacts = row.get("contact_events")
-        if not isinstance(contacts, int):
-            failures.append(f"{step}: contact monitoring was unavailable")
-        elif contacts:
-            failures.append(f"{step}: {contacts} contact event(s) with world-box geometry")
-        if step.startswith("roller:"):
-            if row["ok"] or "on skates" not in (row.get("reason") or ""):
-                failures.append(f"{step}: expected an explicit refusal of skating navigation")
-        elif not row["ok"]:
-            failures.append(f"{step}: {row.get('reason') or 'step failed'}")
-        elif "final_m" in row:
-            distance = row["final_m"]
-            if (
-                not isinstance(distance, (int, float))
-                or isinstance(distance, bool)
-                or not math.isfinite(distance)
-                or distance < 0
-            ):
-                failures.append(f"{step}: no measurable final distance")
-            elif distance > 0.20:
-                failures.append(f"{step}: arrival was {distance:.3f} m from the target")
-            if not after.get("converged"):
-                failures.append(f"{step}: position was not confirmed after stopping")
-        max_converged = row.get("max_converged_m")
-        if max_converged is not None:
-            if (
-                not isinstance(max_converged, (int, float))
-                or isinstance(max_converged, bool)
-                or not math.isfinite(max_converged)
-                or max_converged < 0
-            ):
-                failures.append(f"{step}: confirmed-position error was not measurable")
-            elif max_converged > 0.20:
-                failures.append(f"{step}: a confirmed position was {max_converged:.3f} m wrong")
-        if after.get("converged"):
-            error = after.get("err")
-            if (
-                not isinstance(error, (int, float))
-                or isinstance(error, bool)
-                or not math.isfinite(error)
-                or error < 0
-            ):
-                failures.append(f"{step}: final confirmed-position error was not measurable")
-            elif error > 0.20:
-                failures.append(f"{step}: a confirmed position was {error:.3f} m wrong")
-    return failures
 
 
 def main(args: argparse.Namespace) -> int:

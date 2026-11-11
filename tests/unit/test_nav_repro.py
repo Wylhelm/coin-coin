@@ -5,8 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.nav_repro import summarize
-from tests.integration.nav_repro_live import free_route_failures, read_contact_events
+from tests.integration.nav_repro import free_route_failures, read_contact_events, summarize
 
 
 def test_summary_reports_contacts_only_when_measured() -> None:
