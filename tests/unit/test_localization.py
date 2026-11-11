@@ -11,10 +11,15 @@ import pytest
 from coincoin.clock import FakeClock
 from coincoin.robot.jsonrpc import JsonRpcConnection
 from coincoin.robot.localization import (
+    AMBIGUITY_MARGIN,
     CONVERGED_XY_M,
     FLOOR_FIT_INLIER_M,
+    GLIDE_MAX_MISSES,
+    GLIDE_MAX_SIGMA_M,
+    ROLLER_BLIND_GRACE_S,
     EstimatedPose,
     FloorTracker,
+    GlideStep,
     Hypothesis,
     LikelihoodField,
     LinkTofStream,
@@ -23,15 +28,19 @@ from coincoin.robot.localization import (
     ParticleFilter,
     PoseEstimate,
     Scan,
+    SweepVerdict,
     TcpTofStream,
     blocking_points,
     global_search,
+    match_glide,
     obstacle_points,
     parse_tof_frame,
+    same_place,
     scan_from,
+    sweep_verdict,
 )
 from coincoin.robot.navigation import NavigationMap, Navigator, Pose, SimPose
-from tests.fakes.fake_tof import ClockedTof, TofRobotLink, World, feed, flat, nav_map
+from tests.fakes.fake_tof import ClockedTof, TofRobotLink, World, feed, flat, nav_map, twin_flat
 
 GRID = flat()
 MAP = nav_map(GRID)
@@ -129,7 +138,7 @@ def test_tracking_scores_only_explained_hits_when_an_unmapped_obstacle_dominates
     field = LikelihoodField(MAP)
     particle_filter = ParticleFilter(field, count=100, seed=3)
     particle_filter.init_pose(Pose(1.5, 1.5, 0), 0.01, 0.01)
-    hits = np.column_stack((np.arange(20, dtype=np.float64), np.zeros(20), np.full(20, 0.2)))
+    hits = np.column_stack((np.arange(20.0), np.zeros(20), np.full(20, 0.2)))
     monkeypatch.setattr(field, "surface_distance", lambda x, y: np.where(x < 7.0, 0.0, 1.0))
     expected = hits[:6]
     assert np.array_equal(particle_filter.gate(hits), hits)
@@ -400,14 +409,23 @@ def test_sweep_refinement_respects_its_position_and_heading_window(
 
 
 def kit(
-    *, odom_scale: float = 1.1, odom_yaw_scale: float = 0.94, boxes=None, particles: int = 400
+    *,
+    odom_scale: float = 1.1,
+    odom_yaw_scale: float = 0.94,
+    boxes=None,
+    particles: int = 400,
+    grid: np.ndarray | None = None,
 ) -> tuple[FakeClock, TofRobotLink, EstimatedPose, ClockedTof]:
     clock = FakeClock()
     link = TofRobotLink(
-        clock, World(GRID, boxes or []), odom_scale=odom_scale, odom_yaw_scale=odom_yaw_scale
+        clock,
+        World(GRID if grid is None else grid, boxes or []),
+        odom_scale=odom_scale,
+        odom_yaw_scale=odom_yaw_scale,
     )
     depth = ClockedTof(link, clock)
-    localizer = EstimatedPose(MAP, link.state, depth, clock=clock.now, particles=particles)
+    nav = MAP if grid is None else nav_map(grid)
+    localizer = EstimatedPose(nav, link.state, depth, clock=clock.now, particles=particles)
     return clock, link, localizer, depth
 
 
@@ -474,8 +492,9 @@ async def test_kidnapped_robot_is_reported_lost() -> None:
 
 
 async def sweep(clock: FakeClock, link: TofRobotLink, localizer: EstimatedPose) -> list:
+    """Turn the head through the governor's whole sweep and return the frames it collected."""
     since = localizer.latest_t_ns() or 0
-    for degrees in (-75, -50, -25, 0, 25, 50, 75, 0):
+    for degrees in (*range(-150, 151, 25), 0):
         link.head[2] = math.radians(degrees)
         for _ in range(18):
             clock.advance(0.05)
@@ -529,6 +548,78 @@ async def test_a_single_wedge_is_not_trusted() -> None:
         task.cancel()
     assert not localizer.current().converged
     assert not localizer.relocalize([])
+
+
+def test_sweep_verdict_needs_a_gap_between_different_places() -> None:
+    """A whole-map match is trusted only when the best place clearly beats the best other one."""
+    beams = 600
+    best = Hypothesis(Pose(1.5, 2.5, 0.0), 300.0, beams)
+    assert sweep_verdict([]) is None
+    alone = sweep_verdict([best])
+    assert alone is not None and alone.rival is None
+    assert alone.margin == math.inf and not alone.ambiguous
+    # A second guess about the same place is not a second place.
+    nearby = Hypothesis(Pose(1.6, 2.4, 0.05), 290.0, beams)
+    assert same_place(best.pose, nearby.pose)
+    assert sweep_verdict([best, nearby]).rival is None  # type: ignore[union-attr]
+    # A look-alike 5 m away that explains the sweep almost as well: refuse rather than guess.
+    twin = Hypothesis(Pose(6.5, 2.5, 0.0), 270.0, beams)
+    assert not same_place(best.pose, twin.pose)
+    verdict = sweep_verdict([best, nearby, twin])
+    assert isinstance(verdict, SweepVerdict) and verdict.rival == twin
+    assert verdict.margin == pytest.approx(0.05)
+    assert verdict.margin < AMBIGUITY_MARGIN and verdict.ambiguous
+    # Two headings at one spot are two answers too: the duck would set off in the wrong one.
+    turned = sweep_verdict([best, Hypothesis(Pose(1.5, 2.5, math.pi), 300.0, beams)])
+    assert turned is not None and turned.ambiguous
+    exact = sweep_verdict([best, Hypothesis(Pose(6.5, 2.5, 0.0), 300.0, beams)])
+    assert exact is not None and exact.margin == pytest.approx(0.0) and exact.ambiguous
+    # Clearly the better place: trusted.
+    clear = sweep_verdict([best, Hypothesis(Pose(6.5, 2.5, 0.0), 200.0, beams)])
+    assert clear is not None and clear.margin == pytest.approx(1 / 6)
+    assert not clear.ambiguous
+    assert f"needs {AMBIGUITY_MARGIN:.2f}" in clear.describe()
+
+
+async def test_whole_map_sweep_refuses_two_identical_rooms() -> None:
+    """Two identical rooms fit one sweep: the duck says so instead of picking one and walking."""
+    clock, link, localizer, depth = kit(grid=twin_flat())
+    link.place_at(1.5, 2.5, 0.0)
+    task = asyncio.create_task(feed(localizer, link, depth))
+    try:
+        scans = await sweep(clock, link, localizer)
+    finally:
+        await depth.close()
+        task.cancel()
+    assert len(scans) > 100  # about 5 Hz of usable frames over the 13 s sweep
+    assert not localizer.relocalize(scans)
+    verdict = localizer.last_verdict
+    assert verdict is not None and verdict.ambiguous
+    assert verdict.rival is not None
+    apart = math.dist(
+        (verdict.best.pose.x, verdict.best.pose.y), (verdict.rival.pose.x, verdict.rival.pose.y)
+    )
+    assert apart > 1.0
+    assert not localizer.current().converged
+
+
+async def test_whole_map_sweep_converges_in_a_distinctive_room() -> None:
+    """With no prior, a room the map makes unique is still found from the sweep alone."""
+    clock, link, localizer, depth = kit()
+    link.place_at(1.5, 2.0, 0.3)
+    task = asyncio.create_task(feed(localizer, link, depth))
+    try:
+        scans = await sweep(clock, link, localizer)
+    finally:
+        await depth.close()
+        task.cancel()
+    assert localizer.relocalize(scans)
+    verdict = localizer.last_verdict
+    assert verdict is not None and not verdict.ambiguous
+    assert verdict.margin >= AMBIGUITY_MARGIN
+    estimate = localizer.current()
+    assert estimate.converged
+    assert math.dist((estimate.x, estimate.y), (1.5, 2.0)) < CONVERGED_XY_M
 
 
 def test_rejected_sweep_candidate_does_not_replace_the_prior(
@@ -1005,3 +1096,250 @@ def test_floor_tracker_does_not_treat_a_sparse_steep_surface_as_the_floor() -> N
 
 def test_floor_tracker_needs_enough_floor_in_view() -> None:
     assert FloorTracker().observe(np.array([(1.0, 0.0, 0.0), (1.5, 0.2, 0.0)])) is None
+
+
+# Glide odometry -------------------------------------------------------------------------------
+def glide_pair(
+    forward: float = 0.0,
+    aside: float = 0.0,
+    *,
+    x: float = 1.5,
+    y: float = 1.5,
+    yaw: float = 0.0,
+    turn: float = 0.0,
+    period: float = 1 / 15,
+) -> tuple[Scan, Scan]:
+    """Two consecutive frames of a robot that slid by `forward`/`aside` in its own frame."""
+    clock = FakeClock()
+    link = TofRobotLink(clock, World(GRID, []))
+    link.head[2] = 0.0
+    link.place_at(x, y, yaw)
+    link.odom[2] = yaw
+    state = link.state()
+    assert state is not None
+    before = scan_from(link.frame_now(0), state, Odom(0, 0, yaw, 0.0))
+    clock.advance(period)
+    c, s = math.cos(yaw), math.sin(yaw)
+    link.place_at(x + c * forward - s * aside, y + s * forward + c * aside, yaw + turn)
+    link.odom[2] = yaw + turn
+    state = link.state()
+    assert state is not None
+    after = scan_from(link.frame_now(1), state, Odom(0, 0, yaw + turn, 0.0))
+    return before, after
+
+
+def glide_of(
+    before: Scan, after: Scan, *, dyaw_prior: float = 0.0, dt: float | None = None
+) -> GlideStep | None:
+    return match_glide(
+        before.hits[:, :2],
+        after.hits[:, :2],
+        sensor=after.sensor[:2],
+        dyaw_prior=dyaw_prior,
+        dt=(after.t_ns - before.t_ns) / 1e9 if dt is None else dt,
+    )
+
+
+def test_consecutive_frames_measure_the_glide_the_wheels_cannot_report() -> None:
+    before, after = glide_pair(0.03)
+    step = glide_of(before, after)
+    assert step is not None
+    assert step.dx == pytest.approx(0.03, abs=0.005)
+    assert step.sigma_forward <= GLIDE_MAX_SIGMA_M
+    assert step.matched >= 8 and step.fraction > 0.5 and step.residual_m < 0.01
+    # A wall the robot faces pins the step towards it and says nothing about sliding along it:
+    # that axis comes back unmeasured instead of as a number the returns never saw.
+    assert step.sigma_side == math.inf
+    assert "ahead" in step.describe() and "aside" not in step.describe()
+
+
+def test_a_slide_along_the_wall_ahead_is_left_to_the_filter() -> None:
+    before, after = glide_pair(aside=0.03)
+    step = glide_of(before, after)
+    assert step is not None
+    assert step.sigma_side == math.inf
+    assert step.dx == pytest.approx(0.0, abs=0.005)  # it did not move ahead, and says so
+
+
+def test_a_corner_view_measures_both_translation_axes() -> None:
+    before, after = glide_pair(0.03, x=1.6, y=3.2, yaw=1.9)
+    step = glide_of(before, after)
+    assert step is not None
+    assert math.isfinite(step.sigma_forward) and math.isfinite(step.sigma_side)
+    assert step.dx == pytest.approx(0.03, abs=0.01)
+    assert "ahead" in step.describe() and "aside" in step.describe()
+
+
+def test_a_glide_the_returns_cannot_pin_is_refused_rather_than_invented() -> None:
+    # Sliding along a cupboard corner: the coarse zone grid aliases the correspondences, the fit
+    # is worth less than its own sigma says, and diffusing beats integrating it.
+    before, after = glide_pair(aside=0.03, x=1.6, y=3.2, yaw=1.9)
+    assert glide_of(before, after) is None
+
+
+def test_frames_sharing_too_few_returns_are_refused() -> None:
+    before, after = glide_pair(0.03)
+    assert glide_of(before, after) is not None
+    few = Scan(before.t_ns, before.odom, before.hits[:4], before.floor, before.free, before.sensor)
+    assert glide_of(few, after) is None
+
+
+def test_a_step_the_skates_could_not_make_is_refused() -> None:
+    jumped, after = glide_pair(0.15)
+    assert glide_of(jumped, after) is None
+
+
+def test_frames_too_far_apart_in_time_are_refused() -> None:
+    before, after = glide_pair(0.03, period=0.5)
+    assert glide_of(before, after) is None
+
+
+def test_frames_from_unrelated_views_are_refused() -> None:
+    # The left room and the right one: no rigid motion maps one view onto the other.
+    before, _ = glide_pair(0.0, x=1.5, y=1.5, yaw=0.0)
+    _, after = glide_pair(0.0, x=6.5, y=1.5, yaw=1.4)
+    assert glide_of(before, after, dt=1 / 15) is None
+
+
+def test_the_filter_moves_by_the_measured_glide_and_diffuses_only_where_blind() -> None:
+    field = LikelihoodField(MAP)
+    measured = ParticleFilter(field, count=400, seed=3)
+    measured.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    diffused = ParticleFilter(field, count=400, seed=3)
+    diffused.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    step = GlideStep(0.03, 0.0, 0.0, 0.008, math.inf, 0.01, 20, 1.0, 0.004)
+    measured.predict(0.0, 0.0, 0.0, 1 / 15, True, step)
+    diffused.predict(0.0, 0.0, 0.0, 1 / 15, True)
+    assert np.mean(measured.x) - 1.5 == pytest.approx(0.03, abs=0.003)
+    assert np.std(measured.x) == pytest.approx(0.008, abs=0.003)
+    # The axis the match left blind diffuses, and the speed follows the measured step.
+    assert np.mean(measured.y) - 1.5 == pytest.approx(0.0, abs=0.003)
+    assert np.std(measured.y) > 0.003
+    # One frame's match is not a speed: averaged into the belief, it only half-convinces it,
+    # so a run of bad frames costs a lag instead of walking the pose away.
+    assert np.allclose(measured.speed, 0.5 * 0.03 * 15)
+    # Without a step the skates report nothing, so the particles only spread.
+    assert np.mean(diffused.x) - 1.5 == pytest.approx(0.0, abs=0.005)
+    assert np.std(diffused.x) > 0.001
+
+
+def test_a_push_the_tof_never_confirms_stops_moving_the_estimate() -> None:
+    # A duck jammed against a wall keeps being told to push, and its head is too close for the
+    # ToF to match anything. The command may carry the belief through the wheels' lag, but past
+    # that the belief has to decay: believing 0.38 m/s for the fifteen seconds it spent pinned
+    # walked the estimate 0.63 m off the map while `fit` still read 1.00.
+    field = LikelihoodField(MAP)
+    stuck = ParticleFilter(field, count=400, seed=5)
+    stuck.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    for _ in range(90):
+        stuck.predict(0.0, 0.0, 0.0, 1 / 15, True, None, twist=(0.25, 0.0))
+    assert stuck.blind_s > ROLLER_BLIND_GRACE_S
+    walked = np.mean(stuck.x) - 1.5
+    # Six seconds of pushing at 0.38 m/s would be 2.3 m; the grace only lets the start through.
+    assert 0.1 < walked < 0.3
+    # A match hands the belief back: the command becomes a prior again on the next frame.
+    stuck.predict(
+        0.0,
+        0.0,
+        0.0,
+        1 / 15,
+        True,
+        GlideStep(0.03, 0.0, 0.0, 0.008, math.inf, 0.01, 20, 1.0, 0.004),
+    )
+    assert stuck.blind_s == 0.0
+
+
+def test_a_coast_keeps_gliding_instead_of_reverting_to_the_zero_throttle() -> None:
+    # A throttle inside the dead band is a coast, not a brake: the duck loses 0.02 m/s^2, so a
+    # released glide runs for seconds. Reverting the belief to the commanded zero with the 0.3 s
+    # time constant froze the estimate on every coast between two pushes -- on the leg to
+    # `ma chambre` it advanced 0.57 m while the duck covered 1.53 m -- and the controller then
+    # steered on a pose it no longer had.
+    field = LikelihoodField(MAP)
+    coasting = ParticleFilter(field, count=400, seed=7)
+    coasting.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    coasting.predict(
+        0.0,
+        0.0,
+        0.0,
+        1 / 15,
+        True,
+        GlideStep(0.05, 0.0, 0.0, 0.008, math.inf, 0.01, 20, 1.0, 0.004),
+    )
+    primed = float(np.mean(coasting.speed))
+    assert primed == pytest.approx(0.5 * 0.05 * 15)
+    for _ in range(8):
+        coasting.predict(0.0, 0.0, 0.0, 1 / 15, True, None, twist=(0.0, 0.0))
+    # Eight frames of coasting at 0.37 m/s covers 0.19 m. Decaying towards the zero throttle would
+    # have walked 0.11 m and left the rest of the glide unaccounted for.
+    assert coasting.blind_s <= ROLLER_BLIND_GRACE_S
+    assert float(np.mean(coasting.x)) - 1.5 > 0.15
+    assert float(np.mean(coasting.speed)) > 0.8 * primed
+
+
+def test_a_coast_that_outlasts_the_grace_still_stops_moving_the_estimate() -> None:
+    # The coast is only honest while the ToF is still trying: a duck pinned against a wall is
+    # coasting too, and there the glide belief has to die as it always did.
+    field = LikelihoodField(MAP)
+    jammed = ParticleFilter(field, count=400, seed=9)
+    jammed.init_pose(Pose(1.5, 1.5, 0.0), 0.0, 0.0)
+    jammed.predict(
+        0.0,
+        0.0,
+        0.0,
+        1 / 15,
+        True,
+        GlideStep(0.05, 0.0, 0.0, 0.008, math.inf, 0.01, 20, 1.0, 0.004),
+    )
+    for _ in range(60):
+        jammed.predict(0.0, 0.0, 0.0, 1 / 15, True, None, twist=(0.0, 0.0))
+    assert jammed.blind_s > ROLLER_BLIND_GRACE_S
+    # Four seconds of coasting at 0.37 m/s would be 1.5 m; only the grace gets through.
+    assert float(np.mean(jammed.x)) - 1.5 < 0.4
+    assert float(np.mean(jammed.speed)) < 0.05
+
+
+async def test_the_localizer_publishes_the_glide_it_measures() -> None:
+    clock, link, localizer, _ = kit(particles=200)
+    link.place_at(1.5, 1.5, 0.0)
+    localizer.reset_pose(Pose(1.5, 1.5, 0.0), 0.01, 0.01)
+    localizer.glide = True
+    assert not localizer.glide_odometry  # nothing measured yet
+    for seq in range(2):
+        clock.advance(1 / 15)
+        localizer.observe_state(link.state())
+        assert localizer.observe_frame(link.frame_now(seq)) is not None
+    settled = localizer.current()
+    # The skates slid 3 cm ahead while the wheels reported no motion at all.
+    link.place_at(1.53, 1.5, 0.0)
+    clock.advance(1 / 15)
+    localizer.observe_state(link.state())
+    assert localizer.observe_frame(link.frame_now(2)) is not None
+    step = localizer.glide_step
+    assert step is not None and step.dx == pytest.approx(0.03, abs=0.005)
+    assert localizer.glide_odometry
+    assert localizer.current().x > settled.x + 0.02
+    # A depth stream that goes silent stops measuring the glide, and the estimate says so.
+    clock.advance(0.6)
+    assert not localizer.glide_odometry
+
+
+async def test_a_rejected_match_falls_back_to_diffusion_and_admits_it() -> None:
+    clock, link, localizer, _ = kit(particles=200)
+    link.place_at(1.5, 1.5, 0.0)
+    localizer.reset_pose(Pose(1.5, 1.5, 0.0), 0.01, 0.01)
+    localizer.glide = True
+    for seq in range(2):
+        clock.advance(1 / 15)
+        localizer.observe_state(link.state())
+        localizer.observe_frame(link.frame_now(seq))
+    assert localizer.glide_odometry
+    # Teleporting the body between frames is no glide: each pair is refused, and a stream that
+    # keeps refusing stops claiming to measure anything.
+    for seq in range(2, 2 + GLIDE_MAX_MISSES + 1):
+        link.place_at(1.5 + 0.2 * (seq - 1), 1.5, 0.0)
+        clock.advance(1 / 15)
+        localizer.observe_state(link.state())
+        localizer.observe_frame(link.frame_now(seq))
+    assert localizer.glide_step is None
+    assert not localizer.glide_odometry

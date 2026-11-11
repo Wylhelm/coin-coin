@@ -14,7 +14,7 @@ import json
 import os
 import socket
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,16 @@ from relay.duck_relay import DuckRelay
 
 COIN = Path(__file__).resolve().parents[2]
 STREAM = COIN.parent
+
+
+def apartment_dir() -> Path:
+    """The scanned apartment: DUCK_APARTMENT_DIR, or the nearest scan_tout_lappart above."""
+    if configured := os.environ.get("DUCK_APARTMENT_DIR"):
+        return Path(configured).expanduser()
+    for parent in COIN.parents:
+        if (parent / "scan_tout_lappart").is_dir():
+            return parent / "scan_tout_lappart"
+    return STREAM / "scan_tout_lappart"
 
 
 CONTACT_BOOTSTRAP = """
@@ -108,14 +118,18 @@ def with_test_operations(self, body, request):
         with body.world.lock:
             model, data = body.world.model, body.world.data
             contacts = box_contacts(model, data)
+            qw, qx, qy, qz = (float(v) for v in data.qpos[body.trunk + 3 : body.trunk + 7])
             return {
                 "position": [float(x) for x in data.qpos[body.trunk : body.trunk + 2]],
+                "height": float(data.qpos[body.trunk + 2]),
+                "roll": math.degrees(
+                    math.atan2(2 * (qw * qx + qy * qz), 1 - 2 * (qx**2 + qy**2))
+                ),
+                "pitch": math.degrees(math.asin(max(-1.0, min(1.0, 2 * (qw * qy - qz * qx))))),
                 "yaw": float(
                     math.atan2(
-                        2 * (data.qpos[body.trunk + 3] * data.qpos[body.trunk + 6]
-                             + data.qpos[body.trunk + 4] * data.qpos[body.trunk + 5]),
-                        1 - 2 * (data.qpos[body.trunk + 5] ** 2
-                                 + data.qpos[body.trunk + 6] ** 2),
+                        2 * (qw * qz + qx * qy),
+                        1 - 2 * (qy**2 + qz**2),
                     )
                 ),
                 "contact_count": len(contacts),
@@ -152,23 +166,25 @@ class SimStack:
     tof_url: str
     probe_reader: asyncio.StreamReader
     probe_writer: asyncio.StreamWriter
+    # One request at a time: the trace sampler and the governor both probe the same pipe.
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def body_url(self) -> str:
         return f"tcp://127.0.0.1:{self.body_port}"
 
+    async def request(self, request: dict[str, Any]) -> dict[str, Any]:
+        async with self.lock:
+            return await body_request(self.probe_reader, self.probe_writer, request)
+
     async def probe(self) -> dict[str, Any]:
-        return await body_request(self.probe_reader, self.probe_writer, {"op": "test_probe"})
+        return await self.request({"op": "test_probe"})
 
     async def place(self, position: list[float], yaw: float) -> None:
-        await body_request(
-            self.probe_reader,
-            self.probe_writer,
-            {"op": "test_place", "position": position, "yaw": yaw},
-        )
+        await self.request({"op": "test_place", "position": position, "yaw": yaw})
 
     async def read(self) -> dict[str, Any]:
-        return await body_request(self.probe_reader, self.probe_writer, {"op": "read"})
+        return await self.request({"op": "read"})
 
 
 @contextlib.asynccontextmanager

@@ -6,6 +6,117 @@
 > commits mentionnés dans les relevés correspondent à l'historique local
 > d'origine, dont les identifiants diffèrent de l'historique public.
 
+## Patins — emballement de la vitesse lue et roue libre obligatoire
+
+- The speed the roller controller judges is differenced from the estimated pose, which trails
+  the glide by up to 0.36 m (about 0.9 s at 0.4 m/s): it read "slow" while the duck was already
+  fast, pushed again, and the glide passed the 0.45 m/s where the frame match gives up. A traced
+  bedroom leg shows the whole runaway: true glide 0.34 → 0.46 m/s while the command stayed a
+  push, map fit 0.62 → 0.32, error 0.67 → 1.40 m, then a wall contact.
+- Every push is now followed by a mandatory free roll of `ROLLER_COAST_S = 2.0 s` before another
+  push may start, bounding the speed with no measurement at all — the measurement was the
+  failing input. One 2 s push reaches 0.33 m/s and two seconds of coast take back 0.12 m/s at
+  the 0.06 m/s² measured on the apartment floor, so the glide stays under the match limit and
+  averages about 0.25 m/s. The push/free-roll duty cycle is the only continuous control there
+  is: the throttle curve has no intermediate speed.
+- Four seeds of the full tour (roller mode, realism real, contact monitor counting): seed 0 and
+  seed 2 complete all three legs — seed 0 with bedroom contacts down from 26 to 0, seed 2 with
+  the final stop 0.050 m from the true place where the same seed previously announced a false
+  arrival 0.80 m out with 25 contacts. Seed 3 was interrupted mid-way (bedroom clean), and seed
+  1 is an honest refusal of all three legs: 18.9 s without one accepted depth frame, so the
+  glide was never measurable. Two clean tours out of three attempted — clear progress, not a
+  reliability claim: the simulator is not deterministic and one seed is one sample.
+- The diagnostic harness serializes its requests to the isolated body server (an asyncio lock)
+  and `Trace.sample()` journals the blind/bel/cmd state of the roller controller, so a runaway
+  can be told from a slow leg in post-processing.
+
+## Patins — commande en throttle, poussée longue, tour complet réussi une fois
+
+- Treat the roller command as a throttle, not a speed: measured on the scanned apartment,
+  0.10 and 0.20 move nothing, 0.25 gives 0.38 m/s and 0.60 saturates at 0.56 m/s. The filter's
+  speed model now uses that curve (dead band below 0.22) instead of the commanded value, with a
+  0.3 s time constant, 0.02 m/s² of coasting decel and a `ROLLER_BLIND_GRACE_S` window during
+  which the glide is admitted to be unmeasured.
+- Replace the 0.3 s bursts by a 2 s blind push (`ROLLER_BLIND_S`) followed by 0.4 s of coast
+  (`ROLLER_DWELL_S`) before the speed is judged again. Static friction absorbs a short burst —
+  0.3 s every 0.65 s moved the duck 0.11 m in 40 s — while a single 2 s push reaches 0.33 m/s and
+  3 s reaches 0.44 m/s. A sustained brake rears the duck to 26–29° and tips it over, so braking
+  stays pulsed at 0.25/0.20 s; a 0.454 m/s coast for 8 s stays under 9.2° of pitch.
+- Diffuse the glide along the axes the depth frames cannot pin instead of dropping the whole
+  step, keep the yaw on the IMU, and stop trusting the match's lateral axis. Raise
+  `RELOC_JUMP_FIT_MARGIN` to 0.15 so a relocalization that jumps must beat the nearby match by
+  a wider margin.
+- The full apartment tour `salon → ma chambre → départ` has completed once on `--realism real`:
+  4/4 legs, no fall, height steady at 0.116 m, worst pitch 19.2°, long legs at 0.173 m/s average.
+  It is **not reproducible yet**: four runs of the same command gave 4/4, 3/4, 2/4 and 1/4 legs.
+  The estimate slides 0.7 m ahead of the truth in a corridor while the map fit stays near 1.0,
+  and a head sweep can then settle on a wrong pose 1.7 m away because the corridor matches at
+  several offsets. A route that stops being traversable now sweeps the head before refusing
+  (`verify_deviation`), which turns some abandons into recoveries, but it cannot bound along-track
+  drift between two doorways. The estimate still lags the truth by up to 0.36 m while moving and
+  snaps back at rest, so the duck stops short of the place it names; `docs/localization.md`
+  records the curve, the failure modes and the four measured runs.
+
+## Gel du filtre pendant le balayage de relocalisation
+
+- Freeze the particle filter while a relocalization sweep collects frames: the duck
+  stands still by construction, and every frame-to-frame glide match is rejected while
+  the head turns (25° jumps change the viewpoint), so predicting between frames
+  diffused a stopped robot — up to 0.5 m of invented glide on skates over the 13 s
+  sweep. The composite match re-seeds the particles right after, and a rejected frame
+  during the sweep no longer counts as a lost glide.
+
+## Localisation globale honnête — balayage large et refus d'ambiguïté
+
+- Sweep the head −150…+150° in 25° steps (the head turns to ±170°, so a doorway behind
+  the duck is in the sweep) and stitch the frames into one composite; `robot.look` now
+  takes a unit direction vector so the yaw does not repeat the quadrant past 90°.
+  Upstream #127 found that wide composites relocalize while narrow wedges do not.
+- The whole-flat search keeps one coarse candidate per place (1 m, 60°) after a wider
+  pool, refines them all, and the best must explain the composite by
+  `AMBIGUITY_MARGIN = 0.15` nats per beam more than the best *different* place.
+  Measured on the synthetic flat: the true place scores about +0.17, a wrong look-alike
+  −0.1, identical twin rooms 0.00 — an exact twin is refused rather than answered
+  confidently and wrongly.
+- An insufficient margin makes `go_to` refuse with `LOCATION_AMBIGUOUS` ("another place
+  fits what I see as well, so put me back on the dock or tell me where I am") and
+  journal a `location_ambiguous` event. `NAV_GLOBAL_RELOCALIZATION` defaults to True, so
+  an unknown start sweeps the whole flat and then walks; set it to 0 for the old strict
+  no-prior refusal.
+
+## Relevage d'un robot tombé en simulation
+
+- Stand a fallen simulated robot back up through the equipment assistant: the WebRTC
+  path refused a fallen robot before the assistant could run, so the duck stayed down
+  until someone touched the simulator. Re-selecting the current mode is the recovery
+  request (robotd turns it into a `mode_support` stand-up) once the assistant's robot is
+  confirmed simulated; other safety reasons still refuse, and the wait releases only
+  once the robot reports upright and homed.
+- The tool description no longer tells the model that a person must pick the duck up
+  when the simulator can do it; the stand description and the robot context say so.
+
+## Glisse mesurée par la caméra de profondeur — go_to autonome en patins
+
+- Measure the skates' glide from consecutive ToF frames: each 8×8 depth frame is
+  projected into a level body frame (head yaw and IMU tilt removed), so the rigid
+  displacement between two projected frames is the body's slide. A four-round
+  point-to-point ICP over the projected returns, with a 12 cm gate, reports
+  `(dx, dy, dyaw)` plus a per-axis sigma. `ParticleFilter.predict(glide=True)` now
+  moves by that measurement instead of diffusing, and diffuses only on the axes the
+  depth frames cannot pin.
+- Reject a match rather than integrate it: fewer than 8 returns in either frame, less
+  than half of the previous returns inside the gate, frames 5–150 ms apart, a 5 cm
+  residual, more than 0.25 rad of turn disagreement with the IMU, a step the skates
+  could not make, or a sigma above 2 cm on both axes. A rejected frame falls back to
+  the previous diffusion, so the filter keeps admitting it is blind.
+- `go_to` now runs on skates while `glide_odometry` is live, still at the roller
+  limits (0.3 m/s, no strafing, 0.3 rad/s) and with the wider roller waypoint and
+  arrival radii. Without depth frames, or once the last frame is 0.5 s old, the
+  refusal stays and says the glide cannot be estimated.
+- A synthetic sweep over 192 poses measures the glide in 74 % of views; the forward
+  error is 0.23 cm median, 0.51 cm at p90. `docs/localization.md` records the method,
+  the rejection rules and the measurements.
+
 ## Intégration sim-réalisme — runtime 0.18.9, API 52
 
 - Merge the parity/bring-up kit (contract tests, session record/replay, bring-up and
@@ -34,8 +145,8 @@
   simulator's true pose, on foot or on skates, with replanning when stalled.
   Skating controls measured speed (push, coast, brake) and turns in slow arcs,
   because the roller policy was not trained to spin in place.
-- Add `live_stack.py --places`, the `NAV_MAP` and `SIM_POSE_LINK` settings, and
-  configurable named destinations from a user-supplied navigation map.
+- Add `live_stack.py --places`, the `NAV_MAP` and `SIM_POSE_LINK` settings, and the
+  `go_to` places « ma chambre », « salon » and « départ ».
 - Follow each segment closely on skates, avoid diagonal shortcut corner cuts, and
   stop before replanning when a route stalls rather than repeatedly pushing.
 - Refuse room navigation unless the connected robot explicitly identifies as

@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import itertools
 import json
 import math
 from pathlib import Path
@@ -231,28 +232,164 @@ def test_stalled_pivot_recovery_requires_and_keeps_clearance() -> None:
 def test_roller_controls_speed_and_brakes_before_arriving() -> None:
     limits = (0.3, 0.0, 0.3)
     steering = Steering([(3.0, 0.0)], limits, "roller")
-    assert steering_command(steering, Pose(0, 0, 0), 0)["vx"] == 0.3  # push from rest
-    assert steering_command(steering, Pose(0.04, 0, 0), 0.1)["vx"] == 0.3  # below cruise
-    assert steering_command(steering, Pose(0.08, 0, 0), 0.2)["vx"] == 0.0  # coast
-    steering.update(Pose(0.12, 0, 0), 0.3)
-    assert steering_command(steering, Pose(0.16, 0, 0), 0.4)["vx"] == -0.3  # too fast: brake
-    steering.update(Pose(2.6, 0, 0), 0.5)
-    assert steering_command(steering, Pose(2.8, 0, 0), 0.6)["vx"] == -0.3  # brake near goal
+    # From rest the wheels push, at the throttle they actually answer rather than at the
+    # speed limit: below 0.22 they slip in place and move nothing. The choice is held for a
+    # dwell rather than re-made every frame, because the body answers a push a few hundred
+    # milliseconds late and flipping the command per frame rectifies into an acceleration
+    # nobody asked for.
+    assert steering_command(steering, Pose(0, 0, 0), 0)["vx"] == 0.25  # push from rest
+    assert steering_command(steering, Pose(0.04, 0, 0), 0.1)["vx"] == 0.25  # held
+    assert steering_command(steering, Pose(0.08, 0, 0), 0.2)["vx"] == 0.25  # held
+    assert steering_command(steering, Pose(0.14, 0, 0), 0.4)["vx"] == 0.0  # coast at cruise
+    assert steering_command(steering, Pose(0.20, 0, 0), 0.6)["vx"] == 0.0  # coast held
+    assert steering_command(steering, Pose(0.40, 0, 0), 0.8)["vx"] == -0.45  # too fast: brake
+    steering.update(Pose(2.6, 0, 0), 1.0)
+    assert steering_command(steering, Pose(2.8, 0, 0), 1.1)["vx"] == -0.45  # brake near goal
     gliding = Steering([(1.0, 0.0)], limits, "roller")
     gliding.update(Pose(0.6, 0, 0), 0)
-    assert steering_command(gliding, Pose(0.75, 0, 0), 0.1)["vx"] == -0.3
+    assert steering_command(gliding, Pose(0.75, 0, 0), 0.1)["vx"] == -0.45
     for step in range(2, 12):
         result = gliding.update(Pose(0.75, 0, 0), step / 10)
     assert result is None
 
 
-def test_roller_turns_in_a_slow_arc_and_brakes_when_fast() -> None:
+def test_roller_glides_straight_instead_of_hunting_the_heading() -> None:
+    limits = (0.3, 0.0, 0.3)
+    # A duck on skates that answers every millimetre of heading error with a saturated yaw
+    # command weaves down a straight corridor, and the skating policy pushes through each
+    # arc: measured 0.4 m/s while 0.15 was commanded. A dead band lets it glide straight,
+    # which is also what keeps the commanded-speed odometry honest.
+    steering = Steering([(3.0, 0.0)], limits, "roller")
+    steering.update(Pose(0, 0, 0), 0)
+    assert steering_command(steering, Pose(0.3, 0.005, 0.02), 0.4)["vyaw"] == 0.0
+    # Off the segment the correction is gentle rather than instantly saturated.
+    off = Steering([(3.0, 0.0)], limits, "roller")
+    off.update(Pose(0, 0, 0), 0)
+    gentle = steering_command(off, Pose(0.6, 0.2, 0), 0.4)["vyaw"]
+    assert -0.3 < gentle < 0
+
+
+def test_roller_yaw_command_is_a_heading_error_not_a_rate() -> None:
+    # The skating policy reads twist[2] as a heading error and answers it with several times
+    # its magnitude in rad/s. Handing it a rate turned every correction that many times too
+    # strong: the duck spun in place while gliding, its estimate fell behind the spin, and the
+    # speed loop pushed on the stale reading until it fell over.
+    limits = (0.3, 0.0, 1.0)
+    off = Steering([(1.0, 0.0), (1.0, 2.0)], limits, "roller")
+    off.update(Pose(0, 0, 0), 0)
+    small = steering_command(off, Pose(0.4, 0.12, 0), 0.4)["vyaw"]
+    assert small != 0
+    assert abs(small) < Steering.ROLLER_YAW_RATE / Steering.ROLLER_YAW_RESPONSE
+    # A 0.12 rad error on a 0.4 m/s glide answers 1.2 * 0.12 rad/s, so the command carries
+    # 0.144 / 5.5 rad and the body turns by that much rather than by 0.144 rad/s.
+    assert small == pytest.approx(-1.2 * math.atan2(0.12, 0.6) / Steering.ROLLER_YAW_RESPONSE)
+
+
+def test_roller_pivots_on_the_spot_instead_of_carving_an_arc() -> None:
+    # Carving a turn as an arc at cruise sweeps a 0.22 m radius and drags the duck most of a
+    # metre sideways -- a 135 degree turn out of the salon pinned it against the wall. The
+    # governor's `turn` primitive shows the body pivots cleanly when it is not pushing, so the
+    # glide is braked out first and the body turns from rest.
     limits = (0.3, 0.0, 0.3)
     steering = Steering([(-2.0, 0.0)], limits, "roller")
-    assert steering.update(Pose(0, 0, 0.5), 0) == {"vx": 0.15, "vy": 0.0, "vyaw": 0.3}
+    # A glide from cruise braking at the measured 0.12 m/s^2, sampled at the 20 Hz the governor
+    # steers at, with the body answering the 0.30 pivot at 0.78 rad/s.
+    x, speed, yaw = 0.0, 0.40, 0.5
+    # One sample of history so the first command sees a moving body rather than an empty track.
+    steering.update(Pose(-0.02, 0, 0.5), 0.0)
+    commands = []
+    for step in range(1, 160):
+        command = steering.update(Pose(x, 0, yaw), step * 0.05)
+        commands.append(command)
+        assert command is not None
+        if command["vx"] < 0.0:
+            speed = max(0.0, speed - 0.12 * 0.05)
+        elif command["vx"] > 0.0:
+            speed = min(0.45, speed + 0.9 * 0.05)
+        else:
+            speed = max(0.0, speed - 0.02 * 0.05)
+        x += speed * 0.05
+        if command["vyaw"] != 0.0:
+            # The skates answer a heading error at 5.5 rad/s per rad while gliding, and the
+            # 0.30 pivot at 0.78 rad/s from rest.
+            yaw += command["vyaw"] * (5.5 if speed >= 0.05 else 0.78 / steering.ROLLER_PIVOT) * 0.05
+    assert commands[0]["vx"] == -0.45  # brake the glide out, do not steer it
+    assert commands[0]["vyaw"] == 0.0
+    # Once the glide is down the brake comes off and the body turns on the spot, and the
+    # residual the estimate still reads -- it carries up to 0.10 m/s of noise while the body
+    # turns -- must not put the brake back on mid-pivot.
+    pivoting = next(index for index, command in enumerate(commands) if command["vyaw"] != 0.0)
+    assert pivoting > 5
+    pivot_run = list(itertools.takewhile(lambda command: command["vx"] == 0.0, commands[pivoting:]))
+    assert len(pivot_run) > 10
+    for command in pivot_run:
+        assert command["vx"] == 0.0
+        assert command["vyaw"] == pytest.approx(steering.ROLLER_PIVOT)
+    # A residual drift of 0.12 m/s is under the speed the skates must be down to before a pivot
+    # is safe, so it does not hold the brake: the body turns at once, and the residual the
+    # estimate still reads -- it carries up to 0.10 m/s of noise while the body turns -- must
+    # not put the brake back on mid-pivot.
+    creeping = Steering([(-2.0, 0.0)], limits, "roller")
+    creeping.update(Pose(0, 0, 0.5), 0.0)
+    creeping.update(Pose(0.012, 0, 0.5), 0.1)
+    creeps = [steering_command(creeping, Pose(0.012, 0, 0.5), step * 0.1) for step in range(2, 30)]
+    assert creeps[0]["vx"] == 0.0
+    assert creeps[0]["vyaw"] == pytest.approx(creeping.ROLLER_PIVOT)
+    assert all(command["vx"] == 0.0 for command in creeps)
+
+
+def test_roller_pivot_gain_climbs_when_the_body_does_not_answer() -> None:
+    # The break-away is asymmetric: +0.30 turns the body at 0.8 rad/s but -0.30 only kicks it
+    # 0.3 rad and then sticks. Measured, the clockwise direction needs -0.50 to keep moving.
+    # Rather than pick the larger command for both directions -- which spins the counter
+    # clockwise side at 2.9 rad/s -- the gain starts low and climbs only while the body is
+    # not answering.
+    limits = (0.3, 0.0, 0.3)
     steering = Steering([(-2.0, 0.0)], limits, "roller")
     steering.update(Pose(0, 0, 0.5), 0)
-    assert steering_command(steering, Pose(0.05, 0, 0.5), 0.1)["vx"] == -0.3
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.1)["vyaw"] == pytest.approx(0.3)
+    # The body answers: a progress of 0.05 rad per frame keeps the gain where it is.
+    yaw = 0.5
+    for step in range(2, 12):
+        yaw += 0.06
+        assert steering_command(steering, Pose(0, 0, yaw), step / 10)["vyaw"] == pytest.approx(0.3)
+    # Now it stops answering: the gain steps up every ROLLER_PIVOT_STALL_S.
+    assert steering_command(steering, Pose(0, 0, yaw), 1.55)["vyaw"] == pytest.approx(0.4)
+    assert steering_command(steering, Pose(0, 0, yaw), 2.1)["vyaw"] == pytest.approx(0.5)
+    # ... and never past the ceiling that still keeps the body on its skates.
+    assert steering_command(steering, Pose(0, 0, yaw), 2.7)["vyaw"] == pytest.approx(0.5)
+
+
+def test_roller_pivot_gain_resets_when_the_turn_reverses() -> None:
+    limits = (0.3, 0.0, 0.3)
+    steering = Steering([(0.0, -2.0)], limits, "roller")
+    assert steering_command(steering, Pose(0, 0, 0.5), 0)["vyaw"] == pytest.approx(-0.3)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.1)["vyaw"] == pytest.approx(-0.3)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.6)["vyaw"] == pytest.approx(-0.4)
+    assert steering_command(steering, Pose(0, 0, 0.5), 1.1)["vyaw"] == pytest.approx(-0.5)
+    # The waypoint moved behind us: the turn flips and the gain starts over rather than
+    # carrying the larger command into the direction that never needed it.
+    assert steering_command(steering, Pose(0, 0, 2.5), 1.6)["vyaw"] == pytest.approx(0.3)
+
+
+def test_roller_pivot_gain_falls_back_once_the_body_answers_again() -> None:
+    # A pivot that needed the larger kick must not keep spinning at that rate: the gain walks
+    # back down to the break-away value as soon as the body starts answering, and stops there.
+    limits = (0.3, 0.0, 0.3)
+    steering = Steering([(-2.0, 0.0)], limits, "roller")
+    assert steering_command(steering, Pose(0, 0, 0.5), 0)["vyaw"] == pytest.approx(0.3)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.6)["vyaw"] == pytest.approx(0.4)
+    assert steering_command(steering, Pose(0, 0, 0.5), 1.2)["vyaw"] == pytest.approx(0.5)
+    yaw = 0.5
+    for step in range(2, 6):
+        yaw += 0.06
+        expected = max(0.3, 0.5 - 0.1 * (step - 1))
+        assert steering_command(steering, Pose(0, 0, yaw), 1.2 + step / 10)[
+            "vyaw"
+        ] == pytest.approx(expected)
+    # Below the break-away value the pivot would stall again, so the gain floors there.
+    yaw += 0.06
+    assert steering_command(steering, Pose(0, 0, yaw), 1.9)["vyaw"] == pytest.approx(0.3)
 
 
 def test_roller_corrects_deviation_from_a_long_segment() -> None:
@@ -285,17 +422,129 @@ def test_blocked_start_does_not_skip_its_nearby_escape_waypoint() -> None:
     assert steering.index == 1
 
 
-def test_roller_slows_down_where_walls_are_close() -> None:
+def test_roller_keeps_its_push_where_walls_are_close() -> None:
+    # The skates have no slow gear: below their dead band they slip in place and push
+    # nothing. Lowering the target where walls are close used to ask for 0.14 m/s and get a
+    # duck gliding at 0.06, so the branch keeps cruise and lets the ToF guard the front.
     steering = Steering([(5.0, 0.0)], (0.3, 0.0, 0.3), "roller", room=lambda _: 0.0)
     steering.update(Pose(0, 0, 0), 0)
-    assert steering_command(steering, Pose(0.02, 0, 0), 0.1)["vx"] == 0.0
-    assert steering_command(steering, Pose(0.1, 0, 0), 0.2)["vx"] == -0.3
+    assert steering_command(steering, Pose(0.02, 0, 0), 0.1)["vx"] == 0.25
+    assert steering_command(steering, Pose(0.04, 0, 0), 0.2)["vx"] == 0.25
+    assert steering_command(steering, Pose(0.2, 0, 0), 1.0)["vx"] == 0.25
+    assert steering_command(steering, Pose(0.38, 0, 0), 1.9)["vx"] == 0.25
+    # A push ends on its own clock even while the duck is moving. Letting motion re-arm it
+    # meant the burst never ended on a working push, and the f17 salon leg ran up to 0.47 m/s
+    # before tipping over. The clock is seconds long, not tenths: a 0.3 s burst never broke
+    # the static friction the skates sit in and the f18 salon leg covered 0.11 m in 40 s.
+    assert steering_command(steering, Pose(0.44, 0, 0), 2.2)["vx"] == 0.0
+    # A coast follows every push before the speed is judged again, and it is longer than the
+    # dwell: the estimate lags the glide, so a push decided 0.4 s after the last one read
+    # "slow" while the duck was already fast and pushed again.
+    assert steering_command(steering, Pose(0.55, 0, 0), 2.7)["vx"] == 0.0
+    # Past the mandatory coast, the glide has lost its speed again, so the next push starts.
+    assert steering_command(steering, Pose(0.86, 0, 0), 4.3)["vx"] == 0.25
 
 
-def test_roller_brakes_before_reaching_the_edge_of_a_narrow_corridor() -> None:
-    steering = Steering([(5.0, 0.0)], (0.3, 0.0, 0.3), "roller", room=lambda _: 0.1)
-    steering.update(Pose(0, 0, 0), 0)
-    assert steering_command(steering, Pose(0.05, 0, 0), 0.1)["vx"] == -0.3
+def test_roller_coasts_a_whole_two_seconds_after_every_push() -> None:
+    # Capping the push was not enough. The controller reads its speed off the estimated pose,
+    # and that estimate lags the glide by up to 0.36 m, so it read "slow" 0.4 s after a push
+    # while the duck was already fast and pushed again: on the seed 0 bedroom leg the true
+    # glide climbed 0.34 -> 0.46 m/s while `forward` never left the band, the frame match fell
+    # to 0.32-0.62 and the error ran 0.67 -> 1.40 m until a wall stopped it. A mandatory coast
+    # bounds the speed without needing a trustworthy measurement. Two seconds of push reaches
+    # 0.33 m/s, two seconds of coast loses 0.12 at the 0.06 m/s^2 measured on the apartment, so
+    # the glide stays under the 0.45 m/s where the depth match gives up.
+    steering = Steering([(9.0, 0.0)], (0.3, 0.0, 0.3), "roller")
+
+    def pose(now: float) -> Pose:
+        return Pose(max(0.0, 0.25 * (now - 0.3)), 0.0, 0.0)
+
+    steering.update(pose(0.0), 0.0)
+    assert steering_command(steering, pose(0.1), 0.1)["vx"] == 0.25
+    assert steering._push_rest
+    # From rest the long push runs its full clock, or static friction eats it.
+    assert steering_command(steering, pose(1.9), 1.9)["vx"] == 0.25
+    assert steering_command(steering, pose(2.05), 2.05)["vx"] == 0.0
+    # The speed reads 0.25, under the band, so every tick here would have pushed again.
+    assert steering_command(steering, pose(2.5), 2.5)["vx"] == 0.0
+    assert steering_command(steering, pose(3.0), 3.0)["vx"] == 0.0
+    assert steering_command(steering, pose(3.9), 3.9)["vx"] == 0.0
+    # Once the coast is served, the push is allowed back -- and it is still the short one,
+    # because the glide is moving.
+    assert steering_command(steering, pose(4.4), 4.4)["vx"] == 0.25
+    assert not steering._push_rest
+    assert steering_command(steering, pose(4.8), 4.8)["vx"] == 0.25
+    assert steering_command(steering, pose(4.95), 4.95)["vx"] == 0.0
+
+
+def test_roller_brakes_most_of_a_metre_before_the_goal() -> None:
+    # Braking from cruise takes 0.40**2 / (2 * 0.12) = 0.67 m, so the approach has to start
+    # that far out rather than at the goal. Sampled at the 20 Hz the governor steers at.
+    steering = Steering([(2.0, 0.0)], (0.3, 0.0, 0.3), "roller")
+    x, speed = 0.0, 0.0
+    commands = []
+    for step in range(120):
+        commands.append(steering.update(Pose(x, 0, 0), step * 0.05))
+        speed = min(0.38, speed + 0.9 * 0.05)
+        x += speed * 0.05
+    assert commands[5]["vx"] == 0.25  # still far: push
+    braking = next(index for index, command in enumerate(commands) if command["vx"] == -0.45)
+    assert 1.25 < braking * 0.019 < 1.45  # 0.6-0.75 m out, not at the goal
+
+
+def test_roller_brakes_in_bursts_instead_of_holding_the_reverse_push() -> None:
+    # Held, the reverse push leaves the skates with a standing nose-up attitude that nothing
+    # damps once the command drops to zero: measured 29 degrees after a continuous brake, and
+    # the body fell over 80 degrees within 1.2 s of the command going quiet. Pulsed 0.25 s on,
+    # 0.20 s off, it never banked past 8.4 degrees and came to a standstill that held.
+    steering = Steering([(2.0, 0.0)], (0.3, 0.0, 0.3), "roller")
+    steering.update(Pose(0, 0, 0), 0.0)
+    x = 0.0
+    commands = []
+    for step in range(1, 130):
+        command = steering.update(Pose(x, 0, 0), step * 0.05)
+        assert command is not None
+        commands.append((step * 0.05, command))
+        x += 0.38 * 0.05
+    braking = [now for now, command in commands if command["vx"] == -0.45]
+    assert braking, "the approach must brake"
+    # Group the brake ticks into bursts: on for 0.25 s, coast for 0.20 s, then on again.
+    bursts: list[list[float]] = []
+    for now in braking:
+        if bursts and now - bursts[-1][-1] < 0.08:
+            bursts[-1].append(now)
+        else:
+            bursts.append([now])
+    assert len(bursts) >= 2, "a held brake is one endless burst"
+    assert len(bursts[0]) == round(Steering.ROLLER_BRAKE_PULSE_S / 0.05)
+    assert bursts[1][0] - bursts[0][-1] == pytest.approx(
+        Steering.ROLLER_BRAKE_REST_S + 0.05, abs=0.06
+    )
+    rest = [command for _, command in commands if command["vx"] == 0.0]
+    assert rest, "the brake must let go between bursts"
+
+
+def test_roller_measures_speed_over_a_window_not_frame_to_frame() -> None:
+    # The pose is a particle filter's, and frame to frame it wanders by a couple of
+    # centimetres: at 20 Hz that reads as +-0.45 m/s. Every consumer of the speed believed
+    # that noise -- down the salon a duck standing still with a zero command was reported at
+    # 0.39 m/s, the approach to the goal latched its brake 0.46 m early, and the leg was
+    # abandoned a hand's width from where it was going.
+    limits = (0.3, 0.0, 0.3)
+    steering = Steering([(5.0, 0.0)], limits, "roller")
+    wander = (0.0, 0.02, -0.01, 0.015, -0.02, 0.01, -0.015, 0.02, 0.0, -0.02, 0.015, -0.01)
+    for step, offset in enumerate(wander * 2):
+        steering.update(Pose(offset, 0.0, 0.0), step * 0.05)
+    assert math.hypot(*steering._velocity) < 0.06
+
+
+def test_roller_still_reads_a_real_glide_through_that_wander() -> None:
+    limits = (0.3, 0.0, 0.3)
+    steering = Steering([(5.0, 0.0)], limits, "roller")
+    wander = (0.0, 0.02, -0.01, 0.015, -0.02, 0.01, -0.015, 0.02, 0.0, -0.02, 0.015, -0.01)
+    for step, offset in enumerate(wander):
+        steering.update(Pose(step * 0.019 + offset, 0.0, 0.0), step * 0.05)
+    assert math.hypot(*steering._velocity) == pytest.approx(0.38, abs=0.08)
 
 
 def test_go_to_schema_only_exists_with_places() -> None:
@@ -419,6 +668,45 @@ async def test_route_stops_before_replanning_an_unreachable_waypoint(rig, monkey
     assert not result.ok and "cannot keep a safe path" in result.reason
     assert any(record.method == "robot.stop" for record in link.records)
     assert not any(record.method == "robot.move" for record in link.records)
+
+
+async def test_route_sweeps_before_refusing_an_untraversable_deviation(rig, monkeypatch) -> None:
+    governor, _, _, navigator = rig
+    navigator.source.name = "estimated"
+    navigator.map = room_with_wall(door=False)
+    monkeypatch.setattr(navigator, "plan", lambda *_: None)
+    sweeps = []
+
+    async def relocalize(generation: int, navigator_: object, prior: PoseEstimate) -> PoseEstimate:
+        sweeps.append(prior.describe())
+        return PoseEstimate(2.0, 2.0, 0.0, 0.02, 0.01, True)
+
+    monkeypatch.setattr(governor, "_relocalize", relocalize)
+    result = await governor._run_route(
+        "chambre", [(2.0, 2.0)], (0.3, 0.0, 0.8), "walk", governor.stop_generation
+    )
+    # A route stops being traversable when the estimate slides into a wall, and that is usually
+    # the estimate rather than the room: sweep before giving up on the trip.
+    assert sweeps, "the deviation was refused without sweeping the head first"
+    assert not result.ok and "cannot keep a safe path" in result.reason
+
+
+async def test_route_admits_it_lost_track_when_that_sweep_does_not_converge(
+    rig, monkeypatch
+) -> None:
+    governor, _, _, navigator = rig
+    navigator.source.name = "estimated"
+    navigator.map = room_with_wall(door=False)
+    monkeypatch.setattr(navigator, "plan", lambda *_: None)
+
+    async def relocalize(generation: int, navigator_: object, prior: PoseEstimate) -> PoseEstimate:
+        return PoseEstimate(2.0, 2.0, 0.0, 0.6, 0.4, False)
+
+    monkeypatch.setattr(governor, "_relocalize", relocalize)
+    result = await governor._run_route(
+        "chambre", [(2.0, 2.0)], (0.3, 0.0, 0.8), "walk", governor.stop_generation
+    )
+    assert not result.ok and "I lost track of where I am" in result.reason
 
 
 async def test_route_stops_when_replanning_repeats_an_unsafe_segment(rig, monkeypatch) -> None:
