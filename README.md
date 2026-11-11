@@ -160,7 +160,7 @@ uv run --no-sync python scripts/live_stack.py --scene /path/to/scene.xml \
 # Closer to a real robot: WebRTC link, a known start, simulator imperfections,
 # obstacles from a file, no simulation-only hand (equipment must be fitted):
 uv run --no-sync python scripts/live_stack.py --link webrtc --scene /path/to/scene.xml \
-  --places /path/to/navigation.json --start dock@0 --realism real --realism-seed 7 \
+  --places /path/to/navigation.json --start départ@0 --realism real --realism-seed 7 \
   --obstacles /path/to/obstacles.json [--obstacle-slots N] [--no-assist] [--maploc]
 ```
 
@@ -179,8 +179,8 @@ and enables the `go_to` tool: "Va dans ma
 chambre" or "Reviens" plan a route around obstacles with A* and follow it in
 closed loop. By default the duck steers by an **estimated pose** built only from
 what a real duck has: contact odometry, the IMU and the head's 8x8 ToF depth
-frames, matched against the map by a particle filter. `--start dock@0` gives
-a known start matching the supplied scene and map; without it the
+frames, matched against the map by a particle filter. `--start départ@0` gives
+the known start (the apartment scene spawns the duck at the dock); without it the
 duck sweeps its head and refuses if it cannot place itself. The simulator's true
 pose is read only to score the estimate, or to steer when `--oracle-pose` is
 given. The duck stops before unmapped obstacles seen by the ToF, marks them and
@@ -302,7 +302,7 @@ Restart the service after changing them.
 | `MAX_MOVE_S`, `MOVE_HZ` | Maximum command duration `5 s`; command streaming `20 Hz`. |
 | `NAV_MAP`, `SIM_POSE_LINK` | Empty: no `go_to`. Navigation map and simulator body-server address; set together by `--places`. |
 | `NAV_POSE`, `NAV_START`, `TOF_LINK` | `estimated` (odometry + ToF, default) or `oracle` (simulator truth, evaluation only); known start such as `départ@0` (empty: unknown); ToF source: a relay `tcp://` endpoint, or `link` to subscribe to `tof.stream` over the WebRTC robot link itself. `--places` sets them (`link` with `--link webrtc`). |
-| `NAV_GLOBAL_RELOCALIZATION` | `false`: relocalize only near the last estimate; a whole-flat match can be confidently wrong. |
+| `NAV_GLOBAL_RELOCALIZATION` | `true`: with no usable estimate, sweep the head and match the whole flat; refuse (`location_ambiguous`) when two places fit equally well. `false`: relocalize only near the last estimate, and refuse an unknown start. |
 | `WAKE_ENGINE`, `WAKE_THRESHOLD` | `vosk`, `0.9`; threshold remains provisional. |
 | `FOLLOWUP_S` | Conversation follow-up timeout, `420 s`. |
 | `QUACK_SINK` | `stream` (browser output) or `robot`. |

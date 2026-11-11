@@ -1,10 +1,11 @@
-"""Replay a navigation sequence in a user-supplied scene and score estimated poses.
+"""Replay a spoken navigation session headless and log the estimate against the truth.
 
     flock -w 1800 /tmp/microduck-sim-agents.lock .venv/bin/python -m tests.integration.nav_repro \\
-        --scene /path/to/scene.xml --map /path/to/navigation.json --start dock@0 \\
-        --realism real --seed 0 --prelude --out logs/nav_repro/real0.jsonl room-a room-b dock
+        --realism real --seed 0 --prelude --out logs/nav_repro/real0.jsonl salon "ma chambre" départ
 
-`--prelude` moves forward 0.25 m/s for 5 s, then turns 180 degrees.
+`--prelude` does what the user did first: move forward 0.25 m/s for 5 s, then turn 180 degrees.
+`--start ''` drops the prior: the duck must find itself globally before going anywhere.
+`--mode roller` sends go_to in skates, which needs glide odometry to be honest.
 Every 0.25 s a JSON line records the phase, the true pose (scoring only), odometry yaw and the
 estimate. The controller never reads the truth.
 """
@@ -29,7 +30,7 @@ from coincoin.robot.governor import Governor, ImmediateToolResult
 from coincoin.robot.localization import EstimatedPose, TcpTofStream
 from coincoin.robot.navigation import NavigationMap, Navigator, Pose, SimPose
 from tests.integration import sim_stack as sim_stack_module
-from tests.integration.sim_stack import SimStack, sim_stack
+from tests.integration.sim_stack import SimStack, apartment_dir, sim_stack
 
 
 def _wrap(angle: float) -> float:
@@ -57,6 +58,9 @@ class Trace:
             "odom_yaw": round(math.degrees(odom.get("yaw", math.nan)), 1),
             "odom_xy": [odom_pose.x, odom_pose.y] if odom_pose is not None else None,
             "contacts": probe["contact_count"],
+            "height": round(probe["height"], 3),
+            "roll": round(probe["roll"], 1),
+            "pitch": round(probe["pitch"], 1),
         }
         if estimate.std_xy < math.inf:
             row.update(
@@ -69,6 +73,13 @@ class Trace:
                 err=math.dist(probe["position"], (estimate.x, estimate.y)),
                 yaw_err=round(math.degrees(_wrap(probe["yaw"] - estimate.yaw)), 1),
             )
+        filt = getattr(self.localizer, "filter", None)
+        if filt is not None:
+            row["blind"] = round(filt.blind_s, 2)
+            row["bel"] = round(float(np.mean(filt.speed)), 2)
+        applied = (state.get("move") or {}).get("applied")
+        if isinstance(applied, (list, tuple)) and applied:
+            row["cmd"] = round(float(applied[0]), 2)
         scan = self.localizer.latest_scan()
         if scan is not None:
             row["scan_t_ns"] = scan.t_ns
@@ -135,6 +146,69 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def read_contact_events(path: Path) -> int:
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    if not rows or rows[0] != {"ready": True}:
+        raise RuntimeError("the isolated simulator did not enable contact monitoring")
+    for expected, row in enumerate(rows[1:], 1):
+        if row.get("event") != expected:
+            raise RuntimeError("the contact monitor produced an incomplete event log")
+    return len(rows) - 1
+
+
+def free_route_failures(results: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+    for row in results:
+        step = row["step"]
+        after = row.get("after") or {}
+        contacts = row.get("contact_events")
+        if not isinstance(contacts, int):
+            failures.append(f"{step}: contact monitoring was unavailable")
+        elif contacts:
+            failures.append(f"{step}: {contacts} contact event(s) with world-box geometry")
+        if step.startswith("roller:"):
+            if row["ok"] or "on skates" not in (row.get("reason") or ""):
+                failures.append(f"{step}: expected an explicit refusal of skating navigation")
+        elif not row["ok"]:
+            failures.append(f"{step}: {row.get('reason') or 'step failed'}")
+        elif "final_m" in row:
+            distance = row["final_m"]
+            if (
+                not isinstance(distance, (int, float))
+                or isinstance(distance, bool)
+                or not math.isfinite(distance)
+                or distance < 0
+            ):
+                failures.append(f"{step}: no measurable final distance")
+            elif distance > 0.20:
+                failures.append(f"{step}: arrival was {distance:.3f} m from the target")
+            if not after.get("converged"):
+                failures.append(f"{step}: position was not confirmed after stopping")
+        max_converged = row.get("max_converged_m")
+        if max_converged is not None:
+            if (
+                not isinstance(max_converged, (int, float))
+                or isinstance(max_converged, bool)
+                or not math.isfinite(max_converged)
+                or max_converged < 0
+            ):
+                failures.append(f"{step}: confirmed-position error was not measurable")
+            elif max_converged > 0.20:
+                failures.append(f"{step}: a confirmed position was {max_converged:.3f} m wrong")
+        if after.get("converged"):
+            error = after.get("err")
+            if (
+                not isinstance(error, (int, float))
+                or isinstance(error, bool)
+                or not math.isfinite(error)
+                or error < 0
+            ):
+                failures.append(f"{step}: final confirmed-position error was not measurable")
+            elif error > 0.20:
+                failures.append(f"{step}: a confirmed position was {error:.3f} m wrong")
+    return failures
+
+
 def _prepare(out: str) -> tuple[Path, Path]:
     out_path = Path(out).resolve()
     work = out_path.with_suffix("")
@@ -155,14 +229,15 @@ async def main(args: argparse.Namespace) -> list[dict[str, Any]]:
             + sim_stack_module.BODY_BOOTSTRAP
         )
     out_path, work = _prepare(args.out)
-    nav_map = NavigationMap.load(args.map)
+    nav_map = NavigationMap.load(apartment_dir() / "navigation_appartement.json")
     results: list[dict[str, Any]] = []
     with out_path.open("w") as out:
-        async with sim_stack(work, args.scene) as stack:
+        async with sim_stack(work, apartment_dir() / "scene_appartement.xml") as stack:
             localizer = EstimatedPose(
                 nav_map, stack.link.state, TcpTofStream(stack.tof_url), clock=SystemClock().now
             )
-            localizer.start_at(args.start)
+            if args.start:
+                localizer.start_at(args.start)
             localizer.start()
             navigator = Navigator(
                 nav_map, localizer, oracle=SimPose(stack.body_url), localizer=localizer
@@ -187,7 +262,7 @@ async def main(args: argparse.Namespace) -> list[dict[str, Any]]:
                         ("turn", lambda: governor.turn(180)),
                     ]
                 for place in args.places:
-                    steps.append((place, lambda place=place: governor.go_to(place, mode="walk")))
+                    steps.append((place, lambda place=place: governor.go_to(place, mode=args.mode)))
                 for name, call in steps:
                     samples_before = len(trace.rows.get(name, []))
                     trace.phase = name
@@ -227,14 +302,17 @@ async def main(args: argparse.Namespace) -> list[dict[str, Any]]:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scene", type=Path, required=True, help="user-supplied MuJoCo scene")
-    parser.add_argument("--map", type=Path, required=True, help="matching navigation map")
-    parser.add_argument("--start", required=True, help="known place@heading or x,y,heading")
     parser.add_argument("--realism", default="off")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--prelude", action="store_true")
     parser.add_argument("--stop-on-failure", action="store_true")
     parser.add_argument("--overrides", default="", help="JSON realism profile field overrides")
+    parser.add_argument(
+        "--start",
+        default="départ@0",
+        help="start_at prior; pass an empty string for an unknown start (global relocalization)",
+    )
+    parser.add_argument("--mode", default="walk", choices=["walk", "roller"])
     parser.add_argument("--out", default="logs/nav_repro/run.jsonl")
-    parser.add_argument("places", nargs="+")
+    parser.add_argument("places", nargs="*", default=["salon", "ma chambre", "départ"])
     asyncio.run(main(parser.parse_args()))

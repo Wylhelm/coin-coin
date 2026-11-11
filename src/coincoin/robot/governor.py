@@ -52,16 +52,26 @@ NAV_REPLANS = 3
 # this many times per route before giving up and saying so.
 NAV_RELOCALIZATIONS = 2
 NAV_UNCERTAIN_S = 3.0
-# A relocalization searches around the last estimate within this radius (and heading tolerance),
-# never across the whole flat: a global match can be confidently wrong (docs/localization.md).
-RELOC_RADIUS_M = (0.6, 1.5)
+# A relocalization searches around the last estimate within a window that grows with that
+# estimate's own spread and with the travel and rotation nobody checked since the last fix, and
+# never wider than this. The floor stays small on purpose: a fixed 0.6 m floor let a sweep slide
+# the pose half a metre down a corridor whose walls look the same everywhere, and the duck then
+# set off from a pose that was only 5 cm wrong (docs/localization.md).
+RELOC_RADIUS_M = (0.15, 1.5)
 RELOC_PRIOR_MAX_M = 1.0
 RELOC_HEADING_RAD = (0.35, 1.0)
 # Share of the odometry travel and rotation since the last fix that the match window allows.
 RELOC_DRIFT_FRACTION = 0.1
 # Head sweep for relocalization: wide composites relocalize, narrow wedges do not (microduck#127).
-SWEEP_DEGREES = (-75, -50, -25, 0, 25, 50, 75)
+# The head turns +-170 degrees; a quarter of the flat can hide in the 45 degree ToF wedge, so the
+# sweep goes as wide as the neck allows in 25 degree steps.
+SWEEP_DEGREES = (-150, -125, -100, -75, -50, -25, 0, 25, 50, 75, 100, 125, 150)
 SWEEP_HOLD_S = 0.9
+# Said when a whole-flat sweep matched two places equally well: never walk on a guess.
+LOCATION_AMBIGUOUS = (
+    "I cannot tell where I am without risking a mistake: another place fits what I see as well, "
+    "so put me back on the dock or tell me where I am"
+)
 # Obstacles the map does not hold: stop when ToF returns sit on the next stretch of route. The
 # stretch covers the duck's radius, the distance walked during the sensor's latency (frame period,
 # state lag and one control tick) and braking, plus a margin. Two scans in a row must agree.
@@ -128,10 +138,14 @@ FALLEN_NEEDS_PERSON = (
 EQUIPMENT = {"roller": "fit the skates", "walk": "remove the skates"}
 PERSON_POLL_S = 0.5
 ROLLER_TRIP_REFUSED = (
-    "I only find my way on foot: on skates my leg odometry cannot measure a glide, so I would "
-    "lose track of where I am. Not switching by myself: offer to switch to walk mode first "
-    "(set_mode walk), then go_to again"
+    "I only find my way on foot right now: on skates my wheels report no motion, and the depth "
+    "camera is giving me no glide I can trust, so I would lose track of where I am. Not switching "
+    "by myself: offer to switch to walk mode first (set_mode walk), then go_to again"
 )
+# Rising onto the skates swings the head, and those frames honestly cannot match: the glide is
+# measurable again a frame or two after the body is still, so a trip right after the switch waits
+# this long for the depth camera to vouch for it instead of refusing outright.
+GLIDE_SETTLE_S = 2.0
 
 
 def person_wait_reason(mode: str, *, assisted: bool = False) -> str:
@@ -367,6 +381,31 @@ class Governor:
             self.navigation = ""
         localizer.glide = mode == "roller"
 
+    def _glide_measured(self) -> bool:
+        """Whether the skates' glide is currently measured from the depth frames.
+
+        On skates the wheels report no motion, so a trip without this measurement would drift
+        with nothing to check it against: better to stay put and say so.
+        """
+        navigator = self.navigator
+        localizer = navigator.localizer if navigator is not None else None
+        return localizer is not None and localizer.glide_odometry
+
+    async def _await_glide(self, generation: int) -> bool:
+        """Wait briefly for the depth frames to measure the glide again after the body moved.
+
+        The rise onto the skates (or off them) swings the head, and those frames cannot match:
+        the glide is only measurable once the body is still. Refusing before that moment would
+        turn away a trip the camera is about to vouch for.
+        """
+        deadline = self.clock.now() + GLIDE_SETTLE_S
+        while not self._glide_measured():
+            self._check_safety(generation)
+            if self.clock.now() >= deadline:
+                return False
+            await self.clock.sleep(0.1)
+        return True
+
     async def _refresh_mode(self) -> None:
         async with self._mode_lock:
             if self._mode is not None and self.clock.now() - self._mode_at < 30:
@@ -505,7 +544,10 @@ class Governor:
             return self._failure("set_mode", error)
         if not isinstance(current, dict) or current.get("mode") not in ("walk", "roller"):
             return self._refuse("set_mode", "unsupported or unavailable robot mode")
-        if current["mode"] == mode:
+        # Selecting the mode the robot already reports is normally a no-op. On a fallen
+        # simulated robot it is the recovery request itself: robotd turns a re-selection into a
+        # mode_support stand-up, so the equipment assistant must be asked even for that mode.
+        if current["mode"] == mode and not await self._assisted_recovery():
             await self.cancel_person_wait("mode already selected")
             self._accept_mode(mode)
             self.journal.write("tool_result", method="set_mode", mode=mode)
@@ -545,6 +587,16 @@ class Governor:
             ),
         )
 
+    async def _assisted_recovery(self) -> bool:
+        """Whether the simulated equipment assistant can stand a fallen robot up right now."""
+        if not self.settings.sim_equipment_socket or self._safety_reason() != "robot fallen":
+            return False
+        try:
+            policies = await self.link.call("robot.policies")
+        except ROBOT_ERRORS:
+            return False
+        return isinstance(policies, dict) and policies.get("simulated") is True
+
     async def cancel_person_wait(self, reason: str) -> None:
         task, self._person_task = self._person_task, None
         if self._person_target is not None:
@@ -573,11 +625,14 @@ class Governor:
         try:
             if self.settings.sim_equipment_socket:
                 try:
-                    if reason := self._safety_reason():
-                        raise RobotRefused(reason)
                     remote = await self.link.call("robot.policies")
                     if not isinstance(remote, dict) or remote.get("simulated") is not True:
                         raise RobotRefused("equipment assistance requires a simulated robot")
+                    # A fallen robot is exactly what the assistant's mode_support hand is for:
+                    # re-selecting the current mode stands it up. Every other safety reason
+                    # still refuses, and the wait below releases only once it is upright.
+                    if (reason := self._safety_reason()) and reason != "robot fallen":
+                        raise RobotRefused(reason)
                     if self._closed or self._person_target != mode:
                         raise RobotRefused("simulation equipment request cancelled")
                     async with asyncio.timeout(min(timeout_s, 30)):
@@ -1067,7 +1122,16 @@ class Governor:
             return self._refuse("go_to", f"unknown place; known: {', '.join(navigator.places)}")
         if mode is not None and mode not in ("walk", "roller"):
             return self._refuse("go_to", "mode must be walk or roller")
-        if navigator.honest and mode == "roller":
+        # Decided before anything is switched: a trip the camera cannot vouch for must be turned
+        # away rather than silently changing the robot's gait behind the user's back. Already on
+        # skates, the frames get their settle time below instead: the duck has only just stopped,
+        # and refusing on the instant would turn away a trip the camera is about to vouch for.
+        if (
+            navigator.honest
+            and mode == "roller"
+            and self._mode not in (None, "roller")
+            and not self._glide_measured()
+        ):
             return self._refuse("go_to", ROLLER_TRIP_REFUSED)
         generation = self._stop_generation
         try:
@@ -1080,7 +1144,11 @@ class Governor:
                 )
             if navigator.honest or mode is not None:
                 await self._refresh_mode()
-            if navigator.honest and self._mode == "roller":
+            if (
+                navigator.honest
+                and self._mode == "roller"
+                and not await self._await_glide(generation)
+            ):
                 return self._refuse("go_to", ROLLER_TRIP_REFUSED)
             if mode is not None:
                 if self._mode != mode:
@@ -1089,6 +1157,12 @@ class Governor:
                         return switched
                 if generation != self._stop_generation:
                     return self._refuse("go_to", "action cancelled by stop")
+                if (
+                    navigator.honest
+                    and self._mode == "roller"
+                    and not await self._await_glide(generation)
+                ):
+                    return self._refuse("go_to", ROLLER_TRIP_REFUSED)
             await self._rise_if_sitting(generation, await self._prepare(generation))
             estimate = await navigator.estimate()
             # A manual move or turn was only tracked frame by frame, with no check that the
@@ -1096,10 +1170,7 @@ class Governor:
             if navigator.honest and (not estimate.converged or self._unsupervised_motion):
                 estimate = await self._relocalize(generation, navigator, estimate)
                 if not estimate.converged:
-                    raise RobotRefused(
-                        f"I do not know where I am, so I will not walk to {place} "
-                        f"({estimate.describe()})"
-                    )
+                    raise RobotRefused(self._lost_reason(place, navigator, estimate))
                 self._unsupervised_motion = False
             navigator.clear_obstacles()
             self._blocked_anchor = None
@@ -1444,6 +1515,27 @@ class Governor:
                     if deviation_replans < NAV_REPLANS:
                         replanned = await asyncio.to_thread(navigator.plan, here, goal)
                     self._check_safety(generation)
+                    if (
+                        replanned is None
+                        and navigator.honest
+                        and relocalizations < NAV_RELOCALIZATIONS
+                    ):
+                        # A route stops being traversable when the estimate slides into a wall,
+                        # and that is usually the estimate rather than the room: sweep before
+                        # refusing to go on.
+                        self.journal.write("navigation", place=place, event="verify_deviation")
+                        relocalizations += 1
+                        estimate = await self._relocalize(generation, navigator, estimate)
+                        if not estimate.converged:
+                            raise RobotRefused(
+                                f"I cannot keep a safe path to {place}; I lost track of where I "
+                                "am and stopped"
+                            )
+                        pose = estimate.pose
+                        here = (pose.x, pose.y)
+                        deviation_anchor, deviation_replans = here, 0
+                        replanned = await asyncio.to_thread(navigator.plan, here, goal)
+                        self._check_safety(generation)
                     if replanned is None:
                         raise RobotRefused(f"cannot keep a safe path to {place}; I stopped")
                     deviation_replans += 1
@@ -1598,6 +1690,8 @@ class Governor:
             self._blocked_anchor is not None or navigator.obstacles or localizer.obstacle_conflict
         )
         localizer.confirmed = False
+        # A verdict belongs to the sweep that produced it: never report a stale one.
+        localizer.last_verdict = None
         await self._stop_other_motion(generation)
         localizer.collecting_sweep = True
         try:
@@ -1668,14 +1762,29 @@ class Governor:
             estimate = replace(estimate, converged=False)
         elif estimate.converged:
             self._blocked_anchor = None
+        verdict = localizer.last_verdict
+        if estimate.converged:
+            event = "relocalized"
+        elif verdict is not None and verdict.ambiguous:
+            event = "location_ambiguous"
+        else:
+            event = "relocalization_failed"
         self.journal.write(
             "localization",
-            event="relocalized" if estimate.converged else "relocalization_failed",
+            event=event,
             scans=len(scans),
             hypotheses=len(hypotheses),
             estimate=estimate.describe(),
+            **({"verdict": verdict.describe()} if verdict is not None else {}),
         )
         return estimate
+
+    def _lost_reason(self, place: str, navigator: Navigator, estimate: PoseEstimate) -> str:
+        """Refuse a trip honestly, saying so when the sweep could not tell two places apart."""
+        verdict = navigator.localizer.last_verdict if navigator.localizer is not None else None
+        if verdict is not None and verdict.ambiguous:
+            return f"{LOCATION_AMBIGUOUS}; I will not walk to {place} ({estimate.describe()})"
+        return f"I do not know where I am, so I will not walk to {place} ({estimate.describe()})"
 
     async def _sweep(self, generation: int, localizer: EstimatedPose) -> list[Scan]:
         """Look across the room and return the ToF scans gathered on the way."""
@@ -1684,7 +1793,13 @@ class Governor:
         await self._cancel(self._look)
         self._look = None
         for degrees in (*SWEEP_DEGREES, 0):
-            point = {"x": 1.0, "y": math.tan(math.radians(degrees)), "z": 0.0}
+            # A look point is a direction vector: its yaw is atan2(y, x), so the x must go negative
+            # past +-90 degrees instead of leaning on tan(), which repeats the quadrant.
+            point = {
+                "x": math.cos(math.radians(degrees)),
+                "y": math.sin(math.radians(degrees)),
+                "z": 0.0,
+            }
             result = await self._action_call(generation, "robot.look", point)
             head = result.get("head") if isinstance(result, dict) else None
             if not isinstance(head, dict) or not _finite(*(head.get(name) for name in names)):
@@ -1858,7 +1973,15 @@ class Governor:
             try:
                 policies = await self._policies()
                 if policies.get("simulated") is True:
-                    if self.capabilities is not None and self.capabilities.mode_switch_needs_person:
+                    # The simulated equipment assistant can stand the duck up itself by
+                    # re-selecting the current mode, so a link that refuses robot.setMode is
+                    # no reason to ask a person.
+                    assisted = bool(self.settings.sim_equipment_socket)
+                    if (
+                        self.capabilities is not None
+                        and self.capabilities.mode_switch_needs_person
+                        and not assisted
+                    ):
                         return self._refuse("stand", FALLEN_NEEDS_PERSON)
                     mode = await self.link.call("robot.mode")
                     if not isinstance(mode, dict) or mode.get("mode") not in ("walk", "roller"):

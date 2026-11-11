@@ -136,6 +136,11 @@ SIM_EQUIPMENT_NOTE = (
     "just wait for the confirmation."
 )
 
+SIM_GETUP_NOTE = (
+    " In this simulation a fallen robot is put back on its feet automatically by selecting its "
+    "mode again: never ask a person to pick it up, call stand and wait for the confirmation."
+)
+
 
 PERSON_DESCRIPTIONS = {
     "set_mode": (
@@ -171,11 +176,21 @@ def tool_description(
         (name == "set_mode" and capabilities.mode_switch_needs_person and not equipment_assisted)
         or (
             name == "stand"
-            and (not capabilities.simulated or capabilities.mode_switch_needs_person)
+            and (
+                not capabilities.simulated
+                or (capabilities.mode_switch_needs_person and not equipment_assisted)
+            )
         )
     )
     if name == "set_mode" and equipment_assisted:
         return DESCRIPTIONS[name] + SIM_EQUIPMENT_NOTE + SUFFIX
+    if (
+        name == "stand"
+        and equipment_assisted
+        and capabilities is not None
+        and capabilities.simulated
+    ):
+        return DESCRIPTIONS[name] + SIM_GETUP_NOTE + SUFFIX
     return (PERSON_DESCRIPTIONS[name] if needs_person else DESCRIPTIONS[name]) + SUFFIX
 
 

@@ -55,14 +55,16 @@ class Settings(BaseSettings):
     # The pose navigation steers by is `estimated` (MCL from odometry and the ToF depth stream at
     # tof_link; docs/localization.md) or `oracle` (the simulator body server's true pose at
     # sim_pose_link, evaluation only). With `estimated`, sim_pose_link is only used for scoring.
-    # nav_start: a place, place@heading_deg, or x,y,heading_deg; empty means unknown. Global
-    # relocalization (a whole-flat match with no prior) can be confidently wrong; it is opt-in.
-    # tof_link: the relay's tofd port (tcp://host:7812), or `link` to subscribe to tof.stream
-    # over the WebRTC robot link itself (mediad routes it to tofd).
+    # nav_start: a place, place@heading_deg, or x,y,heading_deg; empty means unknown.
     nav_map: str = ""
     nav_pose: Literal["estimated", "oracle"] = "estimated"
     nav_start: str = ""
-    nav_global_relocalization: bool = False
+    # With no usable estimate the duck sweeps the head and matches the whole flat, and refuses
+    # honestly when two places fit equally well (docs/localization.md). False restores the strict
+    # old behaviour: an unknown start is refused instead of searched for.
+    nav_global_relocalization: bool = True
+    # tof_link: the relay's tofd port (tcp://host:7812), or `link` to subscribe to tof.stream
+    # over the WebRTC robot link itself (mediad routes it to tofd).
     tof_link: str = ""
     sim_pose_link: str = ""
     log_audio: bool = False

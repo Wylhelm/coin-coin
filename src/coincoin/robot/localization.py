@@ -110,6 +110,70 @@ START_ROT_NOISE = ODOM_ROT
 ROLLER_SPEED_SIGMA = 0.25
 ROLLER_MAX_SPEED = 0.6
 ROLLER_DIFFUSION_M = 0.02
+# The roller command is a throttle, not a speed. Measured in the simulator, a push below 0.22
+# leaves the skates slipping in place, 0.25 reaches 0.38 m/s, 0.30 reaches 0.51 m/s, and the glide
+# saturates near 0.56 m/s however hard the wheels turn. Reading the throttle as a speed made the
+# filter believe a 0.25 push meant 0.25 m/s while the duck ran at 0.5, and the estimate fell 1.5 m
+# behind in the corridor without ever losing confidence.
+ROLLER_THROTTLE_DEADBAND = 0.22
+ROLLER_THROTTLE_CURVE = ((0.25, 0.38), (0.30, 0.51), (0.40, 0.55), (0.60, 0.56))
+# An unmeasured glide speed is not a speed that stayed put: it reverts to what the wheels were
+# last told to do -- or to a standstill when nothing is known -- with this time constant, while
+# the diffusion above says how little it is known. Without the pull the particles coast at the
+# last measured speed for as long as the ToF stays unusable: a duck that arrives with its head
+# against a wall sees four returns, matches nothing, and then drifts 0.47 m in 2 s on the
+# wheels' last 0.15 m/s.
+ROLLER_SPEED_TAU_S = 0.3
+# A throttle inside the dead band is a coast, not a brake, and a coasting duck barely slows down:
+# measured in the simulator, a released glide loses 0.02 m/s^2, so 0.3 m/s takes fifteen seconds to
+# die. Reverting the belief to the commanded zero with the time constant above therefore froze the
+# estimate whenever the policy coasted between two pushes, which is most of a leg: on the leg to
+# `ma chambre` the estimate advanced 0.57 m while the duck covered 1.53 m, fell 1.08 m behind and
+# the controller then steered on a pose it no longer had, turning 115 degrees off the goal. The
+# matches that do land while coasting measure the true speed (0.2-0.3 m/s), so holding the belief
+# between them is what lets them correct it instead of being averaged against a zero.
+ROLLER_COAST_DECEL = 0.02
+# The command may only revive the speed belief while the ToF is still trying: the governor coasts
+# 0.3 s after every push burst so a match can land, so a push that really moves the duck is
+# measured within a few hundred milliseconds. Blindness that outlasts that grace is not the
+# wheels lagging the command, it is a duck that is not going anywhere -- pinned against a wall,
+# its head too close for anything to match. Reverting to the command there kept a 0.38 m/s belief
+# alive for the fifteen seconds it spent jammed and walked the estimate 0.63 m off the map while
+# `fit` read 1.00, which is what made the governor give up eight seconds later. Past the grace
+# the belief decays to rest instead.
+ROLLER_BLIND_GRACE_S = 0.6
+# Glide odometry: consecutive ToF frames, projected into the level body frame, differ by the body's
+# own rigid motion. Matching their returns measures the glide the wheels cannot report. A thin,
+# ill-conditioned or IMU-inconsistent match is rejected and the filter diffuses instead: a wrong
+# step is worse than no step. The IMU keeps heading far better than a 45-degree wedge, so the
+# match's dyaw only gates the step; the prediction still turns by the odometry's dyaw.
+GLIDE_MIN_HITS = 8
+GLIDE_GATE_M = 0.12
+# Returns closer than this are one surface sample: the zone grid stacks rows of a column.
+GLIDE_MIN_SPACING_M = 0.02
+GLIDE_MIN_FRACTION = 0.5
+GLIDE_ROUNDS = 4
+GLIDE_MAX_RESIDUAL_M = 0.05
+# A direction pinned this much less than the best-pinned one is not measured: the returns
+# cannot tell a glide along it from standing still, whatever the fit says.
+GLIDE_BLIND_RATIO = 0.15
+GLIDE_MAX_STEP_MARGIN_M = 0.08
+GLIDE_MAX_TURN_DIFF_RAD = 0.25
+GLIDE_SIGMA_FLOOR_M = 0.008
+GLIDE_SIGMA_INFLATE = 1.5
+# A 15 Hz stream needs centimetre steps: a match that doubts itself by more than this measured
+# nothing the pose can use, and the filter diffuses along that axis instead. It is a joint gate on
+# the fit's residual and on the view's geometry -- a well-conditioned view may carry 4 cm of
+# residual, a poorly conditioned one 2 cm -- and not a second residual gate, so it must not be
+# pre-empted by flooring each sigma at the residual itself.
+GLIDE_MAX_SIGMA_M = 0.02
+GLIDE_SIGMA_YAW_FLOOR_RAD = 0.01
+GLIDE_MAX_SIGMA_YAW_RAD = 0.15
+GLIDE_MIN_DT_S = 0.005
+GLIDE_MAX_DT_S = 0.15
+# Frames arriving after this long without one mean the ToF is no longer measuring the glide.
+GLIDE_STALE_S = 0.5
+GLIDE_MAX_MISSES = 10
 
 PARTICLES = 600
 # Global search: a blurred beam model on a coarse grid, then a local climb with the sharp one.
@@ -125,15 +189,26 @@ LOW_FIT = 0.35
 INSIDE_CAP_M = 0.5
 FIT_NEAR_M = 0.12
 # A relocalization that moves the pose away from the tracked one (beyond this distance or
-# heading) must explain the sweep better, by this map-fit margin, than the best match near it.
+# heading) must explain the sweep better, by this map-fit margin, than the place the duck
+# believes it is in and the best match near it. A corridor scores a metre of sliding almost as
+# well as the true pose, so a thin margin is not enough (docs/localization.md).
 RELOC_JUMP_M = 0.3
 RELOC_JUMP_RAD = 0.2
-RELOC_JUMP_FIT_MARGIN = 0.1
+RELOC_JUMP_FIT_MARGIN = 0.15
+# Two hypotheses closer than this in position and heading are one guess, not two places.
+HYPOTHESIS_CLUSTER_M = 1.0
+HYPOTHESIS_CLUSTER_RAD = math.radians(60)
+# A whole-map sweep must not choose between look-alike places: the best one has to explain the
+# sweep by this many log-likelihood nats per beam more than the best *other* place before it is
+# trusted. Measured on the synthetic flat: the true place scores about +0.17 per beam and a wrong
+# look-alike -0.1 or worse, while two identical rooms differ by 0.00. So 0.15 keeps every correct
+# match seen and refuses an exact twin, instead of being confidently wrong about it.
+AMBIGUITY_MARGIN = 0.15
 # Heading changes smaller than this are gait sway, not rotation that may have drifted.
 ROTATION_STEP_RAD = 0.2
 STATE_HISTORY = 200
-# Long enough to hold a whole head sweep (8 directions, about 8 s at 15 Hz).
-FRAME_HISTORY = 180
+# Long enough to hold a whole head sweep (14 directions, about 13 s at 15 Hz).
+FRAME_HISTORY = 300
 
 
 def tof_beams(rows: int = TOF_ROWS, cols: int = TOF_COLS, fov: float = TOF_FOV_RAD) -> FloatArray:
@@ -360,6 +435,254 @@ def scan_from(
 
 
 @dataclass(frozen=True)
+class GlideStep:
+    """The body's motion between two ToF frames, measured from their projected returns.
+
+    `dx`/`dy` are in the body frame at the earlier frame (forward, left), `dyaw` is the body's
+    rotation, and the sigmas are the match's own uncertainty per axis, from its residuals and the
+    geometry of the matched returns. A thin or one-sided view constrains a glide poorly, so the
+    match is rejected rather than trusted (see `match_glide`).
+    """
+
+    dx: float
+    dy: float
+    dyaw: float
+    # A view only measures the glide it can tell apart from standing still: a wall the robot
+    # faces pins the step towards it and says nothing about sliding along it. An axis the view
+    # cannot constrain comes back infinite, and the filter diffuses along it instead of moving
+    # by a number the returns never measured.
+    sigma_forward: float
+    sigma_side: float
+    sigma_yaw: float
+    matched: int
+    fraction: float
+    residual_m: float
+
+    def describe(self) -> str:
+        axes = []
+        if math.isfinite(self.sigma_forward):
+            axes.append(f"{self.dx * 100:+.1f} cm ahead (sigma {self.sigma_forward * 100:.1f})")
+        if math.isfinite(self.sigma_side):
+            axes.append(f"{self.dy * 100:+.1f} cm aside (sigma {self.sigma_side * 100:.1f})")
+        if math.isfinite(self.sigma_yaw):
+            turn = math.degrees(self.dyaw)
+            axes.append(f"{turn:+.1f} deg (sigma {math.degrees(self.sigma_yaw):.1f})")
+        return (
+            f"{' and '.join(axes) or 'nothing measured'} from {self.matched} returns "
+            f"(residual {self.residual_m * 100:.1f} cm)"
+        )
+
+
+def _rigid_2d(points: FloatArray, targets: FloatArray) -> tuple[FloatArray, FloatArray]:
+    """The least-squares rotation and translation taking `points` onto `targets`."""
+    source = points.mean(axis=0)
+    target = targets.mean(axis=0)
+    covariance = (points - source).T @ (targets - target)
+    left, _, right = np.linalg.svd(covariance)
+    rotation = right.T @ left.T
+    if np.linalg.det(rotation) < 0:
+        right[-1] *= -1
+        rotation = right.T @ left.T
+    return rotation, target - rotation @ source
+
+
+def _distinct_points(points: FloatArray) -> FloatArray:
+    """The returns with near-duplicates dropped.
+
+    The zone grid stacks the rows of one column onto the same spot on a vertical surface, so the
+    same surface sample would otherwise be counted several times and its duplicates would pose as
+    neighbours along the surface instead of across it.
+    """
+    kept: list[FloatArray] = []
+    for point in points:
+        if all(np.linalg.norm(point - other) > GLIDE_MIN_SPACING_M for other in kept):
+            kept.append(point)
+    return np.array(kept, dtype=float).reshape(-1, 2)
+
+
+def _surface_normals(points: FloatArray, sensor: FloatArray) -> FloatArray:
+    """The surface each return samples, as unit normals from its two nearest neighbours.
+
+    The beams' own directions would only hold for surfaces facing the sensor: a wall met at a
+    slant would then look like it constrains the glide along itself, which is exactly the
+    constraint that is missing there.
+    """
+    rays = points - sensor[:2]
+    lengths = np.linalg.norm(rays, axis=1)
+    normals = -rays / np.maximum(lengths, 1e-9)[:, None]
+    if len(points) < 3:
+        return normals
+    squared = ((points[:, None, :] - points[None, :, :]) ** 2).sum(axis=2)
+    np.fill_diagonal(squared, np.inf)
+    nearest = np.argsort(squared, axis=1)[:, :2]
+    tangent = points[nearest[:, 1]] - points[nearest[:, 0]]
+    spread = np.linalg.norm(tangent, axis=1)
+    local = np.column_stack((-tangent[:, 1], tangent[:, 0])) / np.maximum(spread, 1e-9)[:, None]
+    found = spread >= 1e-3
+    normals[found] = local[found]
+    return normals
+
+
+def _throttle_speed(throttle: float) -> float:
+    """The glide speed the roller policy produces for a throttle, from the measured curve.
+
+    A throttle inside the dead band moves nothing at all: the wheels spin against the floor and
+    the duck stays put, which is why a controller that asks for a slow glide gets a stopped one
+    and then overshoots on the first push that bites.
+    """
+    magnitude = abs(throttle)
+    if magnitude <= ROLLER_THROTTLE_DEADBAND:
+        return 0.0
+    points = ((ROLLER_THROTTLE_DEADBAND, 0.0), *ROLLER_THROTTLE_CURVE)
+    speed = points[-1][1]
+    for (low, at_low), (high, at_high) in zip(points, points[1:], strict=False):
+        if magnitude <= high:
+            speed = at_low + (at_high - at_low) * (magnitude - low) / (high - low)
+            break
+    return math.copysign(speed, throttle)
+
+
+def _glide_sigma(
+    points: FloatArray, normals: FloatArray, residual_m: float
+) -> tuple[float, float, float]:
+    """Per-axis translation and heading uncertainty of a rigid 2D match.
+
+    A return constrains a rigid motion along its own surface normal and nowhere else, so the
+    normals' scatter is the information the view gives about the glide: a wall the robot faces
+    pins the step towards it and pins next to nothing along itself. Each body axis is judged by
+    its marginal precision, so an axis the returns pin far less than the best one comes back
+    infinite and the filter diffuses along it instead of moving by a number the returns never
+    measured. The residual is the scale of the mismatch the zone grid's resampling leaves behind,
+    one sample's worth of noise: it enters as that scale and is divided down by the information,
+    which is what averaging the kept returns buys.
+
+    It also floors each axis, and that floor is load-bearing rather than pessimistic. Dividing
+    the residual by the information assumes the mismatches are independent from return to return;
+    when the zone grid aliases a corner view onto the wrong faces they are not, they are one
+    coherent error, and the quotient then reports a confidence the view does not have. A glide
+    whose residual exceeds what the cap will pass is refused whole, which costs one frame of
+    diffusion -- the filter already tolerates GLIDE_MAX_MISSES of those in a row -- and buys the
+    guarantee that a match is never integrated as tighter than its own misfit.
+    """
+    sigma_point = max(residual_m, GLIDE_SIGMA_FLOOR_M / GLIDE_SIGMA_INFLATE)
+    information = normals.T @ normals
+    strongest = float(np.linalg.eigvalsh(information)[-1])
+    if strongest <= 0.0:
+        return math.inf, math.inf, math.inf
+    first, cross, second = (
+        float(information[0, 0]),
+        float(information[0, 1]),
+        float(information[1, 1]),
+    )
+    # Marginal precision: what an axis is still pinned by once the other is free to move, which
+    # vanishes for a direction the returns only constrain together with the other one. A rank-1
+    # view -- one flat wall, a corridor's two faces -- leaves the along-surface axis free, and
+    # there the Schur complement is undefined because the cross term is zero too: the pinned axis
+    # then keeps its own information instead of being read as blind alongside the other one.
+    precision = (
+        first - cross * cross / second if second > 0.0 else first,
+        second - cross * cross / first if first > 0.0 else second,
+    )
+    sigmas: list[float] = []
+    for axis in range(2):
+        if precision[axis] < GLIDE_BLIND_RATIO * strongest:
+            sigmas.append(math.inf)
+            continue
+        sigmas.append(
+            max(
+                GLIDE_SIGMA_INFLATE * sigma_point / math.sqrt(precision[axis]),
+                GLIDE_SIGMA_FLOOR_M,
+                residual_m,
+            )
+        )
+    # The heading is only seen through how far the returns sit off the sensor's axis.
+    lever = (normals * np.column_stack((-points[:, 1], points[:, 0]))).sum(axis=1)
+    turning = float((lever**2).sum())
+    sigma_yaw = (
+        math.inf
+        if turning <= 0.0
+        else max(GLIDE_SIGMA_INFLATE * sigma_point / math.sqrt(turning), GLIDE_SIGMA_YAW_FLOOR_RAD)
+    )
+    return sigmas[0], sigmas[1], sigma_yaw
+
+
+def match_glide(
+    previous: FloatArray,
+    current: FloatArray,
+    *,
+    sensor: FloatArray,
+    dyaw_prior: float,
+    dt: float,
+) -> GlideStep | None:
+    """Measure the body's motion between two frames' level-frame returns, or reject the match.
+
+    `previous` and `current` are the frames' obstacle returns in the body-level frame: `scan_from`
+    already compensates the head pose and the IMU tilt, so the rigid 2D transform between them is
+    the body's own motion, the glide contact odometry cannot see. Nearest-neighbour ICP seeded
+    with the IMU's heading, and only the ToF stream is used: nothing here needs the simulator.
+
+    Returns None when the frames share too few returns, when the fit leaves a large residual or
+    moves faster than the skates can, when it disagrees with the IMU's heading, or when the
+    returns' geometry leaves both translation axes unmeasured. An axis the view cannot constrain
+    is reported as infinite rather than as a number: the filter then diffuses along it.
+    """
+    if (
+        len(previous) < GLIDE_MIN_HITS
+        or len(current) < GLIDE_MIN_HITS
+        or not GLIDE_MIN_DT_S <= dt <= GLIDE_MAX_DT_S
+    ):
+        return None
+    c, s = math.cos(-dyaw_prior), math.sin(-dyaw_prior)
+    rotation = np.array([[c, -s], [s, c]])
+    translation = np.zeros(2)
+    for _ in range(GLIDE_ROUNDS):
+        moved = previous @ rotation.T + translation
+        nearest = np.argmin(((moved[:, None, :] - current[None, :, :]) ** 2).sum(axis=2), axis=1)
+        keep = np.linalg.norm(moved - current[nearest], axis=1) <= GLIDE_GATE_M
+        if keep.sum() < GLIDE_MIN_HITS or keep.sum() < GLIDE_MIN_FRACTION * len(previous):
+            return None
+        step_rotation, step_translation = _rigid_2d(moved[keep], current[nearest[keep]])
+        rotation = step_rotation @ rotation
+        translation = step_rotation @ translation + step_translation
+        if np.abs(step_rotation - np.eye(2)).max() < 1e-6 and np.abs(step_translation).max() < 1e-5:
+            break
+    moved = previous @ rotation.T + translation
+    nearest = np.argmin(((moved[:, None, :] - current[None, :, :]) ** 2).sum(axis=2), axis=1)
+    distances = np.linalg.norm(moved - current[nearest], axis=1)
+    keep = distances <= GLIDE_GATE_M
+    matched = int(keep.sum())
+    fraction = matched / len(previous)
+    if matched < GLIDE_MIN_HITS or fraction < GLIDE_MIN_FRACTION:
+        return None
+    residual = math.sqrt(float((distances[keep] ** 2).mean()))
+    if residual > GLIDE_MAX_RESIDUAL_M:
+        return None
+    dyaw = float(_wrap(-math.atan2(float(rotation[1, 0]), float(rotation[0, 0]))))
+    distinct = _distinct_points(previous[keep])
+    sigma_forward, sigma_side, sigma_yaw = _glide_sigma(
+        distinct, _surface_normals(distinct, sensor), residual
+    )
+    if math.isfinite(sigma_yaw) and abs(float(_wrap(dyaw - dyaw_prior))) > GLIDE_MAX_TURN_DIFF_RAD:
+        return None
+    displacement = -rotation.T @ translation
+    dx, dy = float(displacement[0]), float(displacement[1])
+    # An axis the match constrains only weakly is not a measurement: diffuse along it instead.
+    sigma_forward = sigma_forward if sigma_forward <= GLIDE_MAX_SIGMA_M else math.inf
+    sigma_side = sigma_side if sigma_side <= GLIDE_MAX_SIGMA_M else math.inf
+    sigma_yaw = sigma_yaw if sigma_yaw <= GLIDE_MAX_SIGMA_YAW_RAD else math.inf
+    if not math.isfinite(sigma_forward) and not math.isfinite(sigma_side):
+        return None
+    measured = (math.isfinite(sigma_forward), math.isfinite(sigma_side))
+    if math.hypot(dx if measured[0] else 0.0, dy if measured[1] else 0.0) > (
+        ROLLER_MAX_SPEED * dt + GLIDE_MAX_STEP_MARGIN_M
+    ):
+        return None
+    return GlideStep(
+        dx, dy, dyaw, sigma_forward, sigma_side, sigma_yaw, matched, fraction, residual
+    )
+
+
+@dataclass(frozen=True)
 class FloorPlane:
     """The floor in the level frame as z = a·x + b·y + c."""
 
@@ -547,6 +870,68 @@ class LikelihoodField:
 class Hypothesis:
     pose: Pose
     score: float
+    beams: int = 0
+
+
+@dataclass(frozen=True)
+class SweepVerdict:
+    """The two best different places a whole-map sweep matched, and the gap between them."""
+
+    best: Hypothesis
+    rival: Hypothesis | None
+    beams: int
+
+    @property
+    def margin(self) -> float:
+        """Log-likelihood per beam by which the best place beats the best different one."""
+        if self.rival is None or self.beams <= 0:
+            return math.inf
+        return (self.best.score - self.rival.score) / self.beams
+
+    @property
+    def ambiguous(self) -> bool:
+        return self.margin < AMBIGUITY_MARGIN
+
+    def describe(self) -> str:
+        best = f"({self.best.pose.x:+.2f}, {self.best.pose.y:+.2f})"
+        if self.rival is None:
+            return f"{best} is the only place that fits the sweep"
+        rival = f"({self.rival.pose.x:+.2f}, {self.rival.pose.y:+.2f})"
+        return (
+            f"{best} beats {rival} by {self.margin:+.2f} nats per beam "
+            f"(needs {AMBIGUITY_MARGIN:.2f})"
+        )
+
+
+def same_place(a: Pose, b: Pose) -> bool:
+    """Whether two poses are one guess about one place, not two competing guesses."""
+    return (
+        math.dist((a.x, a.y), (b.x, b.y)) <= HYPOTHESIS_CLUSTER_M
+        and abs(float(_wrap(a.yaw - b.yaw))) <= HYPOTHESIS_CLUSTER_RAD
+    )
+
+
+def sweep_verdict(hypotheses: Sequence[Hypothesis]) -> SweepVerdict | None:
+    """Judge a whole-map sweep: the best place, and the best place that is really another one."""
+    if not hypotheses:
+        return None
+    best = hypotheses[0]
+    rival = next((h for h in hypotheses[1:] if not same_place(best.pose, h.pose)), None)
+    return SweepVerdict(best, rival, best.beams)
+
+
+def _distinct(
+    candidates: list[tuple[float, float, float, float]], keep: int
+) -> list[tuple[float, float, float, float]]:
+    """The best coarse candidate of each place, best first, up to `keep` places."""
+    kept: list[tuple[float, float, float, float]] = []
+    for candidate in sorted(candidates, reverse=True):
+        pose = Pose(candidate[1], candidate[2], candidate[3])
+        if all(not same_place(pose, Pose(k[1], k[2], k[3])) for k in kept):
+            kept.append(candidate)
+            if len(kept) >= keep:
+                break
+    return kept
 
 
 def global_search(
@@ -598,7 +983,11 @@ def global_search(
             (float(flat[i]), float(x.ravel()[i]), float(y.ravel()[i]), float(yaw.ravel()[i]))
             for i in top
         )
-        best = sorted(best, reverse=True)[:keep]
+        # Neighbouring coarse cells are the same place, and a wide room offers many of them. Keep
+        # a wider pool, then one candidate per place: otherwise the whole top of the pool is one
+        # peak's own neighbourhood and a look-alike elsewhere is never refined or compared.
+        best = sorted(best, reverse=True)[: keep * 4]
+    best = _distinct(best, keep)
     # The coarse grid is 10 cm and 5 degrees; at 3 m that is a quarter-metre miss, so the true
     # pose's peak is easily stepped over. Each candidate is climbed to its local optimum with the
     # full composite before the candidates are compared.
@@ -656,7 +1045,7 @@ def _refine(
             continue
         step_m /= 2
         step_yaw /= 2
-    return Hypothesis(Pose(x, y, float(_wrap(yaw))), score)
+    return Hypothesis(Pose(x, y, float(_wrap(yaw))), score, len(hits))
 
 
 class ParticleFilter:
@@ -671,12 +1060,14 @@ class ParticleFilter:
         self.yaw = np.zeros(count)
         self.speed = np.zeros(count)
         self.log_w = np.zeros(count)
+        self.blind_s = 0.0
         self.initialized = False
 
     def _set(self, x: FloatArray, y: FloatArray, yaw: FloatArray) -> None:
         self.x, self.y, self.yaw = x.astype(float), y.astype(float), _wrap(yaw).astype(float)
         self.speed = np.zeros(len(x))
         self.log_w = np.zeros(len(x))
+        self.blind_s = 0.0
         self.initialized = True
 
     def init_pose(self, pose: Pose, std_xy: float = 0.1, std_yaw: float = 0.1) -> None:
@@ -717,17 +1108,99 @@ class ParticleFilter:
             base[:, 2] + self.rng.normal(0, 0.05, self.count),
         )
 
-    def predict(self, dx: float, dy: float, dyaw: float, dt: float, glide: bool) -> None:
-        """Move by an odometry step expressed in the robot frame at the step's start."""
+    def _glide_speed(self, dt: float, n: int, target: float = 0.0) -> np.ndarray:
+        """Diffuse a glide speed the ToF did not measure, reverting it towards the command.
+
+        The last measured speed is not a belief to keep: a duck that stops with its head against
+        a wall sees too few returns to match anything, and integrating the stale 0.15 m/s for
+        those seconds walks the pose off by half a metre. What the wheels were told to do is the
+        honest prior, and the diffusion around it is what says how little the skates obey.
+        """
+        decay = math.exp(-dt / ROLLER_SPEED_TAU_S)
+        return np.clip(
+            target
+            + (self.speed - target) * decay
+            + self.rng.normal(0, ROLLER_SPEED_SIGMA * math.sqrt(dt), n),
+            -0.2,
+            ROLLER_MAX_SPEED,
+        )
+
+    def _coast_speed(self, dt: float, n: int) -> np.ndarray:
+        """Carry a coasting glide on at its measured deceleration instead of killing it.
+
+        See ROLLER_COAST_DECEL: a coast is not a command to stop, so the belief keeps gliding and
+        only the diffusion above says how little of it is known. The ToF matches that land during
+        a coast are what pin it down.
+        """
+        return np.clip(
+            np.maximum(0.0, self.speed - ROLLER_COAST_DECEL * dt)
+            + self.rng.normal(0, ROLLER_SPEED_SIGMA * math.sqrt(dt), n),
+            -0.2,
+            ROLLER_MAX_SPEED,
+        )
+
+    def _glide_belief(self, dt: float, n: int, commanded: float, prior: float) -> np.ndarray:
+        """Speed belief for a glide the ToF did not measure on this frame.
+
+        A coast still inside the grace window keeps gliding (see ROLLER_COAST_DECEL). A push or a
+        brake reverts to what the wheels were told, and so does a coast that has outlasted the
+        grace: that is a duck pinned against a wall rather than one rolling free, and there the
+        stale speed is a lie (see ROLLER_BLIND_GRACE_S).
+        """
+        if commanded == 0.0 and self.blind_s <= ROLLER_BLIND_GRACE_S:
+            return self._coast_speed(dt, n)
+        return self._glide_speed(dt, n, prior)
+
+    def predict(
+        self,
+        dx: float,
+        dy: float,
+        dyaw: float,
+        dt: float,
+        glide: bool,
+        step: GlideStep | None = None,
+        *,
+        twist: tuple[float, float] | None = None,
+    ) -> None:
+        """Move by an odometry step expressed in the robot frame at the step's start.
+
+        `glide` says the wheels carry no odometry, so `dx`/`dy` are meaningless. When `step` holds
+        a measured glide the particles move by it, with the match's own sigma; otherwise they
+        follow the twist the robotd daemon reports having applied, diffused by the slip the skates
+        have. The turn always follows the IMU: a 45-degree wedge locates the body far less well
+        than the gyro does, so the match's heading only gates whether its translation is trusted.
+        """
         n = len(self.x)
         rng = self.rng
-        if glide:
-            # Contact odometry stays put on skates: forward speed is unknown, so it diffuses.
-            self.speed = np.clip(
-                self.speed + rng.normal(0, ROLLER_SPEED_SIGMA * math.sqrt(dt), n),
-                -0.2,
-                ROLLER_MAX_SPEED,
-            )
+        commanded = 0.0 if twist is None else _throttle_speed(float(twist[0]))
+        measured = glide and step is not None and math.isfinite(step.sigma_forward)
+        self.blind_s = 0.0 if measured else self.blind_s + dt
+        # See ROLLER_BLIND_GRACE_S: the command stops being a prior once the ToF has had longer
+        # than the wheels' own lag to contradict it.
+        prior = commanded if self.blind_s <= ROLLER_BLIND_GRACE_S else 0.0
+        if glide and step is not None:
+            # Move by what the ToF measured, and diffuse only along an axis it could not see.
+            if math.isfinite(step.sigma_forward):
+                forward = step.dx + rng.normal(0, step.sigma_forward, n)
+                # One frame's match is not a speed. Measured against the true glide, the step it
+                # reports scatters between 0.09 and 0.61 m/s around a true 0.5, and replacing the
+                # belief with that sample each frame is what walked the estimate 1.5 m behind:
+                # the filter stayed confident because every particle moved by the same wrong
+                # step. Average it in instead, so a run of bad frames costs a lag, not a pose.
+                self.speed = np.clip(
+                    0.5 * self.speed + 0.5 * (step.dx / dt), -0.2, ROLLER_MAX_SPEED
+                )
+            else:
+                self.speed = self._glide_belief(dt, n, commanded, prior)
+                forward = self.speed * dt + rng.normal(0, ROLLER_DIFFUSION_M * math.sqrt(dt), n)
+            # Skates roll along the heading and have no lateral degree of freedom, so the match's
+            # sideways offset is not motion: it is the ICP's own scatter, which flips sign from
+            # frame to frame and reaches +/-2.5 cm against a true zero. Following it integrates
+            # 0.4 m/s of spurious sideways speed and walks the pose off the map sideways.
+            side = rng.normal(0, ROLLER_DIFFUSION_M * math.sqrt(dt), n)
+        elif glide:
+            # Contact odometry stays put on skates: the wheels' command is the only speed there is.
+            self.speed = self._glide_belief(dt, n, commanded, prior)
             forward = self.speed * dt + rng.normal(0, ROLLER_DIFFUSION_M * math.sqrt(dt), n)
             side = rng.normal(0, ROLLER_DIFFUSION_M * math.sqrt(dt), n)
         else:
@@ -735,6 +1208,8 @@ class ParticleFilter:
             sigma_t = ODOM_TRANS * distance + ODOM_TRANS_FROM_ROT * abs(dyaw) + ODOM_FLOOR_M
             forward = dx + rng.normal(0, sigma_t, n)
             side = dy + rng.normal(0, sigma_t, n)
+            # Contact odometry carries the motion while walking, so nothing is coasting.
+            self.speed = np.zeros(n)
         sigma_r = ODOM_ROT * abs(dyaw) + ODOM_ROT_FROM_TRANS * math.hypot(dx, dy) + ODOM_FLOOR_RAD
         turn = dyaw + rng.normal(0, sigma_r, n)
         c, s = np.cos(self.yaw), np.sin(self.yaw)
@@ -984,6 +1459,29 @@ def _odom(state: Mapping[str, Any]) -> Odom | None:
     return Odom(x, y, yaw, z)
 
 
+def _twist(state: Mapping[str, Any]) -> tuple[float, float] | None:
+    """The twist robotd reports having applied, which is the only speed the skates have.
+
+    Contact odometry stays frozen on skates, so a glide is unmeasured the moment the ToF cannot
+    match two frames -- and at 15 Hz it usually cannot: a duck gliding at 0.2 m/s moves 1.4 cm
+    between frames, well under the match's own residual. The wheels were still told what to do,
+    and `move.applied` is that command; slip is what the particle diffusion is for.
+    """
+    move = state.get("move")
+    if not isinstance(move, dict):
+        return None
+    applied = move.get("applied")
+    if not isinstance(applied, (list, tuple)) or len(applied) < 3:
+        return None
+    try:
+        vx, vyaw = float(applied[0]), float(applied[2])
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(vx) and math.isfinite(vyaw)):
+        return None
+    return vx, vyaw
+
+
 @dataclass
 class _Stamped:
     t_ns: int
@@ -1053,7 +1551,14 @@ class EstimatedPose:
         self._fit_conflicted = False
         self._near_obstacle_streak = 0
         self.collecting_sweep = False
+        # What the last head-sweep match could tell apart: None unless a whole-map sweep ran.
+        self.last_verdict: SweepVerdict | None = None
         self.frame_event = asyncio.Event()
+        # The glide measured between the last two frames, and how long the ToF has been silent:
+        # the wheels report no motion, so this is the only thing that moves the pose on skates.
+        self.glide_step: GlideStep | None = None
+        self.glide_misses = 0
+        self._last_frame_at = -math.inf
 
     # Lifecycle -----------------------------------------------------------------------------
     def start(self) -> None:
@@ -1186,6 +1691,10 @@ class EstimatedPose:
             self.observe_state(self._state())
             await asyncio.sleep(0.02)
 
+    async def _consume(self) -> None:
+        async for frame in self._depth.frames():
+            self.observe_frame(frame)
+
     def observe_state(self, state: Mapping[str, Any] | None) -> None:
         if not state:
             return
@@ -1198,10 +1707,6 @@ class EstimatedPose:
         self._history.append(_Stamped(t_ns, odom, state))
         if self._origin is not None:
             self._apply_origin(odom, t_ns)
-
-    async def _consume(self) -> None:
-        async for frame in self._depth.frames():
-            self.observe_frame(frame)
 
     def _odom_at(self, t_ns: int) -> tuple[Odom, Mapping[str, Any]] | None:
         history = self._history
@@ -1244,7 +1749,7 @@ class EstimatedPose:
             self.stats.skipped += 1
             return None
         self._scans.append(scan)
-        self.advance(odom, frame.t_ns)
+        self.advance(odom, frame.t_ns, twist=_twist(state))
         if self.filter.initialized and not self.collecting_sweep:
             guarded = not self.glide and (
                 self.confirmed
@@ -1340,10 +1845,17 @@ class EstimatedPose:
         """A nearby unmapped surface has made tracking corrections unreliable."""
         return self._fit_recovery_start is not None or self._fit_conflicted
 
-    def advance(self, odom: Odom, t_ns: int) -> None:
+    def advance(self, odom: Odom, t_ns: int, *, twist: tuple[float, float] | None = None) -> None:
         previous, previous_t = self._last_odom, self._last_t_ns
         self._last_odom, self._last_t_ns = odom, t_ns
+        # Measured whatever the mode: the glide must be known before a mode switch needs it.
+        step = self._measure_glide()
+        self.glide_step = step
         if previous is None or previous_t is None or not self.filter.initialized:
+            return
+        if self.collecting_sweep:
+            # A sweep stands still and turns the head on purpose, and its match re-seeds the
+            # particles: predicting here would diffuse a stopped robot as if it were gliding.
             return
         dt = max(0.0, (t_ns - previous_t) / 1e9)
         c, s = math.cos(previous.yaw), math.sin(previous.yaw)
@@ -1361,6 +1873,46 @@ class EstimatedPose:
             float(_wrap(odom.yaw - previous.yaw)),
             min(dt, 0.5),
             self.glide,
+            step,
+            twist=twist,
+        )
+
+    def _measure_glide(self) -> GlideStep | None:
+        """Measure the body's motion between the last two frames, or reject the match.
+
+        On skates the wheels report no translation, so consecutive ToF frames are the only witness
+        of the glide. The IMU's heading is far better than a 45-degree wedge, so it seeds the match
+        and its own turn is what the prediction follows; the match only has to agree with it.
+        """
+        if len(self._scans) < 2:
+            return None
+        before, after = self._scans[-2], self._scans[-1]
+        self._last_frame_at = self._clock()
+        if self.collecting_sweep:
+            # The head jumps between sweep positions, so consecutive frames see different
+            # viewpoints: a rejection is the sweep's doing, not evidence the glide is lost.
+            return None
+        step = match_glide(
+            before.hits[:, :2],
+            after.hits[:, :2],
+            sensor=after.sensor[:2],
+            dyaw_prior=float(_wrap(after.odom.yaw - before.odom.yaw)),
+            dt=(after.t_ns - before.t_ns) / 1e9,
+        )
+        self.glide_misses = 0 if step is not None else self.glide_misses + 1
+        return step
+
+    @property
+    def glide_odometry(self) -> bool:
+        """Whether the ToF stream is currently measuring the skates' glide.
+
+        A rejected match does not immediately invalidate the estimate (a single thin view is no
+        reason to stop), but a stream that stops matching or stops arriving does: past that point
+        the pose would drift unmeasured, and saying so is better than pretending.
+        """
+        return (
+            self.glide_misses < GLIDE_MAX_MISSES
+            and self._clock() - self._last_frame_at <= GLIDE_STALE_S
         )
 
     # Reading -------------------------------------------------------------------------------
@@ -1382,6 +1934,8 @@ class EstimatedPose:
                 float(_wrap(pose.yaw + _wrap(latest.yaw - last.yaw))),
             )
         converged = std_xy <= CONVERGED_XY_M and std_yaw <= CONVERGED_YAW_RAD
+        # On skates the wheels report no motion, so convergence also needs the ToF to be watching.
+        watched = not self.glide or self._clock() - self._last_frame_at <= GLIDE_STALE_S
         return PoseEstimate(
             pose.x,
             pose.y,
@@ -1393,7 +1947,7 @@ class EstimatedPose:
             and self.confirmed
             and self._origin is None
             and self._fit_recovery_start is None
-            and not self.glide,
+            and watched,
             self._fit,
         )
 
@@ -1432,10 +1986,15 @@ class EstimatedPose:
         `heading` is the composite's reference heading in the map frame when it is known (the IMU
         keeps yaw far better than contact odometry keeps position), which removes the rotated
         look-alikes a rectangular room offers. With the tracked `prior`, a match away from it is
-        only taken when it explains the sweep clearly better than the best match near it: in a
-        wide room the ToF reaches few walls, and a look-alike a metre off may score as well.
+        only taken when it explains the sweep clearly better than both the best match near it and
+        the tracked prior itself: in a wide room the ToF reaches few walls, and a look-alike a
+        metre off may score as well, while down a corridor the walls are the same everywhere and a
+        slide of half a metre scores within a couple of hundredths of the truth.
+        Without a window or a prior there is nothing to prefer one place to another, so the match
+        is refused when the best place does not beat the best other place by AMBIGUITY_MARGIN.
         """
         if not scans:
+            self.last_verdict = None
             return []
         if exclude_unmapped and prior is None:
             raise ValueError("excluding unmapped sweep returns needs a prior pose")
@@ -1459,6 +2018,13 @@ class EstimatedPose:
             heading_tolerance=heading_tolerance,
         )
         if not hypotheses:
+            self.last_verdict = None
+            return []
+        # Over the whole map, two look-alike places are two answers, and picking the better-scoring
+        # one is a guess. Only a windowed search is already disambiguated by where the duck was.
+        self.last_verdict = sweep_verdict(hypotheses) if centre is None and prior is None else None
+        if self.last_verdict is not None and self.last_verdict.ambiguous:
+            self.confirmed = False
             return []
         if prior is not None:
             best = hypotheses[0].pose
@@ -1477,7 +2043,8 @@ class EstimatedPose:
                     keep=8,
                 )
                 if near and self.field.fit(best, all_hits) < (
-                    self.field.fit(near[0].pose, all_hits) + RELOC_JUMP_FIT_MARGIN
+                    max(self.field.fit(prior, all_hits), self.field.fit(near[0].pose, all_hits))
+                    + RELOC_JUMP_FIT_MARGIN
                 ):
                     hypotheses = near
         candidate = ParticleFilter(self.field, count=self.filter.count)
