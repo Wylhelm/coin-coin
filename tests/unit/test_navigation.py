@@ -208,7 +208,7 @@ def test_stalled_walk_pivot_uses_the_opposite_direction_without_advancing() -> N
 def test_stalled_pivot_recovery_is_off_without_simulation_walk_assist() -> None:
     steering = Steering([(0.0, 2.0)], (0.25, 0.0, 1.0), "walk", room=lambda point: 1.0)
     steering.update(Pose(0, 0, 0), 0)
-    assert steering.update(Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
+    assert steering_command(steering, Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
     assert not steering.reversing_pivot
 
 
@@ -222,9 +222,9 @@ def test_stalled_pivot_recovery_requires_and_keeps_clearance() -> None:
         recover_stalled_pivot=True,
     )
     steering.update(Pose(0, 0, 0), 0)
-    assert steering.update(Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
+    assert steering_command(steering, Pose(0, 0, 0.02), 2.1)["vyaw"] == 1.0
     clearance[0] = 0.2
-    assert steering.update(Pose(0, 0, 0.02), 2.2)["vyaw"] == -1.0
+    assert steering_command(steering, Pose(0, 0, 0.02), 2.2)["vyaw"] == -1.0
     clearance[0] = 0.05
     assert steering.update(Pose(0, 0, -0.2), 2.3) == {"vx": 0.0, "vy": 0.0, "vyaw": 0.0}
 
@@ -332,8 +332,7 @@ def test_roller_pivots_on_the_spot_instead_of_carving_an_arc() -> None:
     creeping = Steering([(-2.0, 0.0)], limits, "roller")
     creeping.update(Pose(0, 0, 0.5), 0.0)
     creeping.update(Pose(0.012, 0, 0.5), 0.1)
-    creeps = [creeping.update(Pose(0.012, 0, 0.5), step * 0.1) for step in range(2, 30)]
-    assert all(command is not None for command in creeps)
+    creeps = [steering_command(creeping, Pose(0.012, 0, 0.5), step * 0.1) for step in range(2, 30)]
     assert creeps[0]["vx"] == 0.0
     assert creeps[0]["vyaw"] == pytest.approx(creeping.ROLLER_PIVOT)
     assert all(command["vx"] == 0.0 for command in creeps)
@@ -348,29 +347,29 @@ def test_roller_pivot_gain_climbs_when_the_body_does_not_answer() -> None:
     limits = (0.3, 0.0, 0.3)
     steering = Steering([(-2.0, 0.0)], limits, "roller")
     steering.update(Pose(0, 0, 0.5), 0)
-    assert steering.update(Pose(0, 0, 0.5), 0.1)["vyaw"] == pytest.approx(0.3)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.1)["vyaw"] == pytest.approx(0.3)
     # The body answers: a progress of 0.05 rad per frame keeps the gain where it is.
     yaw = 0.5
     for step in range(2, 12):
         yaw += 0.06
-        assert steering.update(Pose(0, 0, yaw), step / 10)["vyaw"] == pytest.approx(0.3)
+        assert steering_command(steering, Pose(0, 0, yaw), step / 10)["vyaw"] == pytest.approx(0.3)
     # Now it stops answering: the gain steps up every ROLLER_PIVOT_STALL_S.
-    assert steering.update(Pose(0, 0, yaw), 1.55)["vyaw"] == pytest.approx(0.4)
-    assert steering.update(Pose(0, 0, yaw), 2.1)["vyaw"] == pytest.approx(0.5)
+    assert steering_command(steering, Pose(0, 0, yaw), 1.55)["vyaw"] == pytest.approx(0.4)
+    assert steering_command(steering, Pose(0, 0, yaw), 2.1)["vyaw"] == pytest.approx(0.5)
     # ... and never past the ceiling that still keeps the body on its skates.
-    assert steering.update(Pose(0, 0, yaw), 2.7)["vyaw"] == pytest.approx(0.5)
+    assert steering_command(steering, Pose(0, 0, yaw), 2.7)["vyaw"] == pytest.approx(0.5)
 
 
 def test_roller_pivot_gain_resets_when_the_turn_reverses() -> None:
     limits = (0.3, 0.0, 0.3)
     steering = Steering([(0.0, -2.0)], limits, "roller")
-    assert steering.update(Pose(0, 0, 0.5), 0)["vyaw"] == pytest.approx(-0.3)
-    assert steering.update(Pose(0, 0, 0.5), 0.1)["vyaw"] == pytest.approx(-0.3)
-    assert steering.update(Pose(0, 0, 0.5), 0.6)["vyaw"] == pytest.approx(-0.4)
-    assert steering.update(Pose(0, 0, 0.5), 1.1)["vyaw"] == pytest.approx(-0.5)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0)["vyaw"] == pytest.approx(-0.3)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.1)["vyaw"] == pytest.approx(-0.3)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.6)["vyaw"] == pytest.approx(-0.4)
+    assert steering_command(steering, Pose(0, 0, 0.5), 1.1)["vyaw"] == pytest.approx(-0.5)
     # The waypoint moved behind us: the turn flips and the gain starts over rather than
     # carrying the larger command into the direction that never needed it.
-    assert steering.update(Pose(0, 0, 2.5), 1.6)["vyaw"] == pytest.approx(0.3)
+    assert steering_command(steering, Pose(0, 0, 2.5), 1.6)["vyaw"] == pytest.approx(0.3)
 
 
 def test_roller_pivot_gain_falls_back_once_the_body_answers_again() -> None:
@@ -378,17 +377,19 @@ def test_roller_pivot_gain_falls_back_once_the_body_answers_again() -> None:
     # back down to the break-away value as soon as the body starts answering, and stops there.
     limits = (0.3, 0.0, 0.3)
     steering = Steering([(-2.0, 0.0)], limits, "roller")
-    assert steering.update(Pose(0, 0, 0.5), 0)["vyaw"] == pytest.approx(0.3)
-    assert steering.update(Pose(0, 0, 0.5), 0.6)["vyaw"] == pytest.approx(0.4)
-    assert steering.update(Pose(0, 0, 0.5), 1.2)["vyaw"] == pytest.approx(0.5)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0)["vyaw"] == pytest.approx(0.3)
+    assert steering_command(steering, Pose(0, 0, 0.5), 0.6)["vyaw"] == pytest.approx(0.4)
+    assert steering_command(steering, Pose(0, 0, 0.5), 1.2)["vyaw"] == pytest.approx(0.5)
     yaw = 0.5
     for step in range(2, 6):
         yaw += 0.06
         expected = max(0.3, 0.5 - 0.1 * (step - 1))
-        assert steering.update(Pose(0, 0, yaw), 1.2 + step / 10)["vyaw"] == pytest.approx(expected)
+        assert steering_command(steering, Pose(0, 0, yaw), 1.2 + step / 10)[
+            "vyaw"
+        ] == pytest.approx(expected)
     # Below the break-away value the pivot would stall again, so the gain floors there.
     yaw += 0.06
-    assert steering.update(Pose(0, 0, yaw), 1.9)["vyaw"] == pytest.approx(0.3)
+    assert steering_command(steering, Pose(0, 0, yaw), 1.9)["vyaw"] == pytest.approx(0.3)
 
 
 def test_roller_corrects_deviation_from_a_long_segment() -> None:
