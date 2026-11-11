@@ -6,6 +6,30 @@
 > commits mentionnés dans les relevés correspondent à l'historique local
 > d'origine, dont les identifiants diffèrent de l'historique public.
 
+## Patins — emballement de la vitesse lue et roue libre obligatoire
+
+- The speed the roller controller judges is differenced from the estimated pose, which trails
+  the glide by up to 0.36 m (about 0.9 s at 0.4 m/s): it read "slow" while the duck was already
+  fast, pushed again, and the glide passed the 0.45 m/s where the frame match gives up. A traced
+  bedroom leg shows the whole runaway: true glide 0.34 → 0.46 m/s while the command stayed a
+  push, map fit 0.62 → 0.32, error 0.67 → 1.40 m, then a wall contact.
+- Every push is now followed by a mandatory free roll of `ROLLER_COAST_S = 2.0 s` before another
+  push may start, bounding the speed with no measurement at all — the measurement was the
+  failing input. One 2 s push reaches 0.33 m/s and two seconds of coast take back 0.12 m/s at
+  the 0.06 m/s² measured on the apartment floor, so the glide stays under the match limit and
+  averages about 0.25 m/s. The push/free-roll duty cycle is the only continuous control there
+  is: the throttle curve has no intermediate speed.
+- Four seeds of the full tour (roller mode, realism real, contact monitor counting): seed 0 and
+  seed 2 complete all three legs — seed 0 with bedroom contacts down from 26 to 0, seed 2 with
+  the final stop 0.050 m from the true place where the same seed previously announced a false
+  arrival 0.80 m out with 25 contacts. Seed 3 was interrupted mid-way (bedroom clean), and seed
+  1 is an honest refusal of all three legs: 18.9 s without one accepted depth frame, so the
+  glide was never measurable. Two clean tours out of three attempted — clear progress, not a
+  reliability claim: the simulator is not deterministic and one seed is one sample.
+- The diagnostic harness serializes its requests to the isolated body server (an asyncio lock)
+  and `Trace.sample()` journals the blind/bel/cmd state of the roller controller, so a runaway
+  can be told from a slow leg in post-processing.
+
 ## Patins — commande en throttle, poussée longue, tour complet réussi une fois
 
 - Treat the roller command as a throttle, not a speed: measured on the scanned apartment,

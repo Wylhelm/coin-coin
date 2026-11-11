@@ -107,6 +107,12 @@ when `glide_odometry` is false, and the mode is never switched automatically.
 
 ### Driving the skates
 
+For convenient simulation-only voice requests to fit/remove skates, add `--sim-auto-equipment`.
+It uses this stack's local robotd Unix socket, confirms both peers explicitly report simulation,
+and waits for mode confirmation, homing and safe state before unlocking motion. WebRTC still
+refuses remote `robot.setMode`; the hardware flow still requires a person. The option is
+incompatible with `--no-assist`.
+
 The roller command's first component is a **throttle**, not a speed: the wheels are passive, and
 what the duck does with a throttle depends on the surface, on its load and on whether it is
 already moving. Benched on the scanned apartment scene:
@@ -145,6 +151,19 @@ measurable, and re-deciding from it makes the duck oscillate at 7 Hz), then coas
 controller is blind and reads the duck as stopped, which is why the push must be long enough to
 leave that zone in one go.
 
+The judged speed is a difference of the **estimated** pose, which trails the truth by up to
+0.36 m — about 0.9 s at 0.4 m/s. While the estimate catches up the controller reads "slow" while
+the duck is already fast, pushes again, and the glide can pass the 0.45 m/s where `match_glide`
+gives up; the filter diffuses, the pushes stay blind, and the leg ends against the furniture. A
+traced bedroom leg shows the whole runaway: true glide 0.34 → 0.46 m/s while the command stayed
+a push, map fit 0.62 → 0.32, error 0.67 → 1.40 m, then a wall contact. Judging the speed is
+exactly what cannot be trusted there, so every push is now followed by a mandatory free roll of
+`ROLLER_COAST_S = 2.0 s` before another push may start. The coast bounds the speed with no
+measurement at all: one 2 s push reaches 0.33 m/s, two seconds of free roll take back 0.12 m/s
+at the 0.06 m/s² measured on the apartment floor, so the glide stays under the match limit and
+averages about 0.25 m/s. It is also the only continuous control there is — the throttle curve
+has no intermediate speed — so the push/free-roll duty cycle is the one knob.
+
 Turning is asymmetric. A throttle of 0.30 gives 0.78–0.89 rad/s counter-clockwise but nothing at
 all clockwise (which needs −0.50 for −0.72 rad/s, or ±0.80 for 4.2–4.9); yaw while sliding is
 cheaper, 1.04 rad/s at 0.15 and 1.68 at 0.30 on a 0.25 m/s glide. In-place pivots from rest also
@@ -173,6 +192,26 @@ So the glide is measured well enough to keep the skates upright and to stop shor
 not well enough to bound along-track drift between two doorways — the limit already noted above
 for long featureless corridors, and the reason the real duck cannot be asked to cross the flat
 on skates without a landmark in range.
+
+With the mandatory coast the same tour was re-measured over four seeds (roller mode, realism
+real, the contact monitor counting). Leg error is RMS / max, estimated vs truth:
+
+| seed | salon | ma chambre | départ | final stop (truth) | contacts bedroom / départ |
+|---|---|---|---|---|---|
+| 0 | ok, 0.113 m | ok, 0.132 / 0.340 m | ok, 0.389 / 0.985 m | 0.130 m | 0 / 3 |
+| 1 | refused | refused | refused | — | — |
+| 2 | ok, 0.057 m | ok, 0.112 / 0.325 m | ok, 0.096 / 0.243 m | 0.050 m | 7 / 2 |
+| 3 | ok, 0.075 m | ok, 0.146 / 0.397 m | interrupted | — | 0 / — |
+
+Two complete tours out of three attempted, both genuinely arrived. The sticky false arrival of
+the pre-coast record — announced 0.3 m from the estimated place while 0.80 m from the true one,
+25 contacts — is gone: the same seed now stops 0.050 m from the true place, and bedroom contacts
+fall from 26 to 0 (seed 0) and from 25 to 7 (seed 2). Seed 1 is an honest refusal, not a driving
+failure: the governor refused all three legs ("on skates my wheels report no motion") after
+18.9 s without one accepted depth frame, so the glide was never measurable — the guard did its
+job and the cause is upstream of the roller controller. The simulator is not deterministic — the
+same seed twice gives two trajectories — so one seed is one sample. Two clean tours out of three
+is real progress on the runaway, not a reliability claim.
 
 One honest caveat: while the duck moves, the estimate lags the truth by up to about 0.36 m and
 snaps back at rest. The controller stops on the *estimated* pose, so it stops roughly that far

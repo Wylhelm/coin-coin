@@ -169,6 +169,11 @@ uv run --no-sync python scripts/live_stack.py --link webrtc --scene /path/to/sce
 starts (realism is `off` unless asked); `--maploc` turns on robotd's mapping and
 localization. See `microduck_rl` for what each does.
 
+For convenient voice equipment changes in simulation, add `--sim-auto-equipment`.
+It fits/removes skates through the stack's local simulator socket, then waits for mode
+confirmation and homing. It cannot be combined with `--no-assist`; on hardware a person
+still fits/removes the skates and selects the mode. The WebRTC route is unchanged.
+
 `--places` loads a navigation map (clearance grid and named places, produced by
 `salon_scan/build_navigation.py`) and enables the `go_to` tool: "Va dans ma
 chambre" or "Reviens" plan a route around obstacles with A* and follow it in
@@ -290,6 +295,7 @@ Restart the service after changing them.
 | `ROBOT_LINK`, `FRAME_LINK` | TCP robot/camera endpoints; the test launcher overrides both to localhost. |
 | `ROBOT_TARGET`, `ROBOT_HOST`, `ROBOT_SIGNALLING_PORT` | Empty: use `ROBOT_LINK`. `sim` (host defaults to `127.0.0.1`) or `robot` (host required: duck name or IP) selects `webrtc://ROBOT_HOST:8443`. |
 | `PERSON_MODE_TIMEOUT_S` | `120`: how long the duck waits for a person to change its mode when the link refuses `robot.setMode`. |
+| `SIM_EQUIPMENT_SOCKET` | Empty: no automatic equipment help. `--sim-auto-equipment` fills the owned simulator socket; never configure this for hardware. |
 | `RELAY_TOKEN` | Shared TCP relay token. Empty is permitted for loopback-only simulation, not remote exposure. |
 | `MAX_VX`, `MAX_VY`, `MAX_VYAW` | Walk limits: `0.25 m/s`, `0.2 m/s`, `1 rad/s`. |
 | `MIN_VX`, `MIN_VY`, `MIN_VYAW` | Walk floors: `0.3 m/s`, `0.15 m/s`, `1 rad/s`. Policy v9 stands still below about 0.2 m/s and 0.8 rad/s, so a nonzero walking speed below its floor is raised to it (never above the limit: with the default `MAX_VX` the forward floor is effectively 0.25 m/s; set `MAX_VX=0.3` to use it). The tool result and the journal say so. Not applied on skates (roller yaw is capped at 0.3 rad/s). `0` disables a floor. |
